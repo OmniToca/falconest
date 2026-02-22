@@ -383,12 +383,26 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
 
   Future<void> _doDelete(BuildContext context, WidgetRef ref, String taskId) async {
     try {
+      final auth = ref.read(authNotifierProvider);
+      final tenantId = auth.tenantIdForData;
+      if (tenantId == null || tenantId.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('common.error'.tr()),
+              backgroundColor: Colors.red.shade700,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+        return;
+      }
       final deletedAt = DateTime.now().toUtc().toIso8601String();
       await SupabaseService.client
           .from('tasks')
           .update({'deleted_at': deletedAt})
-          .eq('id', taskId);
-      final auth = ref.read(authNotifierProvider);
+          .eq('id', taskId)
+          .eq('tenant_id', tenantId);
       await AuditLogService.log(
         tenantId: auth.tenantIdForData,
         userId: SupabaseService.client.auth.currentUser?.id,
@@ -1441,8 +1455,8 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedApartmentId == null || _selectedApartmentId!.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Vyberte apartmán'),
+        SnackBar(
+          content: Text('admin.validation_apartment_required_short'.tr()),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
         ),
@@ -1452,8 +1466,8 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
     final dueDate = _parseDateTime(_dueDateController.text.trim());
     if (dueDate == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Vyberte termín (datum a čas)'),
+        SnackBar(
+          content: Text('admin.validation_datetime_required_short'.tr()),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
         ),
@@ -1485,8 +1499,8 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
       Navigator.of(context).pop();
       widget.onSaved();
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Úkol byl uložen'),
+        SnackBar(
+          content: Text('admin.task_saved'.tr()),
           backgroundColor: Colors.green,
           behavior: SnackBarBehavior.floating,
         ),
@@ -1499,7 +1513,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Chyba: ${e.message}'),
+          content: Text('admin.task_save_error'.tr(namedArgs: {'error': e.message})),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
         ),
@@ -1508,7 +1522,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Chyba: $e'),
+          content: Text('admin.task_save_error'.tr(namedArgs: {'error': e.toString()})),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
         ),
@@ -1534,21 +1548,21 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
           children: [
             TextFormField(
               controller: _titleController,
-              decoration: const InputDecoration(
-                prefixIcon: Icon(Icons.label_outline),
-                labelText: 'Název',
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.label_outline),
+                labelText: 'admin.task_field_title'.tr(),
                 border: OutlineInputBorder(),
               ),
               validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? 'Zadejte název' : null,
+                  (v == null || v.trim().isEmpty) ? 'admin.validation_title_required'.tr() : null,
             ),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _descriptionController,
                   maxLines: 3,
-                  decoration: const InputDecoration(
-                    prefixIcon: Icon(Icons.description_outlined),
-                    labelText: 'Popis',
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.description_outlined),
+                    labelText: 'admin.task_field_description'.tr(),
                     border: OutlineInputBorder(),
                     alignLabelWithHint: true,
                   ),
@@ -1574,15 +1588,15 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                   data: (apartments) {
                     return DropdownButtonFormField<String?>(
                       initialValue: _selectedApartmentId,
-                      decoration: const InputDecoration(
-                        prefixIcon: Icon(Icons.list_alt_outlined),
-                        labelText: 'Apartmán',
+                      decoration: InputDecoration(
+                        prefixIcon: const Icon(Icons.list_alt_outlined),
+                        labelText: 'admin.task_field_apartment'.tr(),
                         border: OutlineInputBorder(),
                       ),
                       items: [
-                        const DropdownMenuItem<String?>(
+                        DropdownMenuItem<String?>(
                           value: null,
-                          child: Text('Vyberte apartmán'),
+                          child: Text('admin.validation_apartment_required_short'.tr()),
                         ),
                         ...apartments.map((a) => DropdownMenuItem<String?>(
                               value: a.id,
@@ -1591,7 +1605,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                       ],
                       onChanged: (v) => setState(() => _selectedApartmentId = v),
                       validator: (v) =>
-                          (v == null || v.isEmpty) ? 'Vyberte apartmán' : null,
+                          (v == null || v.isEmpty) ? 'admin.validation_apartment_required_short'.tr() : null,
                     );
                   },
                   loading: () => const LinearProgressIndicator(),
@@ -1620,7 +1634,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                     }
                     final pendingLabel = 'admin.team_status_pending'.tr();
                     final items = <DropdownMenuItem<String?>>[
-                      const DropdownMenuItem<String?>(value: null, child: Text('Nikdo')),
+                      DropdownMenuItem<String?>(value: null, child: Text('admin.tasks_assign_nobody'.tr())),
                       ...unique.map((m) => DropdownMenuItem<String?>(
                           value: m.dropdownId,
                           child: Text(m.isFromInvitation ? '${m.name} ($pendingLabel)' : m.name),
@@ -1628,9 +1642,9 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                     ];
                     return DropdownButtonFormField<String?>(
                       initialValue: _selectedAssignedTo,
-                      decoration: const InputDecoration(
-                        prefixIcon: Icon(Icons.person_outline),
-                        labelText: 'Přiřadit osobě',
+                      decoration: InputDecoration(
+                        prefixIcon: const Icon(Icons.person_outline),
+                        labelText: 'admin.task_field_assign_to'.tr(),
                         border: OutlineInputBorder(),
                       ),
                       items: items,
@@ -1644,9 +1658,9 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                 TextFormField(
                   controller: _dueDateController,
                   readOnly: true,
-                  decoration: const InputDecoration(
-                    prefixIcon: Icon(Icons.calendar_today_outlined),
-                    labelText: 'Termín',
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.calendar_today_outlined),
+                    labelText: 'admin.task_field_due_date'.tr(),
                     border: OutlineInputBorder(),
                     suffixIcon: Icon(Icons.calendar_today_outlined),
                   ),
@@ -1658,7 +1672,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                     }
                   },
                   validator: (v) =>
-                      (v == null || v.trim().isEmpty) ? 'Vyberte termín' : null,
+                      (v == null || v.trim().isEmpty) ? 'admin.validation_datetime_required_short'.tr() : null,
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
@@ -1939,8 +1953,8 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
     final dueDate = _parseDateTime(_dueDateController.text.trim());
     if (dueDate == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Vyberte termín (datum a čas)'),
+        SnackBar(
+          content: Text('admin.validation_datetime_required_short'.tr()),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
         ),
@@ -1948,6 +1962,18 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
       return;
     }
     if (_isSaving) return;
+
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('common.error'.tr()),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
 
     setState(() => _isSaving = true);
 
@@ -1970,14 +1996,14 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
         'task_type': _taskType,
         'due_date': dueIso,
         'scheduled_start': dueIso,
-      }).eq('id', widget.task.id);
+      }).eq('id', widget.task.id).eq('tenant_id', tenantId);
 
       if (!mounted) return;
       Navigator.of(context).pop();
       widget.onSaved();
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Úkol byl uložen'),
+        SnackBar(
+          content: Text('admin.task_saved'.tr()),
           backgroundColor: Colors.green,
           behavior: SnackBarBehavior.floating,
         ),
@@ -1986,7 +2012,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Chyba: ${e.message}'),
+          content: Text('admin.task_save_error'.tr(namedArgs: {'error': e.message})),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
         ),
@@ -1995,7 +2021,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Chyba: $e'),
+          content: Text('admin.task_save_error'.tr(namedArgs: {'error': e.toString()})),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
         ),
@@ -2026,21 +2052,21 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
             const SizedBox(height: 16),
             TextFormField(
               controller: _titleController,
-              decoration: const InputDecoration(
-                prefixIcon: Icon(Icons.label_outline),
-                labelText: 'Název',
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.label_outline),
+                labelText: 'admin.task_field_title'.tr(),
                 border: OutlineInputBorder(),
               ),
               validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? 'Zadejte název' : null,
+                  (v == null || v.trim().isEmpty) ? 'admin.validation_title_required'.tr() : null,
             ),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _descriptionController,
                   maxLines: 3,
-                  decoration: const InputDecoration(
-                    prefixIcon: Icon(Icons.description_outlined),
-                    labelText: 'Popis',
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.description_outlined),
+                    labelText: 'admin.task_field_description'.tr(),
                     border: OutlineInputBorder(),
                     alignLabelWithHint: true,
                   ),
@@ -2069,15 +2095,15 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                         : (apartments.isNotEmpty ? apartments.first.id : null);
                     return DropdownButtonFormField<String?>(
                       initialValue: validId,
-                      decoration: const InputDecoration(
-                        prefixIcon: Icon(Icons.list_alt_outlined),
-                        labelText: 'Apartmán',
+                      decoration: InputDecoration(
+                        prefixIcon: const Icon(Icons.list_alt_outlined),
+                        labelText: 'admin.task_field_apartment'.tr(),
                         border: OutlineInputBorder(),
                       ),
                       items: [
-                        const DropdownMenuItem<String?>(
+                        DropdownMenuItem<String?>(
                           value: null,
-                          child: Text('Vyberte apartmán'),
+                          child: Text('admin.validation_apartment_required_short'.tr()),
                         ),
                         ...apartments.map((a) => DropdownMenuItem<String?>(
                               value: a.id,
@@ -2086,7 +2112,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                       ],
                       onChanged: (v) => setState(() => _selectedApartmentId = v ?? ''),
                       validator: (v) =>
-                          (v == null || v.isEmpty) ? 'Vyberte apartmán' : null,
+                          (v == null || v.isEmpty) ? 'admin.validation_apartment_required_short'.tr() : null,
                     );
                   },
                   loading: () => const LinearProgressIndicator(),
@@ -2115,7 +2141,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                       );
                     }
 
-                    dropdownItems.add(const DropdownMenuItem<String?>(value: null, child: Text('Nikdo')));
+                    dropdownItems.add(DropdownMenuItem<String?>(value: null, child: Text('admin.tasks_assign_nobody'.tr())));
 
                     if (currentUserId != null && currentUserId.isNotEmpty) {
                       final known = members.where((m) => m.dropdownId == currentUserId).toList();
@@ -2132,9 +2158,9 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
 
                     return DropdownButtonFormField<String?>(
                       initialValue: _selectedAssignedTo != null && seenIds.contains(_selectedAssignedTo) ? _selectedAssignedTo : null,
-                      decoration: const InputDecoration(
-                        prefixIcon: Icon(Icons.person_outline),
-                        labelText: 'Přiřadit osobě',
+                      decoration: InputDecoration(
+                        prefixIcon: const Icon(Icons.person_outline),
+                        labelText: 'admin.task_field_assign_to'.tr(),
                         border: OutlineInputBorder(),
                       ),
                       items: dropdownItems,
@@ -2148,9 +2174,9 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                 TextFormField(
                   controller: _dueDateController,
                   readOnly: true,
-                  decoration: const InputDecoration(
-                    prefixIcon: Icon(Icons.calendar_today_outlined),
-                    labelText: 'Termín',
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.calendar_today_outlined),
+                    labelText: 'admin.task_field_due_date'.tr(),
                     border: OutlineInputBorder(),
                     suffixIcon: Icon(Icons.calendar_today_outlined),
                   ),
@@ -2162,7 +2188,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                     }
                   },
                   validator: (v) =>
-                      (v == null || v.trim().isEmpty) ? 'Vyberte termín' : null,
+                      (v == null || v.trim().isEmpty) ? 'admin.validation_datetime_required_short'.tr() : null,
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(

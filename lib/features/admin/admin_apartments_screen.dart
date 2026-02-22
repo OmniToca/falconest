@@ -1649,7 +1649,9 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
   /// Načtení služeb bytu (Override Pattern Tier 2): načte záznamy z apartment_services pro tento byt
   /// a sloučí je s katalogem tenant_services do _servicesState pro předvyplnění Tabu 2.
   Future<void> _loadServicesState(List<TenantServiceModel> tenantServices) async {
-    final rows = await fetchByApartmentId(widget.apartment.id);
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return;
+    final rows = await fetchByApartmentId(widget.apartment.id, tenantId);
     final byServiceId = {for (final r in rows) r.serviceId: r};
     if (!mounted) return;
     setState(() {

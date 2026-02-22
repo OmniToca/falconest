@@ -142,6 +142,7 @@
 | tenants | notes | text | YES |
 | tenants | is_active | boolean | YES |
 | tenants | trial_ends_at | date | YES |
+| tenants | paid_until | timestamp with time zone | YES – Zaplaceno do / Kill Switch; přístup blokován pokud today > paid_until |
 | tenants | system_announcement | text | YES |
 | tenants | discount_percentage | integer | NO (default 0, CHECK 0–100) |
 | tenants | deleted_at | timestamp with time zone | YES – Soft delete; NULL = aktivní |
@@ -157,6 +158,15 @@
 | invoices | invoice_pdf_url | text | YES – odkaz na stažení PDF (Stripe nebo náš systém) |
 | invoices | created_at | timestamp with time zone | NO |
 | invoices | paid_at | timestamp with time zone | YES – kdy byla faktura zaplacena |
+| tenant_wallets | tenant_id | uuid | NO (PK, FK → tenants) – jeden řádek na tenanta, předplacená peněženka kreditů. Záznamy vznikají automaticky pomocí triggeru AFTER INSERT na tabulce tenants. |
+| tenant_wallets | balance | integer | NO (default 0) – aktuální stav kreditů |
+| tenant_wallets | updated_at | timestamp with time zone | YES (default now()) |
+| wallet_transactions | id | uuid | NO |
+| wallet_transactions | tenant_id | uuid | NO (FK → tenants) – účetní kniha, append-only |
+| wallet_transactions | amount | integer | NO – kladné (dobití), záporné (útrata) |
+| wallet_transactions | transaction_type | text | NO – např. 'TOP_UP', 'USAGE_AUTO_TASKS' |
+| wallet_transactions | reference_id | text | YES – vazba na Stripe payment ID nebo log generování |
+| wallet_transactions | created_at | timestamp with time zone | YES (default now()) |
 | tenant_services | id | uuid | NO |
 | tenant_services | tenant_id | uuid | NO |
 | tenant_services | name | text | NO |
@@ -219,6 +229,23 @@ Tabulka **task_categories** je **platformový globální číselník** typů úk
 ### Soft delete (deleted_at)
 
 U tabulek **tasks**, **apartments**, **profiles**, **reservations**, **tenant_services**, **zones**, **apartment_owners**, **tenants** a **tenant_modules** sloupec **deleted_at** (timestamptz, nullable) znamená „měkké smazání“: místo fyzického DELETE se volá UPDATE s `deleted_at = now()`. Záznamy s `deleted_at IS NOT NULL` aplikace při načítání vynechává (filtr `.is_('deleted_at', null)`). Audit záznam (SOFT_DELETE) se zapisuje do `audit_logs`.
+
+---
+
+### Prepaid Wallet (Předplacená peněženka) – kredity pro prémiové moduly
+
+Systém **tenant_wallets** + **wallet_transactions** slouží pro předplacené kredity (např. generování úkolů přes automatizaci). Klienti si kupují balíčky kreditů; každé použití (např. „Generovat návrhy úkolů“) strhne určitý počet kreditů.
+
+**Princip:**
+- **tenant_wallets** – jeden řádek na tenanta; sloupec `balance` drží aktuální stav kreditů. Záznamy vznikají automaticky pomocí triggeru `trg_tenant_wallet_after_insert` (AFTER INSERT) na tabulce `tenants`; stávající tenanty doplňuje zpětně migrace (backfill).
+- **wallet_transactions** – append-only účetní kniha; každá změna (dobití TOP_UP, útrata USAGE_AUTO_TASKS) vytvoří nový záznam s kladnou nebo zápornou částkou.
+
+**Bezpečnost a Race Condition:**
+- Klient (admin, manager) smí **pouze číst** (SELECT) vlastní peněženku a transakce – zákaz INSERT/UPDATE z aplikace!
+- Jakékoli stržení kreditů probíhá **výhradně přes RPC funkci** `deduct_wallet_credits()`, která používá zámek řádku (`FOR UPDATE`) pro ochranu proti souběhu (více dispečerů generuje úkoly současně).
+- Doplňování kreditů (TOP_UP) provádí Super Admin nebo Stripe webhook přes service_role / SECURITY DEFINER funkci.
+
+**RLS:** Role admin a manager smí pouze SELECT vlastní data; super_admin a service_role mají plná práva. Na tenant_wallets není povolena přímá INSERT/UPDATE pro běžné uživatele.
 
 ---
 

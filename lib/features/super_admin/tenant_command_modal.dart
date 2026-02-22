@@ -16,6 +16,7 @@ import 'package:falconest/features/settings/pricing_type_label.dart';
 import 'package:falconest/features/super_admin/module_subscription_dialog.dart';
 import 'package:falconest/features/super_admin/providers/all_tenants_provider.dart';
 import 'package:falconest/features/super_admin/providers/tenant_detail_provider.dart';
+import 'package:falconest/features/super_admin/tenant_detail_screen.dart';
 import 'package:falconest/features/super_admin/services/super_admin_service.dart';
 
 /// Velký modální dialog s přehledem tenanta („Smart Modal“) – Apple/Linear styl.
@@ -36,7 +37,7 @@ class TenantCommandModal extends ConsumerStatefulWidget {
     return showGeneralDialog<void>(
       context: context,
       barrierDismissible: true,
-      barrierLabel: 'Tenant',
+      barrierLabel: 'super_admin.barrier_tenant'.tr(),
       barrierColor: Colors.black54,
       transitionDuration: const Duration(milliseconds: 250),
       pageBuilder: (_, _, _) => const SizedBox.shrink(),
@@ -171,6 +172,7 @@ class _TenantCommandModalState extends ConsumerState<TenantCommandModal> {
   }
 
   /// Dialog před kaskádovým vypnutím hlavního modulu a jeho aktivních sub-modulů.
+  /// useRootNavigator: true – aby dialog byl nad rozmazaným pozadím modalu a byl klikatelný.
   Future<bool?> _showDeactivateCascadeDialog(
     BuildContext context,
     ModuleModel mainModule,
@@ -178,6 +180,7 @@ class _TenantCommandModalState extends ConsumerState<TenantCommandModal> {
   ) {
     return showDialog<bool>(
       context: context,
+      useRootNavigator: true,
       builder: (ctx) => AlertDialog(
         title: Text('super_admin.module_deactivate_cascade_title'.tr()),
         content: Text('super_admin.module_deactivate_cascade_body'.tr()),
@@ -271,6 +274,7 @@ class _TenantCommandModalState extends ConsumerState<TenantCommandModal> {
   ) {
     return showDialog<bool>(
       context: context,
+      useRootNavigator: true,
       builder: (ctx) => AlertDialog(
         title: Text('super_admin.submodule_dependency_title'.tr()),
         content: Text('super_admin.submodule_dependency_body'.tr()),
@@ -370,18 +374,6 @@ class _TenantCommandModalState extends ConsumerState<TenantCommandModal> {
         ),
       );
     }
-  }
-
-  void _onEditInfo() {
-    showDialog<void>(
-      context: context,
-      builder: (_) => _TenantEditInfoDialog(
-        tenantId: widget.tenantId,
-        onSaved: () {
-          ref.invalidate(tenantDetailProvider(widget.tenantId));
-        },
-      ),
-    );
   }
 
   /// Smazání agentury z modalu: potvrzení → smazání invitations a tenanta → zavření modalu a invalidace seznamu.
@@ -503,14 +495,22 @@ class _TenantCommandModalState extends ConsumerState<TenantCommandModal> {
             ),
           ),
           IconButton(
-            icon: const Icon(Icons.edit_outlined),
-            tooltip: 'super_admin.edit_info'.tr(),
-            onPressed: _onEditInfo,
-          ),
-          IconButton(
             icon: Icon(Icons.delete_outline, color: Colors.red.shade700),
             tooltip: 'super_admin.menu_delete'.tr(),
             onPressed: _onDeleteTenant,
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton.icon(
+            onPressed: () {
+              Navigator.of(context).pop();
+              TenantDetailModal.show(context, widget.tenantId, tenantName: widget.tenantName);
+            },
+            icon: const Icon(Icons.visibility, size: 20),
+            label: Text('super_admin.tenant_detail_btn'.tr()),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
           ),
           const SizedBox(width: 8),
           FilledButton.icon(

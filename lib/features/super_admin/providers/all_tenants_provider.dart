@@ -9,7 +9,8 @@ import 'package:falconest/features/super_admin/providers/tenant_detail_provider.
 /// [notes] je nullable – sloupec může chybět nebo být prázdný.
 /// [is_active] – false = agentura pozastavena (kill-switch).
 /// [billingInfo], [pricePerApartment], [currency] – pro vyhledávání (IČO, firma) a výpočet MRR.
-/// [trial_ends_at] – konec zkušební doby; když v budoucnosti, zobrazíme štítek „Tester“.
+/// [trial_ends_at] – konec zkušební doby; když v budoucnosti, zobrazíme štítek „V Trialu“.
+/// [paid_until] – zaplaceno do; když v minulosti → badge „Nezaplaceno“.
 /// [systemAnnouncement] – text Globálního Megafonu; neprázdný = aktuálně se vysílá všem.
 class TenantRow {
   const TenantRow({
@@ -19,6 +20,7 @@ class TenantRow {
     this.notes,
     this.isActive = true,
     this.trialEndsAt,
+    this.paidUntil,
     this.systemAnnouncement,
     this.billingInfo,
     this.pricePerApartment,
@@ -33,6 +35,8 @@ class TenantRow {
   final String? notes;
   final bool isActive;
   final DateTime? trialEndsAt;
+  /// Zaplaceno do – Kill Switch; v minulosti → badge „Nezaplaceno“.
+  final DateTime? paidUntil;
   final String? systemAnnouncement;
   final BillingInfo? billingInfo;
   final num? pricePerApartment;
@@ -74,12 +78,14 @@ class InvitationRow {
 ///
 /// [latestActivityAt] = MAX(profiles.last_sign_in_at) pro tento tenant (Health / Traffic Light).
 /// [moduleActiveCount] / [moduleTotalCount] = Adoption Score (např. 5/9 Aktivní).
+/// [activeUsersCount] = pouze profily (deleted_at IS NULL). [pendingInvitationsCount] = čekající pozvánky.
 class TenantWithStatus {
   const TenantWithStatus({
     required this.tenant,
     this.invitation,
     required this.hasAdminProfile,
-    this.teamCount,
+    this.activeUsersCount,
+    this.pendingInvitationsCount = 0,
     this.apartmentCount,
     this.latestActivityAt,
     this.moduleActiveCount = 0,
@@ -92,8 +98,14 @@ class TenantWithStatus {
   /// True = v profiles existuje alespoň jeden uživatel s role admin/manager pro tento tenant.
   final bool hasAdminProfile;
 
-  /// Počet členů týmu (profiles) u této agentury. Null = nezjištěno.
-  final int? teamCount;
+  /// Počet aktivních uživatelů (profiles s deleted_at IS NULL). Null = nezjištěno.
+  final int? activeUsersCount;
+
+  /// Počet čekajících pozvánek (invitations). Zobrazuje se jako (+N).
+  final int pendingInvitationsCount;
+
+  /// Zpětná kompatibilita: aktivní uživatelé (null → 0).
+  int? get teamCount => activeUsersCount;
 
   /// Počet apartmánů u této agentury. Null = nezjištěno.
   final int? apartmentCount;
@@ -182,6 +194,11 @@ TenantRow _parseTenant(Map<String, dynamic> map) {
   if (trialEndsAtRaw != null) {
     trialEndsAt = DateTime.tryParse(trialEndsAtRaw.toString());
   }
+  final paidUntilRaw = map['paid_until'];
+  DateTime? paidUntil;
+  if (paidUntilRaw != null) {
+    paidUntil = DateTime.tryParse(paidUntilRaw.toString());
+  }
   final systemAnnouncementRaw = map['system_announcement'];
   final systemAnnouncement = systemAnnouncementRaw is String
       ? (systemAnnouncementRaw.trim().isEmpty ? null : systemAnnouncementRaw.trim())
@@ -221,6 +238,7 @@ TenantRow _parseTenant(Map<String, dynamic> map) {
     notes: notes,
     isActive: isActive,
     trialEndsAt: trialEndsAt,
+    paidUntil: paidUntil,
     systemAnnouncement: systemAnnouncement,
     billingInfo: billingInfo,
     pricePerApartment: pricePerApartment,
@@ -455,7 +473,7 @@ final tenantsWithStatusProvider =
   try {
     final tenantsRes = await client
         .from('tenants')
-        .select('id, name, is_active, trial_ends_at, system_announcement, billing_info, price_per_apartment, currency, discount_percentage')
+        .select('id, name, is_active, trial_ends_at, paid_until, system_announcement, billing_info, price_per_apartment, currency, discount_percentage')
         .isFilter('deleted_at', null);
     final tenantList = _toList(tenantsRes);
     tenants = [];
@@ -570,21 +588,20 @@ final tenantsWithStatusProvider =
     final matches =
         invitations.where((inv) => inv.tenantId == tenant.id).toList();
     final inv = matches.isEmpty ? null : matches.first;
-    // Tým = profily (přiřazení uživatelé) + nevyřízené pozvánky
-    final profilesCount = profilesCountByTenant[tenant.id] ?? 0;
-    final invCount = invitationCountByTenant[tenant.id] ?? 0;
-    final teamCount = profilesCount + invCount;
+    final activeUsersCount = profilesCountByTenant[tenant.id] ?? 0;
+    final pendingInvitationsCount = invitationCountByTenant[tenant.id] ?? 0;
     final apartmentCount = apartmentCounts[tenant.id];
     if (kDebugMode) {
       // ignore: avoid_print
       print(
-          'DEBUG FETCH: Tenant ${tenant.id} -> Apartments: $apartmentCount, Profiles: $profilesCount, Invitations: $invCount, teamCount: $teamCount');
+          'DEBUG FETCH: Tenant ${tenant.id} -> Apartments: $apartmentCount, activeUsers: $activeUsersCount, pendingInv: $pendingInvitationsCount');
     }
     result.add(TenantWithStatus(
       tenant: tenant,
       invitation: inv,
       hasAdminProfile: tenantIdsWithAdmin.contains(tenant.id),
-      teamCount: teamCount,
+      activeUsersCount: activeUsersCount,
+      pendingInvitationsCount: pendingInvitationsCount,
       apartmentCount: apartmentCount,
       latestActivityAt: latestActivityByTenant[tenant.id],
       moduleActiveCount: moduleActiveByTenant[tenant.id] ?? 0,

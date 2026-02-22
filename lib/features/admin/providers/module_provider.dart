@@ -39,6 +39,14 @@ final tenantActiveModuleIdsProvider =
   return _fetchActiveModuleIdsForTenant(tenantId);
 });
 
+/// Množina UUID modulů, u kterých je cancel_at_period_end = true (ukončí se na konci měsíce).
+/// Používá se pro zobrazení varovného badge v tenant_detail_screen.
+final tenantModuleCancelAtPeriodEndIdsProvider =
+    FutureProvider.family<Set<String>, String>((ref, tenantId) async {
+  if (tenantId.isEmpty) return {};
+  return _fetchCancelAtPeriodEndModuleIdsForTenant(tenantId);
+});
+
 /// Načte aktivní moduly tenanta a vrátí jejich klíče (join s [modules] pro key).
 ///
 /// Filtruje: deleted_at IS NULL (soft delete), valid_until v budoucnosti nebo null,
@@ -89,6 +97,7 @@ DateTime? _parseOptionalDateTime(Object? value) {
 /// Načte množinu UUID modulů aktivních pro tenanta (pro detail obrazovku – přepínače podle module.id).
 ///
 /// Stejná logika jako _fetchActiveModuleKeysForTenant: filtr deleted_at + platnost valid_until/trial_ends_at.
+/// Moduly s cancel_at_period_end = true zůstávají v množině (stále aktivní do konce období).
 Future<Set<String>> _fetchActiveModuleIdsForTenant(String tenantId) async {
   try {
     final res = await SupabaseService.client
@@ -105,6 +114,31 @@ Future<Set<String>> _fetchActiveModuleIdsForTenant(String tenantId) async {
       if (!_isModuleValidNow(map['valid_until'], map['trial_ends_at'], now)) {
         continue;
       }
+      final id = (map['module_id']?.toString().trim());
+      if (id != null && id.isNotEmpty) ids.add(id);
+    }
+    return ids;
+  } catch (_) {
+    return {};
+  }
+}
+
+/// Načte množinu UUID modulů s cancel_at_period_end = true (odložené zrušení na konec období).
+Future<Set<String>> _fetchCancelAtPeriodEndModuleIdsForTenant(String tenantId) async {
+  try {
+    final res = await SupabaseService.client
+        .from('tenant_modules')
+        .select('module_id, cancel_at_period_end, valid_until, trial_ends_at')
+        .eq('tenant_id', tenantId)
+        .isFilter('deleted_at', null)
+        .eq('cancel_at_period_end', true);
+    final list = res as List;
+    final now = DateTime.now().toUtc();
+    final ids = <String>{};
+    for (final e in list) {
+      final map = e is Map ? e as Map<String, dynamic> : null;
+      if (map == null) continue;
+      if (!_isModuleValidNow(map['valid_until'], map['trial_ends_at'], now)) continue;
       final id = (map['module_id']?.toString().trim());
       if (id != null && id.isNotEmpty) ids.add(id);
     }

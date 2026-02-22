@@ -17,6 +17,7 @@ import 'package:falconest/features/auth/pin/pin_verify_screen.dart';
 import 'package:falconest/features/auth/set_password_screen.dart';
 import 'package:falconest/features/auth/update_password_screen.dart';
 import 'package:falconest/features/auth/waiting_room_screen.dart';
+import 'package:falconest/features/auth/payment_required_screen.dart';
 import 'package:falconest/features/auth/suspended_screen.dart';
 // import 'package:falconest/features/payment/payment_cancel_screen.dart';
 // import 'package:falconest/features/payment/payment_success_screen.dart';
@@ -106,6 +107,11 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         path: '/suspended',
         name: 'suspended',
         builder: (context, state) => const SuspendedScreen(),
+      ),
+      GoRoute(
+        path: '/payment-required',
+        name: 'paymentRequired',
+        builder: (context, state) => const PaymentRequiredScreen(),
       ),
       // Platební brána zatím odložena – routy pro budoucí Stripe success/cancel
       // GoRoute(
@@ -339,6 +345,24 @@ Future<String?> _redirectLogic(
   final isTenantActive = authNotifier.state.isTenantActive;
   if (isTenantActive == false && location != '/suspended') {
     return '/suspended';
+  }
+
+  // Globální stopka: Zamkne aplikaci všem kromě Super Admina, pokud vypršelo paid_until.
+  // Super Admin má vždy absolutní přístup. NULL = neomezeno. Uživatel na /payment-required
+  // po prodloužení platby (refreshTenantPaymentStatus) se dostane zpět na Dashboard.
+  // paid_until = konec zaplaceného dne; zamykat až po 23:59:59 (ne už o půlnoci).
+  final paidUntil = authNotifier.state.paidUntil;
+  final now = DateTime.now().toUtc();
+  final endOfPaidDay = paidUntil != null
+      ? DateTime.utc(paidUntil.year, paidUntil.month, paidUntil.day, 23, 59, 59)
+      : null;
+  if (role != 'super_admin') {
+    if (endOfPaidDay != null && now.isAfter(endOfPaidDay) && location != '/payment-required') {
+      return '/payment-required';
+    }
+    if (location == '/payment-required' && (endOfPaidDay == null || !now.isAfter(endOfPaidDay))) {
+      return _getRedirectTargetForRole(authNotifier, pinUnlocked);
+    }
   }
 
   // Pravidlo 1a: Přihlášený na /auth-loading – profil už načten, přesměruj podle role

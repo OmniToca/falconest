@@ -12,11 +12,12 @@ import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/current_tenant_name_provider.dart';
-import 'package:falconest/features/settings/settings_screen.dart';
+import 'package:falconest/features/super_admin/super_admin_billing_modal.dart';
+import 'package:falconest/features/super_admin/super_admin_settings_modal.dart';
 import 'package:falconest/features/super_admin/audit_log_screen.dart';
 import 'package:falconest/features/super_admin/providers/all_tenants_provider.dart';
 import 'package:falconest/features/super_admin/providers/dashboard_mrr_provider.dart';
-import 'package:falconest/features/super_admin/tenant_command_modal.dart';
+import 'package:falconest/features/super_admin/tenant_detail_screen.dart';
 
 /// Stav vyhledávacího řetězce na nástěnce Super Admina (fulltext v názvech agentur).
 final superAdminSearchQueryProvider = StateProvider<String>((ref) => '');
@@ -54,9 +55,14 @@ class SuperAdminDashboard extends ConsumerWidget {
             onPressed: () => AuditLogModal.show(context),
           ),
           IconButton(
+            icon: const Icon(Icons.receipt_long),
+            tooltip: 'super_admin.billing_menu'.tr(),
+            onPressed: () => SuperAdminBillingModal.show(context),
+          ),
+          IconButton(
             icon: const Icon(Icons.settings),
             tooltip: 'settings.menu_settings'.tr(),
-            onPressed: () => SettingsModal.show(context),
+            onPressed: () => SuperAdminSettingsModal.show(context),
           ),
           IconButton(
             icon: const Icon(Icons.logout),
@@ -1070,7 +1076,7 @@ class _EmptyState extends StatelessWidget {
 }
 
 /// Kompaktní karta agentury („Compact Hybrid“): 4 řádky, vysoká hustota informací.
-/// Kontejner: bílá, radius 16, jemný stín, auto výška. Klik na tělo → TenantCommandModal.
+/// Kontejner: bílá, radius 16, jemný stín, auto výška. Klik na tělo → TenantDetailModal (kompletní detail).
 class _TenantCard extends StatelessWidget {
   const _TenantCard({
     required this.item,
@@ -1082,13 +1088,22 @@ class _TenantCard extends StatelessWidget {
   final WidgetRef ref;
   final String mrrFormatted;
 
-  /// Status badge: Aktivní = zelená, Čeká = oranžová, Pozastaveno = šedá.
-  static ({Color bg, Color fg, String labelKey}) _statusBadgeStyle(bool isSuspended, bool isAwaiting) {
-    if (isSuspended) {
+  /// Chytrý semafor: Pozastaveno → Nezaplaceno → V Trialu → Aktivní.
+  static ({Color bg, Color fg, String labelKey}) _statusBadgeStyle(TenantRow tenant) {
+    if (!tenant.isActive) {
       return (bg: Colors.grey.shade200, fg: Colors.grey.shade800, labelKey: 'super_admin.status_suspended');
     }
-    if (isAwaiting) {
-      return (bg: Colors.orange.shade100, fg: Colors.orange.shade800, labelKey: 'super_admin.status_waiting');
+    final now = DateTime.now().toUtc();
+    if (tenant.paidUntil != null) {
+      final endOfPaidDay = DateTime.utc(
+        tenant.paidUntil!.year, tenant.paidUntil!.month, tenant.paidUntil!.day, 23, 59, 59,
+      );
+      if (now.isAfter(endOfPaidDay)) {
+        return (bg: Colors.red.shade100, fg: Colors.red.shade800, labelKey: 'super_admin.billing_unpaid');
+      }
+    }
+    if (tenant.trialEndsAt != null && tenant.trialEndsAt!.isAfter(now)) {
+      return (bg: Colors.green.shade100, fg: Colors.green.shade800, labelKey: 'super_admin.billing_in_trial');
     }
     return (bg: Colors.green.shade100, fg: Colors.green.shade800, labelKey: 'super_admin.status_active');
   }
@@ -1115,6 +1130,12 @@ class _TenantCard extends StatelessWidget {
     return null;
   }
 
+  /// Formátuje paid_until pro zobrazení (dd.MM.yyyy) nebo "Nenastaveno".
+  static String _formatPaidUntil(DateTime? d) {
+    if (d == null) return 'super_admin.billing_not_set'.tr();
+    return '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}.${d.year}';
+  }
+
   /// Health (Traffic Light): < 24h zelená (hodiny), 24h–7d amber (dny), > 7d nebo null červená.
   static ({Color dotColor, Color textColor, String labelKey, Map<String, String>? args}) _healthStyle(DateTime? latestActivityAt) {
     if (latestActivityAt == null) {
@@ -1137,11 +1158,10 @@ class _TenantCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tenant = item.tenant;
-    final teamCount = item.teamCount ?? 0;
+    final activeUsersCount = item.activeUsersCount ?? 0;
+    final pendingInvitationsCount = item.pendingInvitationsCount;
     final apartmentCount = item.apartmentCount ?? 0;
-    final isSuspended = !tenant.isActive;
-    final isAwaiting = item.isAwaitingManager;
-    final status = _statusBadgeStyle(isSuspended, isAwaiting);
+    final status = _statusBadgeStyle(tenant);
     final health = _healthStyle(item.latestActivityAt);
     final activeMod = item.moduleActiveCount;
     final totalMod = item.moduleTotalCount;
@@ -1162,7 +1182,7 @@ class _TenantCard extends StatelessWidget {
         color: Colors.transparent,
         child: InkWell(
           borderRadius: BorderRadius.circular(20),
-          onTap: () => TenantCommandModal.show(context, tenantId: tenant.id, tenantName: tenant.name),
+          onTap: () => TenantDetailModal.show(context, tenant.id, tenantName: tenant.name),
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
@@ -1220,7 +1240,7 @@ class _TenantCard extends StatelessWidget {
                       children: [
                         Icon(Icons.people_outline, size: 16, color: Colors.grey.shade600),
                         Text(
-                          ' $teamCount',
+                          ' $activeUsersCount${pendingInvitationsCount > 0 ? ' (+$pendingInvitationsCount)' : ''}',
                           style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey.shade800),
                         ),
                         const SizedBox(width: 12),
@@ -1250,52 +1270,70 @@ class _TenantCard extends StatelessWidget {
                       ],
                     ),
                     const Spacer(),
-                    Row(
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
                       mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.baseline,
-                      textBaseline: TextBaseline.alphabetic,
                       children: [
-                        Text(
-                          mrrFormatted,
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w900,
-                            color: Colors.green.shade800,
-                          ),
-                        ),
-                        if (tenant.discountPercentage > 0) ...[
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: Colors.green.shade100,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.green.shade300),
-                            ),
-                            child: Text(
-                              'super_admin.discount_badge_percent'.tr(namedArgs: {'percent': '${tenant.discountPercentage}'}),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.baseline,
+                          textBaseline: TextBaseline.alphabetic,
+                          children: [
+                            Text(
+                              mrrFormatted,
                               style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
+                                fontSize: 22,
+                                fontWeight: FontWeight.w900,
                                 color: Colors.green.shade800,
                               ),
                             ),
-                          ),
-                        ],
-                        const SizedBox(width: 8),
+                            if (tenant.discountPercentage > 0) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.green.shade100,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: Colors.green.shade300),
+                                ),
+                                child: Text(
+                                  'super_admin.discount_badge_percent'.tr(namedArgs: {'percent': '${tenant.discountPercentage}'}),
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.green.shade800,
+                                  ),
+                                ),
+                              ),
+                            ],
+                            const SizedBox(width: 8),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                CircleAvatar(
+                                  radius: 4,
+                                  backgroundColor: health.dotColor,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  health.args != null
+                                      ? health.labelKey.tr(namedArgs: health.args!)
+                                      : health.labelKey.tr(),
+                                  style: TextStyle(fontSize: 11, color: Colors.grey.shade700),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            CircleAvatar(
-                              radius: 4,
-                              backgroundColor: health.dotColor,
-                            ),
+                            Icon(Icons.calendar_today, size: 12, color: Colors.grey.shade600),
                             const SizedBox(width: 4),
                             Text(
-                              health.args != null
-                                  ? health.labelKey.tr(namedArgs: health.args!)
-                                  : health.labelKey.tr(),
-                              style: TextStyle(fontSize: 11, color: Colors.grey.shade700),
+                              '${'super_admin.billing_paid_until'.tr()}: ${_formatPaidUntil(tenant.paidUntil)}',
+                              style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
                             ),
                           ],
                         ),

@@ -2,12 +2,13 @@ import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/models/apartment_service_model.dart';
 
 /// Načte všechny záznamy apartment_services pro daný byt (pro předvyplnění Tabu 2 v dialogu).
-Future<List<ApartmentServiceRow>> fetchByApartmentId(String apartmentId) async {
-  if (apartmentId.isEmpty) return [];
+Future<List<ApartmentServiceRow>> fetchByApartmentId(String apartmentId, String tenantId) async {
+  if (apartmentId.isEmpty || tenantId.isEmpty) return [];
   final res = await SupabaseService.client
       .from('apartment_services')
       .select()
-      .eq('apartment_id', apartmentId);
+      .eq('apartment_id', apartmentId)
+      .eq('tenant_id', tenantId); // Defense in depth: Explicitní multi-tenant izolace.
   final list = res as List;
   return list
       .map((e) => ApartmentServiceRow.fromJson(e as Map<String, dynamic>))

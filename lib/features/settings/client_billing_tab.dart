@@ -4,11 +4,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/services/audit_log_service.dart';
+import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/models/module_model.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
 import 'package:falconest/features/admin/utils/module_icon_mapper.dart';
+import 'package:falconest/features/settings/pricing_type_label.dart';
 import 'package:falconest/features/super_admin/providers/tenant_detail_provider.dart';
+import 'package:falconest/features/super_admin/services/super_admin_service.dart';
 
 /// Záložka Fakturace v klientském Nastavení – fakturační údaje, přehled předplatného a historie faktur.
 ///
@@ -39,6 +43,10 @@ class _ClientBillingTabState extends ConsumerState<ClientBillingTab>
   bool _initialized = false;
   bool _dirty = false;
   bool _saving = false;
+
+  /// Optimistický stav přepínačů modulů – zobrazí se okamžitě před reload providera.
+  final Map<String, bool> _pendingToggles = {};
+  String? _togglingModuleId;
 
   @override
   void initState() {
@@ -392,7 +400,8 @@ class _ClientBillingTabState extends ConsumerState<ClientBillingTab>
     );
   }
 
-  /// Sekce „Moje předplatné“ – aktivní moduly jako Chips + tlačítko Spravovat.
+  /// Sekce „Moje předplatné“ – Marketplace mřížka VŠECH modulů s rozlišením aktivní/neaktivní.
+  /// Iterujeme přes celý katalog modulů; u každého dynamicky zjišťujeme isActive z tenant_modules.
   Widget _buildSubscriptionSection(
     BuildContext context,
     WidgetRef ref,
@@ -401,6 +410,9 @@ class _ClientBillingTabState extends ConsumerState<ClientBillingTab>
   ) {
     final activeKeys = activeKeysAsync.valueOrNull ?? {};
     final modules = modulesAsync.valueOrNull ?? [];
+    final displayCurrency =
+        ref.watch(authNotifierProvider).state.preferredCurrency ?? 'EUR';
+    final currencies = ref.watch(currenciesProvider).valueOrNull ?? [];
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -426,38 +438,51 @@ class _ClientBillingTabState extends ConsumerState<ClientBillingTab>
                 ),
           ),
           const SizedBox(height: 16),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: activeKeys.isEmpty
-                ? [
-                    Text(
-                      'common.none'.tr(),
-                      style: TextStyle(color: Colors.grey.shade600),
-                    ),
-                  ]
-                : (activeKeys.map((key) {
-                    ModuleModel? found;
-                    for (final m in modules) {
-                      if (m.key == key) {
-                        found = m;
-                        break;
-                      }
-                    }
-                    final label = found != null
-                        ? ModuleIconMapper.getLabelKey(found.key).tr()
-                        : key;
-                    return Chip(
-                      avatar: Icon(
-                        Icons.check_circle,
-                        color: Colors.green.shade600,
-                        size: 18,
+          if (modules.isEmpty)
+            Text(
+              'common.none'.tr(),
+              style: TextStyle(color: Colors.grey.shade600),
+            )
+          else
+            LayoutBuilder(
+              builder: (_, constraints) {
+                const crossAxisCount = 3;
+                const spacing = 12.0;
+                final width =
+                    (constraints.maxWidth - spacing * (crossAxisCount - 1)) /
+                        crossAxisCount;
+                return Wrap(
+                  spacing: spacing,
+                  runSpacing: spacing,
+                  children: modules.map((module) {
+                    final baseActive = activeKeys.contains(module.key);
+                    final isActive = _pendingToggles.containsKey(module.id)
+                        ? _pendingToggles[module.id]!
+                        : baseActive;
+                    final isToggling = _togglingModuleId == module.id;
+                    final priceStr = module.price != null && currencies.isNotEmpty
+                        ? CurrencyService.formatPrice(
+                            module.price!.toDouble(),
+                            displayCurrency,
+                            currencies,
+                          )
+                        : (module.price != null
+                            ? '${module.price!.toStringAsFixed(2)} €'
+                            : '—');
+                    return SizedBox(
+                      width: width,
+                      child: _BillingModuleCard(
+                        module: module,
+                        isActive: isActive,
+                        isToggling: isToggling,
+                        priceStr: priceStr,
+                        onModuleToggle: () => _onModuleToggle(module, isActive),
                       ),
-                      label: Text(label),
-                      backgroundColor: Colors.green.shade50,
                     );
-                  }).toList()),
-          ),
+                  }).toList(),
+                );
+              },
+            ),
           const SizedBox(height: 16),
           FilledButton.icon(
             onPressed: () {
@@ -477,6 +502,290 @@ class _ClientBillingTabState extends ConsumerState<ClientBillingTab>
         ],
       ),
     );
+  }
+
+  /// Reálné přepnutí modulu – zapne/vypne v DB, včetně kontroly závislostí.
+  /// Při zapínání sub-modulu bez aktivního rodiče nabídne aktivaci obou.
+  /// Při vypínání hlavního modulu s aktivními sub-moduly nabídne kaskádové vypnutí.
+  Future<void> _onModuleToggle(ModuleModel module, bool currentlyActive) async {
+    if (_togglingModuleId != null) return;
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return;
+
+    final newValue = !currentlyActive;
+    final modules = ref.read(allModulesProvider).valueOrNull ?? [];
+    final activeIds = ref.read(tenantActiveModuleIdsProvider(tenantId)).valueOrNull ?? {};
+
+    // Při zapínání sub-modulu: pokud rodič není aktivní, nabídnout aktivaci obou.
+    if (newValue &&
+        module.parentModuleKey != null &&
+        module.parentModuleKey!.isNotEmpty) {
+      ModuleModel? parent;
+      for (final m in modules) {
+        if (m.key == module.parentModuleKey) {
+          parent = m;
+          break;
+        }
+      }
+      if (parent != null && !activeIds.contains(parent.id)) {
+        final ok = await _showSubmoduleDependencyDialog(context, module, parent);
+        if (!mounted) return;
+        if (ok != true) return;
+        await _activateBothModules(tenantId, parent, module);
+        return;
+      }
+    }
+
+    // Při vypínání hlavního modulu: pokud má aktivní sub-moduly, nabídnout kaskádové vypnutí.
+    if (!newValue) {
+      final activeDependents = modules
+          .where((m) =>
+              m.parentModuleKey == module.key &&
+              m.parentModuleKey!.isNotEmpty &&
+              activeIds.contains(m.id))
+          .toList();
+      if (activeDependents.isNotEmpty) {
+        final ok = await _showDeactivateCascadeDialog(context, module, activeDependents);
+        if (!mounted) return;
+        if (ok != true) return;
+        await _deactivateCascade(tenantId, module, activeDependents);
+        return;
+      }
+    }
+
+    setState(() {
+      _pendingToggles[module.id] = newValue;
+      _togglingModuleId = module.id;
+    });
+    try {
+      await SuperAdminService.toggleModule(tenantId, module.id, newValue);
+      if (newValue) {
+        await AuditLogService.log(
+          tenantId: tenantId,
+          userId: SupabaseService.client.auth.currentUser?.id,
+          actionType: 'MODULE_ACTIVATED',
+          tableName: 'tenant_modules',
+          recordId: module.id,
+          details: {'module_key': module.key},
+        );
+      } else {
+        await AuditLogService.log(
+          tenantId: tenantId,
+          userId: SupabaseService.client.auth.currentUser?.id,
+          actionType: 'MODULE_DEACTIVATED',
+          tableName: 'tenant_modules',
+          recordId: module.id,
+          details: {'module_key': module.key},
+        );
+      }
+      if (!mounted) return;
+      ref.invalidate(activeModuleKeysProvider);
+      ref.invalidate(tenantActiveModuleIdsProvider(tenantId));
+      setState(() {
+        _pendingToggles.remove(module.id);
+        _togglingModuleId = null;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              newValue
+                  ? 'super_admin.module_enabled'.tr(namedArgs: {'name': ModuleIconMapper.getLabelKey(module.key).tr()})
+                  : 'super_admin.module_disabled'.tr(namedArgs: {'name': ModuleIconMapper.getLabelKey(module.key).tr()}),
+            ),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _pendingToggles.remove(module.id);
+        _togglingModuleId = null;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('super_admin.module_toggle_error'.tr(namedArgs: {'error': '$e'})),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  /// Dialog závislosti sub-modulu – rodič musí být aktivní. Nabídne aktivaci obou.
+  Future<bool?> _showSubmoduleDependencyDialog(
+    BuildContext context,
+    ModuleModel subModule,
+    ModuleModel parentModule,
+  ) {
+    return showDialog<bool>(
+      context: context,
+      useRootNavigator: true,
+      builder: (ctx) => AlertDialog(
+        title: Text('super_admin.submodule_dependency_title'.tr()),
+        content: Text('super_admin.submodule_dependency_body'.tr()),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text('common.cancel'.tr()),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text('super_admin.submodule_activate_both'.tr()),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Dialog před kaskádovým vypnutím hlavního modulu a jeho sub-modulů.
+  Future<bool?> _showDeactivateCascadeDialog(
+    BuildContext context,
+    ModuleModel mainModule,
+    List<ModuleModel> activeDependents,
+  ) {
+    return showDialog<bool>(
+      context: context,
+      useRootNavigator: true,
+      builder: (ctx) => AlertDialog(
+        title: Text('super_admin.module_deactivate_cascade_title'.tr()),
+        content: Text('super_admin.module_deactivate_cascade_body'.tr()),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text('common.cancel'.tr()),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+            child: Text('super_admin.module_deactivate_cascade_confirm'.tr()),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Aktivuje rodičovský modul a sub-modul.
+  Future<void> _activateBothModules(
+    String tenantId,
+    ModuleModel parent,
+    ModuleModel subModule,
+  ) async {
+    setState(() {
+      _pendingToggles[parent.id] = true;
+      _pendingToggles[subModule.id] = true;
+      _togglingModuleId = subModule.id;
+    });
+    try {
+      await SuperAdminService.toggleModule(tenantId, parent.id, true);
+      await AuditLogService.log(
+        tenantId: tenantId,
+        userId: SupabaseService.client.auth.currentUser?.id,
+        actionType: 'MODULE_ACTIVATED',
+        tableName: 'tenant_modules',
+        recordId: parent.id,
+        details: {'module_key': parent.key},
+      );
+      await SuperAdminService.toggleModule(tenantId, subModule.id, true);
+      await AuditLogService.log(
+        tenantId: tenantId,
+        userId: SupabaseService.client.auth.currentUser?.id,
+        actionType: 'MODULE_ACTIVATED',
+        tableName: 'tenant_modules',
+        recordId: subModule.id,
+        details: {'module_key': subModule.key},
+      );
+      if (!mounted) return;
+      ref.invalidate(activeModuleKeysProvider);
+      ref.invalidate(tenantActiveModuleIdsProvider(tenantId));
+      setState(() {
+        _pendingToggles.remove(parent.id);
+        _pendingToggles.remove(subModule.id);
+        _togglingModuleId = null;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('super_admin.module_enabled'.tr(namedArgs: {'name': ModuleIconMapper.getLabelKey(subModule.key).tr()})),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _pendingToggles.remove(parent.id);
+        _pendingToggles.remove(subModule.id);
+        _togglingModuleId = null;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('super_admin.module_toggle_error'.tr(namedArgs: {'error': '$e'})),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  /// Vypne hlavní modul a všechny aktivní sub-moduly.
+  Future<void> _deactivateCascade(
+    String tenantId,
+    ModuleModel mainModule,
+    List<ModuleModel> activeDependents,
+  ) async {
+    final toDeactivate = [mainModule, ...activeDependents];
+    for (final m in toDeactivate) {
+      setState(() {
+        _pendingToggles[m.id] = false;
+        _togglingModuleId = m.id;
+      });
+    }
+    try {
+      for (final m in toDeactivate) {
+        await SuperAdminService.toggleModule(tenantId, m.id, false);
+        await AuditLogService.log(
+          tenantId: tenantId,
+          userId: SupabaseService.client.auth.currentUser?.id,
+          actionType: 'MODULE_DEACTIVATED',
+          tableName: 'tenant_modules',
+          recordId: m.id,
+          details: {'module_key': m.key},
+        );
+      }
+      if (!mounted) return;
+      ref.invalidate(activeModuleKeysProvider);
+      ref.invalidate(tenantActiveModuleIdsProvider(tenantId));
+      for (final m in toDeactivate) {
+        setState(() => _pendingToggles.remove(m.id));
+      }
+      setState(() => _togglingModuleId = null);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('super_admin.module_disabled'.tr(namedArgs: {'name': ModuleIconMapper.getLabelKey(mainModule.key).tr()})),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      for (final m in toDeactivate) {
+        setState(() => _pendingToggles.remove(m.id));
+      }
+      setState(() => _togglingModuleId = null);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('super_admin.module_toggle_error'.tr(namedArgs: {'error': '$e'})),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   /// Sekce „Moje faktury“ – mock položky (2–3 statické).
@@ -536,5 +845,109 @@ class _ClientBillingTabState extends ConsumerState<ClientBillingTab>
         ),
       ],
     );
+  }
+}
+
+/// Karta modulu v sekci Moje předplatné – vizuálně klon z TenantCommandModal.
+/// Bílý kontejner, zaoblení 16, jemný stín. Ikona, název, cena + typ účtování, Switch.
+/// NEAKTIVNÍ moduly mají opacity 0.6. Bez ikony nastavení a bez textu o zkušební době.
+class _BillingModuleCard extends StatelessWidget {
+  const _BillingModuleCard({
+    required this.module,
+    required this.isActive,
+    required this.isToggling,
+    required this.priceStr,
+    required this.onModuleToggle,
+  });
+
+  final ModuleModel module;
+  final bool isActive;
+  final bool isToggling;
+  final String priceStr;
+  final VoidCallback onModuleToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final content = Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              if (isToggling)
+                SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else
+                Icon(
+                  ModuleIconMapper.getIcon(module.key),
+                  size: 28,
+                  color: isActive
+                      ? Theme.of(context).colorScheme.primary
+                      : Colors.grey,
+                ),
+              const Spacer(),
+              Switch(
+                value: isActive,
+                onChanged: isToggling ? null : (_) => onModuleToggle(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            ModuleIconMapper.getLabelKey(module.key).tr(),
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: isActive ? Colors.grey[900] : Colors.grey[600],
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            priceStr,
+            style: TextStyle(
+              fontSize: 12,
+              color: isActive ? Colors.grey[700] : Colors.grey[500],
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            getPricingTypeLabelKey(module.pricingType).tr(),
+            style: TextStyle(
+              fontSize: 11,
+              color: Colors.grey.shade600,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
+    );
+
+    return isActive
+        ? content
+        : Opacity(
+            opacity: 0.6,
+            child: content,
+          );
   }
 }

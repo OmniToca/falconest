@@ -26,7 +26,7 @@ class AuditLogModal {
     return showGeneralDialog<void>(
       context: hostContext,
       barrierDismissible: true,
-      barrierLabel: 'Audit Log',
+      barrierLabel: 'super_admin.barrier_audit'.tr(),
       barrierColor: Colors.black54,
       transitionDuration: const Duration(milliseconds: 250),
       pageBuilder: (_, _, _) => const SizedBox.shrink(),

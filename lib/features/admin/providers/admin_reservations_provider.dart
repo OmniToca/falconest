@@ -11,6 +11,12 @@ const List<String> reservationStatusValues = ['new', 'confirmed', 'checked_in', 
 /// Povolené hodnoty zdroje rezervace (reservation_source) – pro dropdown a CHECK v DB.
 const List<String> reservationSourceValues = ['Booking', 'Airbnb', 'Direct', 'Other'];
 
+/// Vrací i18n klíč pro štítek stavu rezervace (admin.reservation_status_*).
+String reservationStatusLabelKey(String status) {
+  if (reservationStatusValues.contains(status)) return 'admin.reservation_status_$status';
+  return 'admin.reservation_status_new';
+}
+
 /// Model rezervace z tabulky reservations pro Admin modul.
 ///
 /// Obsahuje id, apartment_id, guest_name, guest_phone, reservation_source,

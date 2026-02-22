@@ -87,6 +87,8 @@ class TenantDetailRow {
     this.currency,
     this.discountPercentage = 0,
     this.stripeCustomerId,
+    this.trialEndsAt,
+    this.paidUntil,
   });
 
   final String id;
@@ -101,6 +103,10 @@ class TenantDetailRow {
   final String? currency;
   /// Sleva v procentech (0–100) aplikovaná na MRR z placených modulů (mimo trial).
   final int discountPercentage;
+  /// Konec zkušební doby tenanta (tabulka tenants.trial_ends_at).
+  final DateTime? trialEndsAt;
+  /// Zaplaceno do – Kill Switch: přístup blokován pokud today > paidUntil.
+  final DateTime? paidUntil;
 
   factory TenantDetailRow.fromJson(Map<String, dynamic> map) {
     final rawBilling = map['billing_info'];
@@ -127,6 +133,8 @@ class TenantDetailRow {
       if (rawDiscount is String) discountPercentage = (int.tryParse(rawDiscount) ?? 0).clamp(0, 100);
     }
     final stripeCustomerId = (map['stripe_customer_id'] as String?)?.trim();
+    final trialEndsAt = _parseOptionalDateTime(map['trial_ends_at']);
+    final paidUntil = _parseOptionalDateTime(map['paid_until']);
     return TenantDetailRow(
       id: map['id'] as String? ?? '',
       name: (map['name'] as String?) ?? '',
@@ -136,7 +144,43 @@ class TenantDetailRow {
       currency: currency?.isNotEmpty == true ? currency : null,
       discountPercentage: discountPercentage,
       stripeCustomerId: stripeCustomerId?.isEmpty == true ? null : stripeCustomerId,
+      trialEndsAt: trialEndsAt,
+      paidUntil: paidUntil,
     );
+  }
+
+  /// Kopie s přepsanými hodnotami (pro immutable aktualizace).
+  TenantDetailRow copyWith({
+    String? id,
+    String? name,
+    String? notes,
+    BillingInfo? billingInfo,
+    num? pricePerApartment,
+    String? currency,
+    int? discountPercentage,
+    String? stripeCustomerId,
+    DateTime? trialEndsAt,
+    DateTime? paidUntil,
+  }) {
+    return TenantDetailRow(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      notes: notes ?? this.notes,
+      billingInfo: billingInfo ?? this.billingInfo,
+      pricePerApartment: pricePerApartment ?? this.pricePerApartment,
+      currency: currency ?? this.currency,
+      discountPercentage: discountPercentage ?? this.discountPercentage,
+      stripeCustomerId: stripeCustomerId ?? this.stripeCustomerId,
+      trialEndsAt: trialEndsAt ?? this.trialEndsAt,
+      paidUntil: paidUntil ?? this.paidUntil,
+    );
+  }
+
+  static DateTime? _parseOptionalDateTime(dynamic value) {
+    if (value == null) return null;
+    if (value is String) return DateTime.tryParse(value);
+    if (value is DateTime) return value;
+    return null;
   }
 }
 
@@ -147,7 +191,7 @@ final tenantDetailProvider =
   try {
     final res = await SupabaseService.client
         .from('tenants')
-        .select('id, name, notes, billing_info, price_per_apartment, currency, discount_percentage, stripe_customer_id')
+        .select('id, name, notes, billing_info, price_per_apartment, currency, discount_percentage, stripe_customer_id, trial_ends_at, paid_until')
         .eq('id', tenantId)
         .maybeSingle();
 

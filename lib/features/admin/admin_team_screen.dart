@@ -12,6 +12,8 @@ import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
+import 'package:falconest/features/settings/models/tenant_service_model.dart';
+import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
 import 'package:falconest/features/admin/providers/zones_provider.dart';
 import 'package:falconest/features/calendar/providers/planning_calendar_provider.dart';
 
@@ -94,11 +96,12 @@ class _AdminTeamScreenState extends ConsumerState<AdminTeamScreen> {
   List<TeamMember> _computeFiltered(List<TeamMember> members) {
     final query = _searchController.text.trim().toLowerCase();
     if (query.isEmpty) return members;
-    const roleLabels = {
+    final roleLabels = {
       'admin': 'admin',
-      'cleaner': 'uklízeč',
-      'driver': 'řidič',
-      'maintenance': 'údržbář',
+      'cleaner': 'admin.role_cleaner'.tr(),
+      'driver': 'admin.role_driver'.tr(),
+      'maintenance': 'admin.role_maintenance'.tr(),
+      'checkin_agent': 'admin.role_checkin_agent'.tr(),
     };
     return members.where((m) {
       final name = m.name.toLowerCase();
@@ -320,12 +323,31 @@ class _DeleteConfirmDialogState extends ConsumerState<_DeleteConfirmDialog> {
     setState(() => _isDeleting = true);
     try {
       final deletedAt = DateTime.now().toUtc().toIso8601String();
+      final auth = ref.read(authNotifierProvider);
+      final tenantId = auth.tenantIdForData;
       if (widget.member.isFromInvitation) {
         // Pending: soft delete profilu (záznam zůstane v DB, deleted_at vyplněn)
         await SupabaseService.client
             .from('profiles')
             .update({'deleted_at': deletedAt})
             .eq('id', widget.member.id);
+        // Bezpečnostní zneplatnění pozvánky při smazání čekajícího uživatele.
+        if (tenantId != null && tenantId.isNotEmpty) {
+          try {
+            await SupabaseService.client
+                .from('invitations')
+                .update({'deleted_at': deletedAt})
+                .eq('profile_id', widget.member.id)
+                .eq('tenant_id', tenantId);
+          } catch (_) {
+            // Fallback: tabulka invitations nemá deleted_at – fyzický DELETE.
+            await SupabaseService.client
+                .from('invitations')
+                .delete()
+                .eq('profile_id', widget.member.id)
+                .eq('tenant_id', tenantId);
+          }
+        }
       } else {
         // Active: soft delete (deleted_at + tenant_id=null pro konzistenci)
         await SupabaseService.client
@@ -333,8 +355,6 @@ class _DeleteConfirmDialogState extends ConsumerState<_DeleteConfirmDialog> {
             .update({'tenant_id': null, 'deleted_at': deletedAt})
             .eq('id', widget.member.id);
       }
-      final auth = ref.read(authNotifierProvider);
-      final tenantId = auth.tenantIdForData;
       final userId = SupabaseService.client.auth.currentUser?.id;
       await AuditLogService.logEnterprise(
         tenantId: tenantId,
@@ -754,42 +774,54 @@ class _MemberCardExtra extends ConsumerWidget {
     return !s.contains('hotovo') && s != 'completed';
   }
 
-  /// Placeholder pro loading/error – stejný layout s nulovými hodnotami.
+  /// Najde službu v katalogu odpovídající úkolu. Priorita: serviceId, fallback mapování taskType -> serviceType.
+  static TenantServiceModel? _findServiceForTask(
+    TaskRow t,
+    List<TenantServiceModel> services,
+  ) {
+    if (services.isEmpty) return null;
+    if (t.serviceId != null && t.serviceId!.trim().isNotEmpty) {
+      final byId = services.where((s) => s.id == t.serviceId!.trim()).firstOrNull;
+      if (byId != null) return byId;
+    }
+    final normalized = _taskTypeToServiceType(t.taskType);
+    return services.where((s) => s.serviceType == normalized).firstOrNull;
+  }
+
+  /// Mapuje task_type (z tasks) na service_type (z tenant_services) pro fallback párování.
+  /// Pouze kanonické hodnoty – žádné hardcodované lokalizované řetězce.
+  static String _taskTypeToServiceType(String taskType) {
+    final t = taskType.trim().toLowerCase();
+    if (t == 'cleaning') return 'cleaning';
+    if (t.startsWith('transfer')) return 'transfer';
+    if (t == 'check_in' || t == 'check_out') return 'extra';
+    if (t == 'issue' || t == 'material' || t == 'maintenance') return 'maintenance';
+    return 'extra';
+  }
+
+  /// Placeholder pro loading/error – stejný layout jako data stav, dvě prázdné tyče.
   static Widget _buildCapacityPlaceholder(BuildContext context, int weeklyHours) {
+    final maxHours = weeklyHours > 0 ? weeklyHours.toDouble() : 1.0;
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'admin.team_capacity_this_week'.tr(),
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.grey.shade700,
-                ),
-              ),
-              Text(
-                '0 ${'admin.team_tasks_label'.tr()} (~0.0h / $weeklyHours h)',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.grey.shade800,
-                ),
-              ),
-            ],
+          _buildWorkloadIndicator(
+            context,
+            title: 'admin.team_capacity_this_week'.tr(),
+            tasks: 0,
+            hours: 0,
+            maxHours: maxHours,
           ),
-          const SizedBox(height: 4),
-          Container(
-            height: 6,
-            decoration: BoxDecoration(
-              color: Colors.grey.shade200,
-              borderRadius: BorderRadius.circular(4),
-            ),
+          const SizedBox(height: 12),
+          _buildWorkloadIndicator(
+            context,
+            title: 'admin.team_capacity_next_week'.tr(),
+            tasks: 0,
+            hours: 0,
+            maxHours: maxHours,
           ),
           const SizedBox(height: 4),
           Text(
@@ -801,48 +833,151 @@ class _MemberCardExtra extends ConsumerWidget {
     );
   }
 
-  /// Spočítá aktivní úkoly přiřazené členovi. Vrací (celkem, tento týden, plánované minuty tento týden).
-  /// Filtrování aktuálního týdne: pondělí–neděle podle ISO (weekday 1 = pondělí).
-  /// Čas se počítá dynamicky podle typu úkolu a přiřazeného apartmánu:
-  /// - Úklid: standard_cleaning_duration bytu (fallback 120 min)
-  /// - Transfer: 60 min
-  /// - Ostatní (check-in, údržba): 30 min
-  static ({int total, int thisWeek, int thisWeekMinutes}) _computeCapacity(
+  /// Spočítá aktivní úkoly přiřazené členovi. Vrací celkem, tento týden, příští týden.
+  /// Filtrování podle ISO týdne (pondělí–neděle, weekday 1 = pondělí).
+  /// Čas se počítá z Katalogu služeb agentury (tenant_services) – bez hardcodovaných hodnot.
+  static ({
+    int total,
+    int thisWeek,
+    int thisWeekMinutes,
+    int nextWeek,
+    int nextWeekMinutes,
+  }) _computeCapacity(
     List<TaskRow> tasks,
     String memberId,
     DateTime now,
     List<ApartmentRow> apartments,
+    List<TenantServiceModel> services,
   ) {
-    if (memberId.isEmpty) return (total: 0, thisWeek: 0, thisWeekMinutes: 0);
+    if (memberId.isEmpty) {
+      return (total: 0, thisWeek: 0, thisWeekMinutes: 0, nextWeek: 0, nextWeekMinutes: 0);
+    }
     final today = DateTime(now.year, now.month, now.day);
     final monday = today.subtract(Duration(days: now.weekday - 1));
     final sunday = monday.add(const Duration(days: 6));
 
+    /// Příští týden: pondělí až neděle následujícího týdne.
+    /// nextMonday = první den kalendářního týdne po aktuálním (toto pondělí + 7 dní).
+    /// nextSunday = neděle příštího týdne (nextMonday + 6 dní).
+    final nextMonday = monday.add(const Duration(days: 7));
+    final nextSunday = nextMonday.add(const Duration(days: 6));
+
     int total = 0;
     int thisWeek = 0;
     int thisWeekMinutes = 0;
+    int nextWeek = 0;
+    int nextWeekMinutes = 0;
+
+    int _minutesForTask(TaskRow t) {
+      // Priorita 1: Odhad na úkolu – TaskRow zatím nemá pole estimateMinutes. Po přidání: if (t.estimateMinutes != null && t.estimateMinutes! > 0) return t.estimateMinutes!;
+
+      final service = _findServiceForTask(t, services);
+      if (service == null) return 0;
+
+      // Priorita 2: Úklid (serviceType z katalogu, ne textové hledání) = standardCleaningDuration bytu + duration_minutes služby.
+      if (service.serviceType == 'cleaning') {
+        final apt = apartments.where((a) => a.id == t.apartmentId).firstOrNull;
+        final baseCleaning = apt?.standardCleaningDuration ?? 0;
+        final serviceDuration = service.durationMinutes ?? 0;
+        return baseCleaning + serviceDuration;
+      }
+
+      // Priorita 3: Ostatní typy – časová náročnost přímo ze služby.
+      final duration = service.durationMinutes ?? 0;
+      return duration > 0 ? duration : 0;
+    }
 
     for (final t in tasks) {
       if (t.assignedTo != memberId) continue;
       if (!_isActiveTask(t)) continue;
       total++;
       final dueDay = DateTime(t.dueDate.year, t.dueDate.month, t.dueDate.day);
+      final minutes = _minutesForTask(t);
       if (!dueDay.isBefore(monday) && !dueDay.isAfter(sunday)) {
         thisWeek++;
-        final taskType = t.taskType.toLowerCase();
-        if (taskType.contains('cleaning') || taskType.contains('úklid')) {
-          final apt = apartments.where((a) => a.id == t.apartmentId).firstOrNull;
-          thisWeekMinutes += apt?.standardCleaningDuration ?? 120;
-        } else if (taskType.contains('transfer_in') ||
-            taskType.contains('transfer_out') ||
-            taskType.contains('transfer')) {
-          thisWeekMinutes += 60;
-        } else {
-          thisWeekMinutes += 30;
-        }
+        thisWeekMinutes += minutes;
+      } else if (!dueDay.isBefore(nextMonday) && !dueDay.isAfter(nextSunday)) {
+        nextWeek++;
+        nextWeekMinutes += minutes;
       }
     }
-    return (total: total, thisWeek: thisWeek, thisWeekMinutes: thisWeekMinutes);
+    return (
+      total: total,
+      thisWeek: thisWeek,
+      thisWeekMinutes: thisWeekMinutes,
+      nextWeek: nextWeek,
+      nextWeekMinutes: nextWeekMinutes,
+    );
+  }
+
+  /// Jedna položka ukazatele vytížení – titulek, počet úkolů/hodin a progress bar.
+  /// Barvy: zelená < 70 %, oranžová < 90 %, červená ≥ 90 %.
+  static Widget _buildWorkloadIndicator(
+    BuildContext context, {
+    required String title,
+    required int tasks,
+    required double hours,
+    required double maxHours,
+  }) {
+    final ratio = (maxHours > 0) ? (hours / maxHours).clamp(0.0, 1.0) : 0.0;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey.shade700,
+              ),
+            ),
+            Text(
+              '$tasks ${'admin.team_tasks_label'.tr()} (~${hours.toStringAsFixed(1)}h / ${maxHours.toInt()}h)',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey.shade800,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Container(
+          height: 6,
+          decoration: BoxDecoration(
+            color: Colors.grey.shade200,
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LayoutBuilder(
+              builder: (_, constraints) {
+                final w = constraints.maxWidth * ratio;
+                return Stack(
+                  children: [
+                    if (w > 0)
+                      Container(
+                        width: w,
+                        decoration: BoxDecoration(
+                          color: ratio < 0.7
+                              ? Colors.green.shade400
+                              : ratio < 0.9
+                                  ? Colors.orange.shade400
+                                  : Colors.red.shade500,
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -850,84 +985,44 @@ class _MemberCardExtra extends ConsumerWidget {
     final tasksAsync = ref.watch(adminTasksProvider);
     final absencesAsync = ref.watch(staffAbsencesProvider);
     final apartments = ref.watch(apartmentsProvider).valueOrNull ?? [];
+    final services = ref.watch(tenantServicesProvider).valueOrNull ?? [];
 
     return tasksAsync.when(
       data: (tasks) {
         final now = DateTime.now();
         final today = DateTime(now.year, now.month, now.day);
         final memberId = member.profileId ?? member.id;
-        final capacity = _computeCapacity(tasks, memberId, now, apartments);
+        final capacity = _computeCapacity(tasks, memberId, now, apartments, services);
         final totalActiveTasks = capacity.total;
-        final thisWeekTasks = capacity.thisWeek;
         final thisWeekPlannedHours = capacity.thisWeekMinutes / 60.0;
-
-        // Výpočet progress: poměr plánovaných hodin k týdennímu úvazku. Omezeno na 0–100 % pro barvu.
-        final double capacityRatio = (member.weeklyHours > 0)
-            ? (thisWeekPlannedHours / member.weeklyHours).clamp(0.0, 1.0)
-            : 0.0;
+        final nextWeekPlannedHours = capacity.nextWeekMinutes / 60.0;
+        final maxHours = member.weeklyHours.toDouble();
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Ukazatel kapacity – vytížení tento týden vs smluvní úvazek (Capacity Management).
+            // Dvojice ukazatelů kapacity – tento týden a příští týden.
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'admin.team_capacity_this_week'.tr(),
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.grey.shade700,
-                        ),
-                      ),
-                      Text(
-                        '$thisWeekTasks ${'admin.team_tasks_label'.tr()} (~${thisWeekPlannedHours.toStringAsFixed(1)}h / ${member.weeklyHours}h)',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.grey.shade800,
-                        ),
-                      ),
-                    ],
+                  _buildWorkloadIndicator(
+                    context,
+                    title: 'admin.team_capacity_this_week'.tr(),
+                    tasks: capacity.thisWeek,
+                    hours: thisWeekPlannedHours,
+                    maxHours: maxHours > 0 ? maxHours : 1.0,
                   ),
-                  const SizedBox(height: 4),
-                  Container(
-                    height: 6,
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade200,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: LayoutBuilder(
-                        builder: (_, constraints) {
-                          final w = constraints.maxWidth * capacityRatio;
-                          return Stack(
-                            children: [
-                              if (w > 0)
-                                Container(
-                                  width: w,
-                                  decoration: BoxDecoration(
-                                    color: capacityRatio < 0.7
-                                        ? Colors.green.shade400
-                                        : capacityRatio < 0.9
-                                            ? Colors.orange.shade400
-                                            : Colors.red.shade500,
-                                  ),
-                                ),
-                            ],
-                          );
-                        },
-                      ),
-                    ),
+                  const SizedBox(height: 12),
+                  _buildWorkloadIndicator(
+                    context,
+                    title: 'admin.team_capacity_next_week'.tr(),
+                    tasks: capacity.nextWeek,
+                    hours: nextWeekPlannedHours,
+                    maxHours: maxHours > 0 ? maxHours : 1.0,
                   ),
                   const SizedBox(height: 4),
                   Text(
@@ -1328,7 +1423,7 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
         'tenant_id': tenantId,
         'email': email,
         'first_name': firstName,
-        'last_name': lastName.isEmpty ? '(Čeká)' : lastName,
+        'last_name': lastName.isEmpty ? 'admin.team_last_name_awaiting'.tr() : lastName,
         'name': displayName,
         'status': 'pending',
         'role': _systemRole,

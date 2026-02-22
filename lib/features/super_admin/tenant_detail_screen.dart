@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
@@ -18,16 +20,54 @@ import 'package:falconest/features/admin/providers/module_provider.dart';
 import 'package:falconest/features/admin/utils/module_icon_mapper.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/features/super_admin/module_subscription_dialog.dart';
+import 'package:falconest/features/super_admin/providers/all_tenants_provider.dart';
 import 'package:falconest/features/super_admin/providers/dashboard_mrr_provider.dart';
 import 'package:falconest/features/super_admin/providers/tenant_detail_provider.dart';
 import 'package:falconest/features/super_admin/services/super_admin_service.dart';
 import 'package:falconest/features/super_admin/utils/price_format_helper.dart';
 
+/// Modální dialog s plným detailem agentury – Info & Fakturace, Moduly & Plán, Tým & Statistiky.
+/// Z menu / dashboard volat TenantDetailModal.show(context, tenantId) místo context.push.
+class TenantDetailModal {
+  TenantDetailModal._();
+
+  /// Otevře Detail agentury jako modální dialog (blur, centrované okno). Stejný vizuál jako SettingsModal.
+  static Future<void> show(BuildContext hostContext, String tenantId, {String? tenantName}) {
+    return showGeneralDialog<void>(
+      context: hostContext,
+      barrierDismissible: true,
+      barrierLabel: 'super_admin.barrier_detail'.tr(),
+      barrierColor: Colors.black54,
+      transitionDuration: const Duration(milliseconds: 250),
+      pageBuilder: (_, __, ___) => const SizedBox.shrink(),
+      transitionBuilder: (_, animation, __, ___) {
+        return BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+          child: FadeTransition(
+            opacity: animation,
+            child: ScaleTransition(
+              scale: CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+              child: Center(
+                child: Material(
+                  color: Colors.transparent,
+                  child: TenantDetailScreen(tenantId: tenantId, isModal: true),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 /// Obrazovka detailu agentury (CRM karta) – Info & Fakturace, Moduly & Plán, Tým & Statistiky.
 class TenantDetailScreen extends ConsumerStatefulWidget {
-  const TenantDetailScreen({super.key, required this.tenantId});
+  const TenantDetailScreen({super.key, required this.tenantId, this.isModal = false});
 
   final String tenantId;
+  /// True = zobrazen jako modal (vlastní hlavička s křížkem), false = plná stránka s AppBar.
+  final bool isModal;
 
   @override
   ConsumerState<TenantDetailScreen> createState() => _TenantDetailScreenState();
@@ -46,6 +86,7 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
   final _countryController = TextEditingController();
   final _contactEmailController = TextEditingController();
   final _phoneController = TextEditingController();
+  final _discountController = TextEditingController();
 
   bool _billingDirty = false;
   bool _notesDirty = false;
@@ -69,6 +110,7 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
     _countryController.addListener(markBillingDirty);
     _contactEmailController.addListener(markBillingDirty);
     _phoneController.addListener(markBillingDirty);
+    _discountController.addListener(markBillingDirty);
     _notesController.addListener(markNotesDirty);
   }
 
@@ -94,13 +136,15 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
     _countryController.dispose();
     _contactEmailController.dispose();
     _phoneController.dispose();
+    _discountController.dispose();
     super.dispose();
   }
 
-  void _initBilling(BillingInfo? info, String? currency) {
+  void _initBilling(BillingInfo? info, String? currency, int discountPercentage) {
     if (_billingInitialized) return;
     _billingInitialized = true;
     _currency = currency ?? 'CZK';
+    _discountController.text = '$discountPercentage';
     _companyNameController.text = info?.companyName ?? '';
     _icoController.text = info?.ico ?? '';
     _dicController.text = info?.dic ?? '';
@@ -133,17 +177,23 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
         contactEmail: _contactEmailController.text.trim().isEmpty ? null : _contactEmailController.text.trim(),
         phone: _phoneController.text.trim().isEmpty ? null : _phoneController.text.trim(),
       );
+      final discountStr = _discountController.text.trim();
+      final discountPct = discountStr.isEmpty ? 0 : (int.tryParse(discountStr) ?? 0).clamp(0, 100);
+
       await SupabaseService.client
           .from('tenants')
           .update({
             'billing_info': billing.toJson(),
             'notes': _notesController.text.trim(),
             'currency': _currency,
+            'discount_percentage': discountPct,
           })
           .eq('id', widget.tenantId);
 
       if (!mounted) return;
       ref.invalidate(tenantDetailProvider(widget.tenantId));
+      ref.invalidate(dashboardMrrProvider);
+      ref.invalidate(tenantsWithStatusProvider);
       setState(() {
         _billingDirty = false;
         _notesDirty = false;
@@ -154,6 +204,8 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
           content: Text('super_admin.billing_saved'.tr()),
           backgroundColor: Colors.green,
           behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+          elevation: 10,
         ),
       );
     } catch (e) {
@@ -164,9 +216,45 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
           content: Text('${'common.error'.tr()}: $e'),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+          elevation: 10,
         ),
       );
     }
+  }
+
+  /// Hlavička modalu – stejný styl jako SettingsModal: název vlevo, Převtělit + křížek vpravo.
+  Widget _buildModalHeader(BuildContext context, String tenantName) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 24, 16, 16),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              tenantName,
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.grey[900],
+                  ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          TextButton.icon(
+            onPressed: () => _onImpersonate(tenantName),
+            icon: const Icon(Icons.login_rounded, size: 18),
+            label: Text('super_admin.impersonate'.tr()),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close),
+            tooltip: 'common.cancel'.tr(),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Formátuje MRR pro záložku Info & Fakturace (per-tenant EUR → zobrazení v měně admina).
@@ -191,8 +279,11 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
           content: Text('super_admin.impersonate_success'.tr(namedArgs: {'name': tenantName})),
           backgroundColor: Colors.green,
           behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+          elevation: 10,
         ),
       );
+      if (widget.isModal) Navigator.of(context).pop();
       context.go('/admin');
     } catch (e) {
       if (!mounted) return;
@@ -201,6 +292,8 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
           content: Text('super_admin.impersonate_error'.tr(namedArgs: {'error': '$e'})),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+          elevation: 10,
         ),
       );
     }
@@ -218,15 +311,107 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
     return detailAsync.when(
       data: (detail) {
         if (detail == null) {
-          return Scaffold(
-            appBar: AppBar(title: Text('common.error'.tr())),
-            body: const Center(child: Text('Agentura nenalezena')),
-          );
+          return widget.isModal
+              ? Center(child: Text('super_admin.tenant_not_found'.tr()))
+              : Scaffold(
+                  appBar: AppBar(title: Text('common.error'.tr())),
+                  body: Center(child: Text('super_admin.tenant_not_found'.tr())),
+                );
         }
-        _initBilling(detail.billingInfo, detail.currency);
+        _initBilling(detail.billingInfo, detail.currency, detail.discountPercentage);
         _initNotes(detail.notes);
 
+        final tabBar = TabBar(
+          controller: _tabController,
+          labelColor: Theme.of(context).colorScheme.primary,
+          unselectedLabelColor: Colors.grey.shade600,
+          indicatorColor: Theme.of(context).colorScheme.primary,
+          tabs: [
+            Tab(text: 'super_admin.section_info_billing'.tr()),
+            Tab(text: 'super_admin.section_modules_plan'.tr()),
+            Tab(text: 'super_admin.section_team_stats'.tr()),
+          ],
+        );
+
+        final tabBarView = TabBarView(
+          controller: _tabController,
+          children: [
+            _InfoBillingTab(
+              tenantId: widget.tenantId,
+              companyName: _companyNameController,
+              ico: _icoController,
+              dic: _dicController,
+              street: _streetController,
+              city: _cityController,
+              zip: _zipController,
+              country: _countryController,
+              contactEmail: _contactEmailController,
+              phone: _phoneController,
+              notes: _notesController,
+              discount: _discountController,
+              currency: _currency,
+              onCurrencyChanged: (v) => setState(() { _currency = v; _billingDirty = true; }),
+              onSave: _saveBillingAndNotes,
+              saving: _savingBilling,
+              dirty: _billingDirty || _notesDirty,
+              mrrFormatted: _formatMrrForTab(mrrAsync.valueOrNull?.perTenantEur[widget.tenantId], currencies, displayCurrency),
+              stripeCustomerId: detail.stripeCustomerId,
+              trialEndsAt: detail.trialEndsAt,
+              paidUntil: detail.paidUntil,
+            ),
+            _ModulesPlanTab(
+              tenantId: widget.tenantId,
+              pricePerApartment: detail.pricePerApartment,
+              currency: _currency,
+              discountPercentage: detail.discountPercentage,
+            ),
+            _TeamStatsTab(profilesAsync: profilesAsync, statsAsync: statsAsync),
+          ],
+        );
+
+        if (widget.isModal) {
+          return ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: 900,
+              maxHeight: MediaQuery.of(context).size.height * 0.88,
+            ),
+            child: Container(
+              width: MediaQuery.of(context).size.width * 0.9,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.15),
+                    blurRadius: 24,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildModalHeader(context, detail.name),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: tabBar,
+                  ),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: Container(
+                      color: Colors.grey.shade50,
+                      child: tabBarView,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+
         return Scaffold(
+          backgroundColor: Colors.grey.shade100,
           appBar: AppBar(
             title: Text(detail.name),
             actions: [
@@ -240,63 +425,51 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
               ),
               const SizedBox(width: 16),
             ],
-            bottom: TabBar(
-              controller: _tabController,
-              tabs: [
-                Tab(text: 'super_admin.section_info_billing'.tr()),
-                Tab(text: 'super_admin.section_modules_plan'.tr()),
-                Tab(text: 'super_admin.section_team_stats'.tr()),
-              ],
-            ),
+            bottom: tabBar,
           ),
-          body: TabBarView(
-            controller: _tabController,
-            children: [
-              _InfoBillingTab(
-                companyName: _companyNameController,
-                ico: _icoController,
-                dic: _dicController,
-                street: _streetController,
-                city: _cityController,
-                zip: _zipController,
-                country: _countryController,
-                contactEmail: _contactEmailController,
-                phone: _phoneController,
-                notes: _notesController,
-                currency: _currency,
-                onCurrencyChanged: (v) => setState(() { _currency = v; _billingDirty = true; }),
-                onSave: _saveBillingAndNotes,
-                saving: _savingBilling,
-                dirty: _billingDirty || _notesDirty,
-                mrrFormatted: _formatMrrForTab(mrrAsync.valueOrNull?.perTenantEur[widget.tenantId], currencies, displayCurrency),
-                stripeCustomerId: detail.stripeCustomerId,
+          body: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1000),
+              child: Container(
+                margin: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 16,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: tabBarView,
               ),
-              _ModulesPlanTab(
-                tenantId: widget.tenantId,
-                pricePerApartment: detail.pricePerApartment,
-                currency: _currency,
-                discountPercentage: detail.discountPercentage,
-              ),
-              _TeamStatsTab(profilesAsync: profilesAsync, statsAsync: statsAsync),
-            ],
+            ),
           ),
         );
       },
-      loading: () => Scaffold(
-        appBar: AppBar(title: Text('super_admin.section_info_billing'.tr())),
-        body: const Center(child: CircularProgressIndicator()),
-      ),
-      error: (e, _) => Scaffold(
-        appBar: AppBar(title: Text('common.error'.tr())),
-        body: Center(child: Text('$e')),
-      ),
+      loading: () => widget.isModal
+          ? const Center(child: CircularProgressIndicator())
+          : Scaffold(
+              appBar: AppBar(title: Text('super_admin.section_info_billing'.tr())),
+              body: const Center(child: CircularProgressIndicator()),
+            ),
+      error: (e, _) => widget.isModal
+          ? Center(child: Text('$e'))
+          : Scaffold(
+              appBar: AppBar(title: Text('common.error'.tr())),
+              body: Center(child: Text('$e')),
+            ),
     );
   }
 }
 
-/// Tab 1: Info & Fakturace – formulář fakturačních údajů + měna + interní poznámky.
-class _InfoBillingTab extends StatelessWidget {
+/// Tab 1: Info & Fakturace – formulář fakturačních údajů + měna + sleva + interní poznámky.
+class _InfoBillingTab extends ConsumerWidget {
   const _InfoBillingTab({
+    required this.tenantId,
     required this.companyName,
     required this.ico,
     required this.dic,
@@ -307,6 +480,7 @@ class _InfoBillingTab extends StatelessWidget {
     required this.contactEmail,
     required this.phone,
     required this.notes,
+    required this.discount,
     required this.currency,
     required this.onCurrencyChanged,
     required this.onSave,
@@ -314,8 +488,11 @@ class _InfoBillingTab extends StatelessWidget {
     required this.dirty,
     required this.mrrFormatted,
     required this.stripeCustomerId,
+    required this.trialEndsAt,
+    required this.paidUntil,
   });
 
+  final String tenantId;
   final TextEditingController companyName;
   final TextEditingController ico;
   final TextEditingController dic;
@@ -326,6 +503,7 @@ class _InfoBillingTab extends StatelessWidget {
   final TextEditingController contactEmail;
   final TextEditingController phone;
   final TextEditingController notes;
+  final TextEditingController discount;
   final String currency;
   final ValueChanged<String> onCurrencyChanged;
   final VoidCallback onSave;
@@ -333,80 +511,296 @@ class _InfoBillingTab extends StatelessWidget {
   final bool dirty;
   final String mrrFormatted;
   final String? stripeCustomerId;
+  final DateTime? trialEndsAt;
+  final DateTime? paidUntil;
 
   static const List<String> _currencies = ['CZK', 'EUR', 'USD'];
 
-  /// Sekce A: Finanční přehled – MRR a stav Stripe (dvě karty).
-  Widget _buildFinancialCards(BuildContext context) {
-    final isActive = stripeCustomerId != null && stripeCustomerId!.isNotEmpty;
-    return Wrap(
-      spacing: 16,
-      runSpacing: 16,
-      children: [
-        _buildCard(
-          context: context,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'super_admin.mrr_monthly_revenue'.tr(),
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
+  /// Formátuje datum pro zobrazení (dd.MM.yyyy).
+  static String _formatDate(DateTime? d) {
+    if (d == null) return '';
+    return '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}.${d.year}';
+  }
+
+  /// Karta Zkušební doba (Trial) a Zaplaceno do (Kill Switch) – kalendář + rychlé prodloužení.
+  Widget _buildTrialPaidUntilCards(BuildContext context, WidgetRef ref) {
+    const trialColor = Colors.orange;
+    const paidColor = Colors.teal;
+
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Karta A: Zkušební doba
+          Expanded(
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: trialColor.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: trialColor.withValues(alpha: 0.2)),
               ),
-              const SizedBox(height: 4),
-              Text(
-                mrrFormatted,
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
-        ),
-        _buildCard(
-          context: context,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'super_admin.stripe_status_title'.tr(),
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
-              ),
-              const SizedBox(height: 8),
-              Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    isActive ? Icons.check_circle : Icons.warning_amber_rounded,
-                    color: isActive ? Colors.green : Colors.orange,
-                    size: 24,
-                  ),
-                  const SizedBox(width: 8),
+                  Icon(Icons.schedule, size: 28, color: trialColor),
+                  const SizedBox(height: 8),
                   Text(
-                    isActive
-                        ? 'super_admin.stripe_status_active'.tr()
-                        : 'super_admin.stripe_status_not_connected'.tr(),
-                    style: Theme.of(context).textTheme.bodyMedium,
+                    'super_admin.billing_trial_ends'.tr(),
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: Colors.grey[900],
+                        ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          trialEndsAt != null
+                              ? _formatDate(trialEndsAt)
+                              : 'super_admin.billing_not_set'.tr(),
+                          style: Theme.of(context).textTheme.bodyLarge,
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.calendar_today, size: 20),
+                        onPressed: () async {
+                          final date = await showDatePicker(
+                            context: context,
+                            initialDate: trialEndsAt ?? DateTime.now(),
+                            firstDate: DateTime(2020),
+                            lastDate: DateTime(2030),
+                          );
+                          if (date != null) {
+                            await SuperAdminService.updateTenantTrialDate(tenantId, date);
+                            ref.invalidate(tenantDetailProvider(tenantId));
+                            ref.invalidate(tenantsWithStatusProvider);
+                          }
+                        },
+                      ),
+                    ],
                   ),
                 ],
               ),
-            ],
+            ),
           ),
-        ),
-      ],
+          const SizedBox(width: 16),
+          // Karta B: Zaplaceno do (Kill Switch)
+          Expanded(
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: paidColor.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: paidColor.withValues(alpha: 0.2)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.payment,
+                    size: 28,
+                    color: (paidUntil != null && paidUntil!.isBefore(DateTime.now()))
+                        ? Colors.red
+                        : paidColor,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'super_admin.billing_paid_until'.tr(),
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: Colors.grey[900],
+                        ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          paidUntil != null
+                              ? _formatDate(paidUntil)
+                              : 'super_admin.billing_not_set'.tr(),
+                          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                color: (paidUntil != null && paidUntil!.isBefore(DateTime.now()))
+                                    ? Colors.red
+                                    : null,
+                                fontWeight: (paidUntil != null && paidUntil!.isBefore(DateTime.now()))
+                                    ? FontWeight.w600
+                                    : null,
+                              ),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.calendar_today, size: 20),
+                        onPressed: () async {
+                          final date = await showDatePicker(
+                            context: context,
+                            initialDate: paidUntil ?? DateTime.now(),
+                            firstDate: DateTime(2020),
+                            lastDate: DateTime(2030),
+                          );
+                          if (date != null) {
+                            await SuperAdminService.updateTenantPaidUntil(tenantId, date);
+                            ref.invalidate(tenantDetailProvider(tenantId));
+                            ref.invalidate(tenantsWithStatusProvider);
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  // Rychlé prodloužení přístupu po zaplacení faktury (+1 měsíc)
+                  TextButton.icon(
+                    onPressed: () async {
+                      final base = paidUntil ?? DateTime.now();
+                      final next = DateTime(base.year, base.month + 1, base.day);
+                      await SuperAdminService.updateTenantPaidUntil(tenantId, next);
+                      ref.invalidate(tenantDetailProvider(tenantId));
+                      ref.invalidate(tenantsWithStatusProvider);
+                    },
+                    icon: const Icon(Icons.add, size: 18),
+                    label: Text('super_admin.billing_add_month'.tr()),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
-  Widget _buildCard({required BuildContext context, required Widget child}) {
+  /// Sekce A: Finanční přehled – MRR, Stav Stripe a Sleva v řadě s IntrinsicHeight (identická výška karet).
+  Widget _buildFinancialCards(BuildContext context) {
+    final isActive = stripeCustomerId != null && stripeCustomerId!.isNotEmpty;
+    final mrrColor = Colors.green;
+    final stripeColor = isActive ? Colors.green : Colors.orange;
+    const discountColor = Colors.blue;
+
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: _profileStyleCard(
+              context: context,
+              color: mrrColor,
+              icon: Icons.attach_money_rounded,
+              title: 'super_admin.mrr_monthly_revenue'.tr(),
+              child: Text(
+                mrrFormatted,
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: _profileStyleCard(
+              context: context,
+              color: stripeColor,
+              icon: isActive ? Icons.check_circle : Icons.warning_amber_rounded,
+              title: 'super_admin.stripe_status_title'.tr(),
+              child: Text(
+                isActive
+                    ? 'super_admin.stripe_status_active'.tr()
+                    : 'super_admin.stripe_status_not_connected'.tr(),
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: discountColor.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: discountColor.withValues(alpha: 0.2)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.percent, size: 28, color: discountColor),
+                  const SizedBox(height: 8),
+                  Text(
+                    'super_admin.discount_percentage_label'.tr(),
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: Colors.grey[900],
+                        ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: discount,
+                    keyboardType: TextInputType.number,
+                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold),
+                    decoration: const InputDecoration(
+                      border: InputBorder.none,
+                      isDense: true,
+                      suffixText: '%',
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Karta ve stylu Settings Jazyk/Měna – pastelové pozadí, ikona, výrazný okraj. Statická pro použití v dalších tabech.
+  static Widget _profileStyleCard({
+    required BuildContext context,
+    required Color color,
+    required IconData icon,
+    required String title,
+    required Widget child,
+  }) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
-        borderRadius: BorderRadius.circular(12),
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 28, color: color),
+          const SizedBox(height: 8),
+          Text(
+            title,
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey[900],
+                ),
+          ),
+          const SizedBox(height: 12),
+          child,
+        ],
+      ),
+    );
+  }
+
+  /// Kontejner sekce – přesná kopie Zabezpečení účtu (user_profile_tab: padding 20, borderRadius 16, shadow).
+  static Widget _sectionCard(BuildContext context, {required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
           ),
         ],
       ),
@@ -414,28 +808,43 @@ class _InfoBillingTab extends StatelessWidget {
     );
   }
 
+  /// InputDecoration – přesná kopie ze Zabezpečení účtu (user_profile_tab).
+  static InputDecoration _inputDecoration({String? label, String? hint}) {
+    return InputDecoration(
+      labelText: label,
+      hintText: hint,
+      border: const OutlineInputBorder(),
+      isDense: true,
+    );
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           // Sekce A: Finanční přehled
           _buildFinancialCards(context),
           const SizedBox(height: 24),
+          // Sekce A2: Zkušební doba a Zaplaceno do (Trial & Kill Switch)
+          _buildTrialPaidUntilCards(context, ref),
+          const SizedBox(height: 24),
           // Sekce B: Fakturační údaje
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    'super_admin.billing_details_title'.tr(),
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 16),
+          _sectionCard(
+            context,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'super_admin.billing_details_title'.tr(),
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: Colors.grey[900],
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+                const SizedBox(height: 16),
                 Text(
                   'super_admin.billing_currency'.tr(),
                   style: Theme.of(context).textTheme.labelMedium,
@@ -443,10 +852,7 @@ class _InfoBillingTab extends StatelessWidget {
                 const SizedBox(height: 4),
                 DropdownButtonFormField<String>(
                   initialValue: _currencies.contains(currency) ? currency : 'CZK',
-                  decoration: const InputDecoration(
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
+                  decoration: _inputDecoration(),
                   items: _currencies
                       .map((c) => DropdownMenuItem(value: c, child: Text(c)))
                       .toList(),
@@ -460,13 +866,7 @@ class _InfoBillingTab extends StatelessWidget {
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
                 const SizedBox(height: 8),
-                TextField(
-                  controller: companyName,
-                  decoration: const InputDecoration(
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
+                TextField(controller: companyName, decoration: _inputDecoration()),
                 const SizedBox(height: 12),
                 Row(
                   children: [
@@ -476,7 +876,7 @@ class _InfoBillingTab extends StatelessWidget {
                         children: [
                           Text('super_admin.billing_ico'.tr(), style: Theme.of(context).textTheme.labelMedium),
                           const SizedBox(height: 4),
-                          TextField(controller: ico, decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true)),
+                          TextField(controller: ico, decoration: _inputDecoration()),
                         ],
                       ),
                     ),
@@ -487,7 +887,7 @@ class _InfoBillingTab extends StatelessWidget {
                         children: [
                           Text('super_admin.billing_dic'.tr(), style: Theme.of(context).textTheme.labelMedium),
                           const SizedBox(height: 4),
-                          TextField(controller: dic, decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true)),
+                          TextField(controller: dic, decoration: _inputDecoration()),
                         ],
                       ),
                     ),
@@ -496,7 +896,7 @@ class _InfoBillingTab extends StatelessWidget {
                 const SizedBox(height: 12),
                 Text('super_admin.billing_street'.tr(), style: Theme.of(context).textTheme.labelMedium),
                 const SizedBox(height: 4),
-                TextField(controller: street, decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true)),
+                TextField(controller: street, decoration: _inputDecoration()),
                 const SizedBox(height: 12),
                 Row(
                   children: [
@@ -507,7 +907,7 @@ class _InfoBillingTab extends StatelessWidget {
                         children: [
                           Text('super_admin.billing_city'.tr(), style: Theme.of(context).textTheme.labelMedium),
                           const SizedBox(height: 4),
-                          TextField(controller: city, decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true)),
+                          TextField(controller: city, decoration: _inputDecoration()),
                         ],
                       ),
                     ),
@@ -518,7 +918,7 @@ class _InfoBillingTab extends StatelessWidget {
                         children: [
                           Text('super_admin.billing_zip'.tr(), style: Theme.of(context).textTheme.labelMedium),
                           const SizedBox(height: 4),
-                          TextField(controller: zip, decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true)),
+                          TextField(controller: zip, decoration: _inputDecoration()),
                         ],
                       ),
                     ),
@@ -527,14 +927,14 @@ class _InfoBillingTab extends StatelessWidget {
                 const SizedBox(height: 12),
                 Text('super_admin.billing_country'.tr(), style: Theme.of(context).textTheme.labelMedium),
                 const SizedBox(height: 4),
-                TextField(controller: country, decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true)),
+                TextField(controller: country, decoration: _inputDecoration()),
                 const SizedBox(height: 12),
                 Text('super_admin.billing_contact_email'.tr(), style: Theme.of(context).textTheme.labelMedium),
                 const SizedBox(height: 4),
                 TextField(
                   controller: contactEmail,
                   keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
+                  decoration: _inputDecoration(),
                 ),
                 const SizedBox(height: 12),
                 Text('super_admin.billing_phone'.tr(), style: Theme.of(context).textTheme.labelMedium),
@@ -542,31 +942,31 @@ class _InfoBillingTab extends StatelessWidget {
                 TextField(
                   controller: phone,
                   keyboardType: TextInputType.phone,
-                  decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
+                  decoration: _inputDecoration(),
                 ),
               ],
             ),
           ),
-        ),
-        const SizedBox(height: 16),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text('super_admin.billing_internal_notes'.tr(), style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: notes,
-                  maxLines: 4,
-                  decoration: const InputDecoration(
-                    border: OutlineInputBorder(),
-                    alignLabelWithHint: true,
-                  ),
-                ),
-              ],
-            ),
+        const SizedBox(height: 24),
+        _sectionCard(
+          context,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'super_admin.billing_internal_notes'.tr(),
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: Colors.grey[900],
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: notes,
+                maxLines: 4,
+                decoration: _inputDecoration().copyWith(alignLabelWithHint: true),
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 16),
@@ -577,14 +977,25 @@ class _InfoBillingTab extends StatelessWidget {
               : const Icon(Icons.save),
           label: Text('super_admin.btn_save_billing'.tr()),
         ),
-        // Sekce C: Poslední faktury (UI placeholder – mock data)
+        // Sekce C: Poslední faktury (UI placeholder – mock data) – ve stylu Settings (karta).
         const SizedBox(height: 24),
-        Text(
-          'super_admin.invoices_last_title'.tr(),
-          style: Theme.of(context).textTheme.titleMedium,
+        _sectionCard(
+          context,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'super_admin.invoices_last_title'.tr(),
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: Colors.grey[900],
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              const SizedBox(height: 12),
+              _buildMockInvoicesList(context),
+            ],
+          ),
         ),
-        const SizedBox(height: 12),
-        _buildMockInvoicesList(context),
       ],
     ),
   );
@@ -652,78 +1063,121 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
   final Map<String, bool> _pending = {};
   String? _togglingModuleId;
 
-  Future<void> _onToggle(ModuleModel module, bool newValue) async {
+  /// Přepínač modulů: zapnutí/vypnutí s ošetřením závislostí (parent/submoduly).
+  /// Obaleno v try-catch-finally pro čitelné chybové hlášky.
+  Future<void> _onToggle(ModuleModel module, bool value) async {
     if (_togglingModuleId != null) return;
 
-    if (newValue &&
-        module.parentModuleKey != null &&
-        module.parentModuleKey!.isNotEmpty) {
-      final modules = ref.read(allModulesProvider).valueOrNull ?? [];
-      final activeIds = ref.read(tenantActiveModuleIdsProvider(widget.tenantId)).valueOrNull ?? {};
-      ModuleModel? parent;
-            for (final m in modules) {
-              if (m.key == module.parentModuleKey) {
-                parent = m;
-                break;
-              }
-            }
-      if (parent != null && !activeIds.contains(parent.id)) {
-        final ok = await _showSubmoduleDependencyDialog(context, module, parent);
-        if (!mounted) return;
-        if (ok != true) return;
-        await _activateBothModules(parent, module);
-        return;
-      }
-    }
-
-    // Při vypínání hlavního modulu: pokud má aktivní sub-moduly, nabídnout kaskádové vypnutí.
-    if (!newValue) {
-      final modules = ref.read(allModulesProvider).valueOrNull ?? [];
-      final activeIds = ref.read(tenantActiveModuleIdsProvider(widget.tenantId)).valueOrNull ?? {};
-      final activeDependents = modules
-          .where((m) =>
-              m.parentModuleKey == module.key &&
-              m.parentModuleKey!.isNotEmpty &&
-              activeIds.contains(m.id))
-          .toList();
-      if (activeDependents.isNotEmpty) {
-        final ok = await _showDeactivateCascadeDialog(context, module, activeDependents);
-        if (!mounted) return;
-        if (ok != true) return;
-        await _deactivateCascade(module, activeDependents);
-        return;
-      }
-    }
-
+    // Nastavení stavu načítání – optimistic UI
     setState(() {
-      _pending[module.id] = newValue;
+      _pending[module.id] = value;
       _togglingModuleId = module.id;
     });
+
     try {
-      await SuperAdminService.toggleModule(widget.tenantId, module.id, newValue);
-      if (newValue) {
-        final auth = ref.read(authNotifierProvider);
-        await AuditLogService.log(
-          tenantId: auth.tenantIdForData,
-          userId: SupabaseService.client.auth.currentUser?.id,
-          actionType: 'MODULE_ACTIVATED',
-          tableName: 'tenant_modules',
-          recordId: module.id,
-          details: {'tenant_id': widget.tenantId, 'module_key': module.key},
+      final modules = ref.read(allModulesProvider).valueOrNull ?? [];
+      final activeIds = ref.read(tenantActiveModuleIdsProvider(widget.tenantId)).valueOrNull ?? {};
+      final cancelAtPeriodEndIds = ref.read(tenantModuleCancelAtPeriodEndIdsProvider(widget.tenantId)).valueOrNull ?? {};
+
+      // Kliknutí na modul s cancel_at_period_end = zrušení výpovědi (modul zůstane aktivní).
+      if (!value && cancelAtPeriodEndIds.contains(module.id)) {
+        await SuperAdminService.toggleModule(widget.tenantId, module.id, true);
+        if (!mounted) return;
+        ref.invalidate(tenantActiveModuleIdsProvider(widget.tenantId));
+        ref.invalidate(tenantModuleCancelAtPeriodEndIdsProvider(widget.tenantId));
+        ref.invalidate(tenantModuleSubscriptionMapProvider(widget.tenantId));
+        ref.invalidate(dashboardMrrProvider);
+        await Future.delayed(const Duration(milliseconds: 150));
+        if (!mounted) return;
+        setState(() {
+          _pending.remove(module.id);
+          _togglingModuleId = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('super_admin.module_enabled'.tr(namedArgs: {'name': _label(module)})),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+            margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+            elevation: 10,
+          ),
         );
-      } else {
-        final auth = ref.read(authNotifierProvider);
-        await AuditLogService.log(
-          tenantId: auth.tenantIdForData,
-          userId: SupabaseService.client.auth.currentUser?.id,
-          actionType: 'MODULE_DEACTIVATED',
-          tableName: 'tenant_modules',
-          recordId: module.id,
-          details: {'tenant_id': widget.tenantId, 'module_key': module.key},
-        );
+        return;
       }
+
+      // ─── ZAPÍNÁNÍ (value == true) ───────────────────────────────────────────
+      if (value && module.parentModuleKey != null && module.parentModuleKey!.isNotEmpty) {
+        // Bezpečně najdi nadřazený modul
+        final parent = modules.where((m) => m.key == module.parentModuleKey).firstOrNull;
+        if (parent == null) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('super_admin.module_parent_not_found'.tr()),
+              duration: const Duration(seconds: 4),
+              backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating,
+              margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+              elevation: 10,
+            ),
+          );
+          return;
+        }
+        // Zkontroluj, zda je parent aktivní (jeho ID v seznamu aktivních modulů)
+        if (!activeIds.contains(parent.id)) {
+          if (!mounted) return;
+          final ok = await _showSubmoduleDependencyDialog(context, module, parent);
+          if (!mounted) return;
+          if (ok == true) {
+            await _activateBothModules(parent, module);
+          }
+          return;
+        }
+        // Parent je aktivní – pokračuj standardním zapnutím
+      }
+
+      // ─── VYPÍNÁNÍ (value == false) ──────────────────────────────────────────
+      if (!value) {
+        final activeDependents = modules
+            .where((m) =>
+                m.parentModuleKey != null &&
+                m.parentModuleKey == module.key &&
+                activeIds.contains(m.id))
+            .toList();
+        if (activeDependents.isNotEmpty) {
+          if (!mounted) return;
+          final ok = await _showDeactivateCascadeDialog(context, module, activeDependents);
+          if (!mounted) return;
+          if (ok == true) {
+            await _deactivateCascade(module, activeDependents);
+          }
+          return;
+        }
+        // Žádní závislí – pokračuj standardním vypnutím
+      }
+
+      // ─── STANDARDNÍ ZAPNUTÍ/VYPNUTÍ ────────────────────────────────────────
+      await SuperAdminService.toggleModule(widget.tenantId, module.id, value);
       if (!mounted) return;
+
+      final auth = ref.read(authNotifierProvider);
+      await AuditLogService.log(
+        tenantId: auth.tenantIdForData,
+        userId: SupabaseService.client.auth.currentUser?.id,
+        actionType: value ? 'MODULE_ACTIVATED' : 'MODULE_DEACTIVATED',
+        tableName: 'tenant_modules',
+        recordId: module.id,
+        details: {'tenant_id': widget.tenantId, 'module_key': module.key},
+      );
+
+      if (!mounted) return;
+      // Vynucené obnovení UI po změně v databázi – prevence rubber-bandingu.
       ref.invalidate(tenantActiveModuleIdsProvider(widget.tenantId));
+      ref.invalidate(tenantModuleCancelAtPeriodEndIdsProvider(widget.tenantId));
+      ref.invalidate(tenantModuleSubscriptionMapProvider(widget.tenantId));
+      ref.invalidate(dashboardMrrProvider);
+      await Future.delayed(const Duration(milliseconds: 150));
+      if (!mounted) return;
       setState(() {
         _pending.remove(module.id);
         _togglingModuleId = null;
@@ -731,36 +1185,42 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            newValue
+            value
                 ? 'super_admin.module_enabled'.tr(namedArgs: {'name': _label(module)})
                 : 'super_admin.module_disabled'.tr(namedArgs: {'name': _label(module)}),
           ),
           backgroundColor: Colors.green,
           behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+          elevation: 10,
         ),
       );
     } catch (e, st) {
-      if (kDebugMode) {
-        debugPrint('[TenantDetailScreen] toggleModule failed: $e');
-        debugPrint('[TenantDetailScreen] stack: $st');
-      }
+      debugPrint('Toggle Error: $e');
+      if (kDebugMode) debugPrint('[TenantDetailScreen] stack: $st');
       if (!mounted) return;
-      setState(() {
-        _pending.remove(module.id);
-        _togglingModuleId = null;
-      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('super_admin.module_toggle_error'.tr(namedArgs: {'error': '$e'})),
-          backgroundColor: Colors.red.shade700,
+          content: Text('super_admin.module_toggle_generic_error'.tr()),
+          duration: const Duration(seconds: 4),
+          backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 5),
+          margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+          elevation: 10,
         ),
       );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _pending.remove(module.id);
+          _togglingModuleId = null;
+        });
+      }
     }
   }
 
   /// Zobrazí dialog závislosti sub-modulu. Vrací true pokud uživatel zvolil „Zapnout oba“.
+  /// useRootNavigator: true – aby byl dialog nad overlay a klikatelný.
   Future<bool?> _showSubmoduleDependencyDialog(
     BuildContext context,
     ModuleModel subModule,
@@ -768,6 +1228,7 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
   ) {
     return showDialog<bool>(
       context: context,
+      useRootNavigator: true,
       builder: (ctx) => AlertDialog(
         title: Text('super_admin.submodule_dependency_title'.tr()),
         content: Text('super_admin.submodule_dependency_body'.tr()),
@@ -814,7 +1275,13 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
         details: {'tenant_id': widget.tenantId, 'module_key': subModule.key},
       );
       if (!mounted) return;
+      // Vynucené obnovení UI po změně v databázi – prevence rubber-bandingu.
       ref.invalidate(tenantActiveModuleIdsProvider(widget.tenantId));
+      ref.invalidate(tenantModuleCancelAtPeriodEndIdsProvider(widget.tenantId));
+      ref.invalidate(tenantModuleSubscriptionMapProvider(widget.tenantId));
+      ref.invalidate(dashboardMrrProvider);
+      await Future.delayed(const Duration(milliseconds: 150));
+      if (!mounted) return;
       setState(() {
         _pending.remove(parent.id);
         _pending.remove(subModule.id);
@@ -825,6 +1292,8 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
           content: Text('super_admin.module_enabled'.tr(namedArgs: {'name': _label(subModule)})),
           backgroundColor: Colors.green,
           behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+          elevation: 10,
         ),
       );
     } catch (e, st) {
@@ -840,16 +1309,19 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('super_admin.module_toggle_error'.tr(namedArgs: {'error': '$e'})),
+          content: Text('super_admin.module_toggle_generic_error'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 5),
+          margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+          elevation: 10,
+          duration: const Duration(seconds: 4),
         ),
       );
     }
   }
 
   /// Dialog před kaskádovým vypnutím hlavního modulu a jeho aktivních sub-modulů.
+  /// useRootNavigator: true – aby byl dialog nad overlay a klikatelný.
   Future<bool?> _showDeactivateCascadeDialog(
     BuildContext context,
     ModuleModel mainModule,
@@ -857,6 +1329,7 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
   ) {
     return showDialog<bool>(
       context: context,
+      useRootNavigator: true,
       builder: (ctx) => AlertDialog(
         title: Text('super_admin.module_deactivate_cascade_title'.tr()),
         content: Text('super_admin.module_deactivate_cascade_body'.tr()),
@@ -899,7 +1372,13 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
         );
       }
       if (!mounted) return;
+      // Vynucené obnovení UI po změně v databázi – prevence rubber-bandingu.
       ref.invalidate(tenantActiveModuleIdsProvider(widget.tenantId));
+      ref.invalidate(tenantModuleCancelAtPeriodEndIdsProvider(widget.tenantId));
+      ref.invalidate(tenantModuleSubscriptionMapProvider(widget.tenantId));
+      ref.invalidate(dashboardMrrProvider);
+      await Future.delayed(const Duration(milliseconds: 150));
+      if (!mounted) return;
       for (final m in toDeactivate) {
         setState(() {
           _pending.remove(m.id);
@@ -911,6 +1390,8 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
           content: Text('super_admin.module_disabled'.tr(namedArgs: {'name': _label(mainModule)})),
           backgroundColor: Colors.green,
           behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+          elevation: 10,
         ),
       );
     } catch (e, st) {
@@ -925,10 +1406,12 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
       setState(() => _togglingModuleId = null);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('super_admin.module_toggle_error'.tr(namedArgs: {'error': '$e'})),
+          content: Text('super_admin.module_toggle_generic_error'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 5),
+          margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+          elevation: 10,
+          duration: const Duration(seconds: 4),
         ),
       );
     }
@@ -1010,6 +1493,7 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
           );
         }
         final subscriptionMap = ref.watch(tenantModuleSubscriptionMapProvider(widget.tenantId)).valueOrNull ?? {};
+        final cancelAtPeriodEndIds = ref.watch(tenantModuleCancelAtPeriodEndIdsProvider(widget.tenantId)).valueOrNull ?? {};
         return activeAsync.when(
           data: (activeIds) {
             final apartmentCount = statsAsync.valueOrNull?.apartmentCount ?? 0;
@@ -1048,13 +1532,11 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
             }
 
             return ListView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
               children: [
-                Card(
-                  color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
+                _InfoBillingTab._sectionCard(
+                  context,
+                  child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         Text(
@@ -1084,114 +1566,139 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
                       ],
                     ),
                   ),
-                ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 24),
                 Text(
                   'super_admin.module_management_hint'.tr(),
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey.shade700),
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: Colors.grey[900],
+                        fontWeight: FontWeight.w600,
+                      ),
                 ),
-                const SizedBox(height: 12),
-                ...modules.map((module) {
-                  final isEnabled = _pending.containsKey(module.id)
-                      ? _pending[module.id]!
-                      : activeIds.contains(module.id);
-                  final isToggling = _togglingModuleId == module.id;
-                  final sub = subscriptionMap[module.id];
-                  final trialBadge = (sub != null && sub.isTrial && sub.trialEndsAt != null)
-                      ? 'super_admin.module_trial_badge'.tr(namedArgs: {'date': _formatTrialDate(sub.trialEndsAt!)})
-                      : null;
-                  final cardHeight = trialBadge != null ? 100.0 : 72.0;
-                  return Card(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    child: SizedBox(
-                      height: cardHeight,
-                      child: Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          Positioned(
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            height: 72,
-                            child: Padding(
-                              padding: const EdgeInsets.only(left: 16, right: 48),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: Center(
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        mainAxisAlignment: MainAxisAlignment.center,
-                                        children: [
-                                          if (isToggling)
-                                            const SizedBox(
-                                              width: 24,
-                                              height: 24,
-                                              child: CircularProgressIndicator(strokeWidth: 2),
-                                            )
-                                          else
-                                            Icon(
-                                              ModuleIconMapper.getIcon(module.key),
-                                              color: Theme.of(context).colorScheme.primary,
-                                            ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            _label(module),
-                                            style: const TextStyle(fontWeight: FontWeight.w600),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            textAlign: TextAlign.center,
-                                          ),
-                                          Text(
-                                            _priceDisplay(module, apartmentCount, userCount, currencies),
-                                            style: Theme.of(context).textTheme.bodySmall,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            textAlign: TextAlign.center,
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                  Switch(
-                                    value: isEnabled,
-                                    onChanged: isToggling ? null : (value) => _onToggle(module, value),
-                                  ),
-                                ],
-                              ),
-                            ),
+                const SizedBox(height: 16),
+                ListView.separated(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: modules.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 12),
+                  itemBuilder: (_, i) {
+                    final module = modules[i];
+                    final isEnabled = _pending.containsKey(module.id)
+                        ? _pending[module.id]!
+                        : activeIds.contains(module.id);
+                    final isToggling = _togglingModuleId == module.id;
+                    final sub = subscriptionMap[module.id];
+                    final trialBadge = (sub != null && sub.isTrial && sub.trialEndsAt != null)
+                        ? 'super_admin.module_trial_badge'.tr(namedArgs: {'date': _formatTrialDate(sub.trialEndsAt!)})
+                        : null;
+                    final cancelsAtPeriodEnd = cancelAtPeriodEndIds.contains(module.id);
+                    final priceStr = _priceDisplay(module, apartmentCount, userCount, currencies);
+                    return Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.08),
+                            blurRadius: 12,
+                            offset: const Offset(0, 4),
                           ),
-                          if (trialBadge != null)
-                            Positioned(
-                              bottom: 8,
-                              left: 0,
-                              right: 0,
-                              child: Center(
-                                child: Text(
-                                  trialBadge,
-                                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                        color: Colors.orange.shade700,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                ),
-                              ),
-                            ),
-                          if (isEnabled)
-                            Positioned(
-                              top: 4,
-                              right: 4,
-                              child: IconButton(
-                                icon: const Icon(Icons.settings),
-                                iconSize: 18,
-                                color: Colors.grey,
-                                onPressed: () => _openModuleSubscriptionDialog(module, sub),
-                              ),
-                            ),
                         ],
                       ),
-                    ),
-                  );
-                }),
+                      child: Row(
+                        children: [
+                          Icon(
+                            ModuleIconMapper.getIcon(module.key),
+                            size: 24,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  _label(module),
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.grey[900],
+                                    fontSize: 15,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                if (trialBadge != null) ...[
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    trialBadge,
+                                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                          color: Colors.orange.shade700,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                                if (cancelsAtPeriodEnd) ...[
+                                  const SizedBox(height: 2),
+                                  Row(
+                                    children: [
+                                      Icon(Icons.schedule, size: 14, color: Colors.red.shade700),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        'super_admin.module_cancels_at_period_end'.tr(),
+                                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                              color: Colors.red.shade700,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                          if (isToggling)
+                            const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          else ...[
+                            Text(
+                              priceStr,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.grey[800],
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(width: 8),
+                            Switch(
+                              value: isEnabled,
+                              onChanged: (value) => _onToggle(module, value),
+                            ),
+                            if (isEnabled) ...[
+                              const SizedBox(width: 4),
+                              IconButton(
+                                icon: Icon(Icons.settings, size: 20, color: Colors.grey[700]),
+                                tooltip: 'settings.module_edit'.tr(),
+                                onPressed: () => _openModuleSubscriptionDialog(module, sub),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                              ),
+                            ],
+                          ],
+                        ],
+                      ),
+                    );
+                  },
+                ),
               ],
             );
           },
@@ -1219,102 +1726,135 @@ class _TeamStatsTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final stats = statsAsync.valueOrNull;
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
       children: [
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    children: [
-                      Icon(Icons.apartment, size: 32, color: Theme.of(context).colorScheme.primary),
-                      const SizedBox(height: 8),
-                      Text(
-                        '${stats?.apartmentCount ?? 0}',
-                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                              fontWeight: FontWeight.bold,
-                            ),
+        Row(
+          children: [
+            Expanded(
+              child: _InfoBillingTab._profileStyleCard(
+                context: context,
+                color: Colors.blue,
+                icon: Icons.apartment,
+                title: 'super_admin.stats_apartments_managed'.tr(),
+                child: Text(
+                  '${stats?.apartmentCount ?? 0}',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
                       ),
-                      Text(
-                        'super_admin.stats_apartments_managed'.tr(),
-                        style: Theme.of(context).textTheme.bodySmall,
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
                 ),
-                const VerticalDivider(width: 24),
-                Expanded(
-                  child: Column(
-                    children: [
-                      Icon(Icons.calendar_month, size: 32, color: Theme.of(context).colorScheme.primary),
-                      const SizedBox(height: 8),
-                      Text(
-                        '${stats?.reservationsThisMonth ?? 0}',
-                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                              fontWeight: FontWeight.bold,
-                            ),
-                      ),
-                      Text(
-                        'super_admin.stats_reservations_this_month'.tr(),
-                        style: Theme.of(context).textTheme.bodySmall,
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _InfoBillingTab._profileStyleCard(
+                context: context,
+                color: Colors.orange,
+                icon: Icons.calendar_month,
+                title: 'super_admin.stats_reservations_this_month'.tr(),
+                child: Text(
+                  '${stats?.reservationsThisMonth ?? 0}',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+              ),
+            ),
+          ],
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 24),
         Text(
           'super_admin.section_team'.tr(),
-          style: Theme.of(context).textTheme.titleMedium,
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                color: Colors.grey[900],
+                fontWeight: FontWeight.w600,
+              ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 16),
         profilesAsync.when(
           data: (profiles) {
             if (profiles.isEmpty) {
-              return Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Center(
-                    child: Column(
-                      children: [
-                        Icon(Icons.people_outline, size: 48, color: Colors.grey.shade400),
-                        const SizedBox(height: 12),
-                        Text(
-                          'super_admin.team_empty'.tr(),
-                          style: Theme.of(context).textTheme.bodyLarge,
-                        ),
-                      ],
-                    ),
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Center(
+                  child: Column(
+                    children: [
+                      Icon(Icons.people_outline, size: 48, color: Colors.grey.shade400),
+                      const SizedBox(height: 12),
+                      Text(
+                        'super_admin.team_empty'.tr(),
+                        style: TextStyle(color: Colors.grey.shade600),
+                      ),
+                    ],
                   ),
                 ),
               );
             }
-            return Column(
-              children: profiles
-                  .map(
-                    (p) => Card(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          child: Text(p.name.isNotEmpty ? p.name[0].toUpperCase() : '?'),
-                        ),
-                        title: Text(p.name),
-                        subtitle: Text(p.role),
+            return ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: profiles.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 12),
+              itemBuilder: (_, i) {
+                final p = profiles[i];
+                return Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.08),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
                       ),
-                    ),
-                  )
-                  .toList(),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        child: Text(p.name.isNotEmpty ? p.name[0].toUpperCase() : '?'),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              p.name,
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.grey[900],
+                                fontSize: 15,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            Text(
+                              p.role,
+                              style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
             );
           },
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => Center(child: Text('$e')),
+          loading: () => const Center(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2)),
+            ),
+          ),
+          error: (e, _) => Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text('$e', style: TextStyle(color: Colors.red.shade700)),
+          ),
         ),
       ],
     );

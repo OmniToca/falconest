@@ -64,12 +64,13 @@ class SuperAdminService {
 
   /// Zapne nebo vypne modul pro daného tenanta.
   ///
-  /// Používá standardizovaný Soft Delete (deleted_at) pro zachování fakturační historie
-  /// – místo tvrdého DELETE se při vypnutí volá UPDATE deleted_at = now().
+  /// VYPÍNÁNÍ: Odložené zrušení modulu na konec zúčtovacího období (Anti-churn ochrana).
+  /// Místo deleted_at = now() se nastaví cancel_at_period_end = true – modul funguje do konce měsíce.
+  /// ZAPÍNÁNÍ: Obnoví záznam (deleted_at = null) a zruší výpověď (cancel_at_period_end = false).
   ///
   /// - [moduleId]: UUID z tabulky [modules] (module.id) – NE string key.
-  /// - ON: INSERT nebo UPSERT (obnoví soft-smazaný záznam nastavením deleted_at = null).
-  /// - OFF: UPDATE deleted_at = now() místo DELETE – zachová Audit Log pro Stripe.
+  /// - ON: INSERT nebo UPDATE s deleted_at = null, cancel_at_period_end = false.
+  /// - OFF: UPDATE cancel_at_period_end = true (deleted_at zůstává null).
   static Future<void> toggleModule(
     String tenantId,
     String moduleId,
@@ -87,26 +88,49 @@ class SuperAdminService {
 
     try {
       if (isEnabled) {
-        // UPSERT: vloží nový záznam nebo obnoví soft-smazaný (deleted_at = null).
-        await SupabaseService.client.from('tenant_modules').upsert(
-          {
-            'tenant_id': tenantId,
-            'module_id': id,
-            'deleted_at': null,
-          },
-          onConflict: 'tenant_id,module_id',
-        );
+        // Bezpečný upsert: Silent fail pro záznamy, které ještě v DB neexistují.
+        // Upsert s onConflict někdy u nových řádků selhává tiše (0 řádků ovlivněno).
+        // Proto nejdříve select – existuje-li řádek, UPDATE; jinak INSERT.
+        final existing = await SupabaseService.client
+            .from('tenant_modules')
+            .select('id')
+            .eq('tenant_id', tenantId)
+            .eq('module_id', id)
+            .maybeSingle();
+
+        if (existing != null) {
+          // Obnovení: deleted_at = null, cancel_at_period_end = false (zrušení výpovědi, pokud si to klient rozmyslel).
+          await SupabaseService.client
+              .from('tenant_modules')
+              .update({'deleted_at': null, 'cancel_at_period_end': false})
+              .eq('tenant_id', tenantId)
+              .eq('module_id', id)
+              .select();
+        } else {
+          // INSERT nového záznamu – cancel_at_period_end = false pro čerstvě zapnutý modul.
+          await SupabaseService.client
+              .from('tenant_modules')
+              .insert({
+                'tenant_id': tenantId,
+                'module_id': id,
+                'deleted_at': null,
+                'cancel_at_period_end': false,
+              })
+              .select();
+        }
         if (kDebugMode) {
           debugPrint('[SuperAdminService] toggleModule ON: tenant=$tenantId module_id=$id');
         }
       } else {
-        // Soft Delete: UPDATE deleted_at místo DELETE – zachová historii pro fakturaci.
+        // Odložené zrušení modulu na konec zúčtovacího období (Anti-churn ochrana).
+        // Místo deleted_at nastavíme cancel_at_period_end = true – modul zůstává aktivní do konce měsíce.
         await SupabaseService.client
             .from('tenant_modules')
-            .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
-            .match({'tenant_id': tenantId, 'module_id': id});
+            .update({'cancel_at_period_end': true})
+            .match({'tenant_id': tenantId, 'module_id': id})
+            .select();
         if (kDebugMode) {
-          debugPrint('[SuperAdminService] toggleModule OFF (soft delete): tenant=$tenantId module_id=$id');
+          debugPrint('[SuperAdminService] toggleModule OFF (cancel_at_period_end): tenant=$tenantId module_id=$id');
         }
       }
     } catch (e, st) {
@@ -120,6 +144,34 @@ class SuperAdminService {
 
   static bool _looksLikeUuid(String s) =>
       s.length == 36 && s.contains('-') && s.split('-').length == 5;
+
+  /// Aktualizuje konec zkušební doby tenanta (tenants.trial_ends_at, sloupec typu date).
+  static Future<void> updateTenantTrialDate(String tenantId, DateTime? date) async {
+    if (tenantId.isEmpty) throw ArgumentError('tenantId musí být neprázdný');
+    final d = date?.toUtc();
+    final dateStr = d != null ? '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}' : null;
+    await SupabaseService.client
+        .from('tenants')
+        .update({'trial_ends_at': dateStr})
+        .eq('id', tenantId)
+        .select();
+    if (kDebugMode) {
+      debugPrint('[SuperAdminService] updateTenantTrialDate: tenant=$tenantId date=$date');
+    }
+  }
+
+  /// Aktualizuje datum "Zaplaceno do" (tenants.paid_until) – Kill Switch pro přístup po nezaplacení faktury.
+  static Future<void> updateTenantPaidUntil(String tenantId, DateTime? date) async {
+    if (tenantId.isEmpty) throw ArgumentError('tenantId musí být neprázdný');
+    await SupabaseService.client
+        .from('tenants')
+        .update({'paid_until': date?.toUtc().toIso8601String()})
+        .eq('id', tenantId)
+        .select();
+    if (kDebugMode) {
+      debugPrint('[SuperAdminService] updateTenantPaidUntil: tenant=$tenantId date=$date');
+    }
+  }
 
   /// Aktualizuje trial a platnost modulu pro tenanta (tenant_modules.is_trial, trial_ends_at, valid_until).
   /// Volá se z ModuleSubscriptionDialog po uložení. Řádek musí existovat (modul musí být aktivní).

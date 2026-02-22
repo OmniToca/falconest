@@ -1,3 +1,4 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -330,7 +331,7 @@ final adminTeamProvider = FutureProvider<List<TeamMember>>((ref) async {
 
         result.add(TeamMember(
           id: id,
-          name: name.isNotEmpty ? name : 'Neznámý',
+          name: name.isNotEmpty ? name : 'admin.team_unknown_name'.tr(),
           email: (map['email']?.toString() ?? '').trim().isEmpty ? null : map['email']?.toString(),
           role: systemRole,
           roles: jobRoles,

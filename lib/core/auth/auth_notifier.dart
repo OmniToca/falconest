@@ -19,6 +19,8 @@ import 'package:falconest/core/services/supabase_service.dart';
 /// [isImpersonating] true = Super Admin prohlíží data jedné agentury (vybraná v UI).
 /// [isTenantActive] = false znamená, že agentura je pozastavena (kill-switch); router
 /// přesměruje na /suspended. Null = neznámo (super_admin bez vybrané agentury).
+/// [paidUntil] = datum do kdy je předplatné zaplaceno. Pokud now > paidUntil → router
+/// přesměruje na /payment-required (Kill Switch pro neplatiče).
 class AppAuthState {
   const AppAuthState({
     this.user,
@@ -26,6 +28,7 @@ class AppAuthState {
     this.tenantId,
     this.isImpersonating = false,
     this.isTenantActive,
+    this.paidUntil,
     this.languageCode,
     this.preferredCurrency,
   });
@@ -43,6 +46,9 @@ class AppAuthState {
 
   /// Zda je tenant (agentura) aktivní (is_active). Null = nemáme tenant nebo neznámo.
   final bool? isTenantActive;
+
+  /// Zaplaceno do (tenants.paid_until). NULL = neomezeno. Pokud now > paidUntil → lock screen.
+  final DateTime? paidUntil;
 
   /// Preferovaný jazyk z profiles (cs, en, es). Pro Nastavení a EasyLocalization.
   final String? languageCode;
@@ -158,15 +164,18 @@ class AuthNotifier extends ChangeNotifier {
     if (id.isEmpty) return;
 
     bool? isTenantActive;
+    DateTime? paidUntil;
     try {
       final tenantRes = await SupabaseService.client
           .from('tenants')
-          .select('is_active')
+          .select('is_active, paid_until')
           .eq('id', id)
           .maybeSingle();
       if (tenantRes != null) {
-        final v = (tenantRes as Map)['is_active'];
+        final m = tenantRes as Map;
+        final v = m['is_active'];
         isTenantActive = v is bool ? v : (v == true || v == 'true');
+        paidUntil = _parseOptionalDateTime(m['paid_until']);
       }
     } catch (_) {}
 
@@ -177,6 +186,7 @@ class AuthNotifier extends ChangeNotifier {
       tenantId: _state.tenantId,
       isImpersonating: true,
       isTenantActive: isTenantActive,
+      paidUntil: paidUntil,
       languageCode: _state.languageCode,
       preferredCurrency: _state.preferredCurrency,
     );
@@ -194,10 +204,48 @@ class AuthNotifier extends ChangeNotifier {
       tenantId: _state.tenantId,
       isImpersonating: false,
       isTenantActive: null,
+      paidUntil: null,
       languageCode: _state.languageCode,
       preferredCurrency: _state.preferredCurrency,
     );
     notifyListeners();
+  }
+
+  /// Znovu načte paid_until z tenants pro aktuálního tenanta. Volá se z PaymentRequiredScreen
+  /// („Zkusit znovu“), aby po prodloužení platby Super Adminem router mohl pustit uživatele dál.
+  Future<void> refreshTenantPaymentStatus() async {
+    final tid = tenantIdForData ?? _state.tenantId;
+    if (tid == null || tid.isEmpty) return;
+    try {
+      final tenantRes = await SupabaseService.client
+          .from('tenants')
+          .select('paid_until')
+          .eq('id', tid)
+          .maybeSingle();
+      DateTime? paidUntil;
+      if (tenantRes != null) {
+        paidUntil = _parseOptionalDateTime((tenantRes as Map)['paid_until']);
+      }
+      _state = AppAuthState(
+        user: _state.user,
+        role: _state.role,
+        tenantId: _state.tenantId,
+        isImpersonating: _state.isImpersonating,
+        isTenantActive: _state.isTenantActive,
+        paidUntil: paidUntil,
+        languageCode: _state.languageCode,
+        preferredCurrency: _state.preferredCurrency,
+      );
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  static DateTime? _parseOptionalDateTime(dynamic value) {
+    if (value == null) return null;
+    if (value is DateTime) return value;
+    final s = value.toString().trim();
+    if (s.isEmpty) return null;
+    return DateTime.tryParse(s);
   }
 
   /// Inicializace – odběr auth streamu a prvotní načtení stavu.
@@ -241,7 +289,7 @@ class AuthNotifier extends ChangeNotifier {
       _pendingPasswordRecovery = false;
       _isProfileLoading = false;
       _selectedTenantId = null;
-      _state = const AppAuthState(isImpersonating: false, isTenantActive: null, preferredCurrency: null);
+      _state = const AppAuthState(isImpersonating: false, isTenantActive: null, paidUntil: null, preferredCurrency: null);
       notifyListeners();
     }
   }
@@ -408,16 +456,19 @@ class AuthNotifier extends ChangeNotifier {
       // Pro role == super_admin je tenantIdStr == null očekávaný stav – nepřesměrovávat na čekárnu.
 
       bool? isTenantActive;
+      DateTime? paidUntil;
       if (tenantIdStr != null && tenantIdStr.isNotEmpty) {
         try {
           final tenantRes = await SupabaseService.client
               .from('tenants')
-              .select('is_active')
+              .select('is_active, paid_until')
               .eq('id', tenantIdStr)
               .maybeSingle();
           if (tenantRes != null) {
-            final v = (tenantRes as Map)['is_active'];
+            final m = tenantRes as Map;
+            final v = m['is_active'];
             isTenantActive = v is bool ? v : (v == true || v == 'true');
+            paidUntil = _parseOptionalDateTime(m['paid_until']);
           }
         } catch (_) {}
       }
@@ -428,6 +479,7 @@ class AuthNotifier extends ChangeNotifier {
         tenantId: tenantIdStr,
         isImpersonating: false,
         isTenantActive: isTenantActive,
+        paidUntil: paidUntil,
         languageCode: languageCodeStr,
         preferredCurrency: preferredCurrencyStr,
       );
@@ -451,7 +503,7 @@ class AuthNotifier extends ChangeNotifier {
       // NEODHLASOVAT! Uživatel zůstane přihlášen, zobrazíme chybu.
       // Odhlášení pouze při explicitním kliknutí na Odhlásit se.
       _profileLoadError = 'login.error_profile_load'.tr();
-      _state = AppAuthState(user: user, role: null, tenantId: null, isImpersonating: false, isTenantActive: null, languageCode: null, preferredCurrency: null);
+      _state = AppAuthState(user: user, role: null, tenantId: null, isImpersonating: false, isTenantActive: null, paidUntil: null, languageCode: null, preferredCurrency: null);
     } finally {
       _isProfileLoading = false;
       notifyListeners();
@@ -473,6 +525,7 @@ class AuthNotifier extends ChangeNotifier {
       tenantId: _state.tenantId,
       isImpersonating: _state.isImpersonating,
       isTenantActive: _state.isTenantActive,
+      paidUntil: _state.paidUntil,
       languageCode: trimmed,
       preferredCurrency: _state.preferredCurrency,
     );
@@ -494,6 +547,7 @@ class AuthNotifier extends ChangeNotifier {
       tenantId: _state.tenantId,
       isImpersonating: _state.isImpersonating,
       isTenantActive: _state.isTenantActive,
+      paidUntil: _state.paidUntil,
       languageCode: _state.languageCode,
       preferredCurrency: trimmed,
     );

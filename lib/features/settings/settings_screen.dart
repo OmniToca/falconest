@@ -69,7 +69,48 @@ class _SettingsModalContent extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // Záložka Fakturace jen pro admin a manager – mají kontext tenanta pro správu fakturačních údajů.
     final showBillingTab = ref.watch(authNotifierProvider).state.isAdminOrManager;
-    final tabCount = showBillingTab ? 4 : 3;
+    final isSuperAdmin = ref.watch(authNotifierProvider).state.role == 'super_admin';
+
+    final tabs = <Widget>[];
+    final tabViews = <Widget>[];
+
+    if (isSuperAdmin) {
+      // Super Admin: Profil + Moduly (pouze katalog modulů, bez Služeb a Oblasti)
+      tabs.add(Tab(text: 'settings.tab_profile'.tr()));
+      tabViews.add(const UserProfileTab());
+      tabs.add(Tab(text: 'settings.catalog_modules'.tr()));
+      tabViews.add(_ServicesTabContent(
+        onAddService: () => _onAddService(context),
+        onEditService: (s) => _onEditService(context, s),
+        onAddModule: () => _onAddModule(context),
+        onEditModule: (m) => _onEditModule(context, m),
+        pushContext: pushContext,
+        isDialogMode: isDialogMode,
+        showOnlyModules: true,
+      ));
+    } else {
+      // Běžný Admin/Worker: Profil, Služby, Oblasti, volitelně Fakturace
+      tabs.add(Tab(text: 'settings.tab_profile'.tr()));
+      tabViews.add(const UserProfileTab());
+      tabs.add(Tab(text: 'settings.tab_services'.tr()));
+      tabViews.add(_ServicesTabContent(
+        onAddService: () => _onAddService(context),
+        onEditService: (s) => _onEditService(context, s),
+        onAddModule: () => _onAddModule(context),
+        onEditModule: (m) => _onEditModule(context, m),
+        pushContext: pushContext,
+        isDialogMode: isDialogMode,
+        showOnlyModules: false,
+      ));
+      tabs.add(Tab(text: 'settings.tab_zones'.tr()));
+      tabViews.add(const _ZonesTabContent());
+      if (showBillingTab) {
+        tabs.add(Tab(text: 'settings.tab_billing'.tr()));
+        tabViews.add(const ClientBillingTab());
+      }
+    }
+
+    final tabCount = tabs.length;
 
     return Center(
       child: Material(
@@ -113,31 +154,13 @@ class _SettingsModalContent extends ConsumerWidget {
                             labelColor: Theme.of(context).colorScheme.primary,
                             unselectedLabelColor: Colors.grey.shade600,
                             indicatorColor: Theme.of(context).colorScheme.primary,
-                            tabs: [
-                              Tab(text: 'settings.tab_profile'.tr()),
-                              Tab(text: 'settings.tab_services'.tr()),
-                              Tab(text: 'settings.tab_zones'.tr()),
-                              if (showBillingTab)
-                                Tab(text: 'settings.tab_billing'.tr()),
-                            ],
+                            tabs: tabs,
                           ),
                         ),
                         const SizedBox(height: 8),
                         Expanded(
                           child: TabBarView(
-                            children: [
-                              const UserProfileTab(),
-                              _ServicesTabContent(
-                                onAddService: () => _onAddService(context),
-                                onEditService: (s) => _onEditService(context, s),
-                                onAddModule: () => _onAddModule(context),
-                                onEditModule: (m) => _onEditModule(context, m),
-                                pushContext: pushContext,
-                                isDialogMode: isDialogMode,
-                              ),
-                              const _ZonesTabContent(),
-                              if (showBillingTab) const ClientBillingTab(),
-                            ],
+                            children: tabViews,
                           ),
                         ),
                       ],
@@ -334,6 +357,7 @@ class _ServicesTabContent extends ConsumerStatefulWidget {
     required this.onEditModule,
     this.pushContext,
     this.isDialogMode = false,
+    this.showOnlyModules = false,
   });
 
   final VoidCallback onAddService;
@@ -342,6 +366,8 @@ class _ServicesTabContent extends ConsumerStatefulWidget {
   final void Function(ModuleModel) onEditModule;
   final BuildContext? pushContext;
   final bool isDialogMode;
+  /// True = Super Admin záložka "Moduly" – zobrazí pouze katalog modulů, bez Katalog služeb agentury.
+  final bool showOnlyModules;
 
   @override
   ConsumerState<_ServicesTabContent> createState() => _ServicesTabContentState();
@@ -360,8 +386,10 @@ class _ServicesTabContentState extends ConsumerState<_ServicesTabContent>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _buildServicesCatalogSection(context, ref),
-          const SizedBox(height: 24),
+          if (!widget.showOnlyModules) ...[
+            _buildServicesCatalogSection(context, ref),
+            const SizedBox(height: 24),
+          ],
           _buildModuleCatalogSection(context, ref),
         ],
       ),

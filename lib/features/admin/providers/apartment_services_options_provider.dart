@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/features/admin/models/reservation_service_model.dart';
 import 'package:falconest/features/admin/providers/apartment_services_repository.dart';
 import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
@@ -9,8 +10,10 @@ import 'package:falconest/features/settings/providers/tenant_services_provider.d
 final apartmentServicesOptionsProvider =
     FutureProvider.family<List<ApartmentServiceOption>, String>((ref, apartmentId) async {
   if (apartmentId.isEmpty) return [];
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return [];
   final tenantServices = await ref.watch(tenantServicesProvider.future);
-  final rows = await fetchByApartmentId(apartmentId);
+  final rows = await fetchByApartmentId(apartmentId, tenantId);
   final serviceById = {for (final s in tenantServices) s.id: s};
   return rows.map((r) {
     final ts = serviceById[r.serviceId];

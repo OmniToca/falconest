@@ -69,9 +69,16 @@ final dashboardMrrProvider = FutureProvider<DashboardMrrResult>((ref) async {
   double totalEur = 0;
   final perTenantEur = <String, double>{};
 
+  final now = DateTime.now().toUtc();
   for (final item in items) {
     final tenant = item.tenant;
     if (!tenant.isActive) continue;
+
+    // A) Celý tenant ve zkušební době → MRR = 0 (Ochranný štít).
+    if (tenant.trialEndsAt != null && tenant.trialEndsAt!.isAfter(now)) {
+      perTenantEur[tenant.id] = 0.0;
+      continue;
+    }
 
     final apartmentCount = item.apartmentCount ?? 0;
     final userCount = item.teamCount ?? 0;
@@ -84,10 +91,11 @@ final dashboardMrrProvider = FutureProvider<DashboardMrrResult>((ref) async {
         ? baseInTenantCurrency
         : CurrencyService.toEur(baseInTenantCurrency, tenantCurrency, currencies);
 
+    // B) Moduly v Trialu (is_trial a trial_ends_at platí) → přičítáme 0.
     double moduleEur = 0;
     final moduleTrial = tenantModuleTrial[tenant.id] ?? {};
     for (final entry in moduleTrial.entries) {
-      if (entry.value) continue; // vynechat trial moduly
+      if (entry.value) continue; // vynechat trial moduly (priceEur = 0)
       final module = moduleById[entry.key];
       if (module == null) continue;
       final priceEur = module.price?.toDouble() ?? 0;

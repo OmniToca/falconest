@@ -1,3 +1,4 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -404,7 +405,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
       if (checkOutDt.isBefore(today)) continue;
 
       if (apartmentById[r.apartmentId] == null) continue;
-      final guestName = (r.guestName ?? '').trim().isEmpty ? 'Host' : r.guestName!;
+      final guestName = (r.guestName ?? '').trim().isEmpty ? 'admin.dashboard_guest_unknown'.tr() : r.guestName!;
       final apartmentServicesList = (servicesByApartment[r.apartmentId] ?? [])
           .toList()
           ..sort((a, b) => _getServicePriority(a.serviceType).compareTo(_getServicePriority(b.serviceType)));
@@ -505,7 +506,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
             zoneId: apartment?.zoneId,
           );
 
-          final description = getEstimateMinutesText?.call(totalMinutes) ?? 'Odhad: $totalMinutes min';
+          final description = getEstimateMinutesText?.call(totalMinutes) ?? 'admin.task_estimate_minutes'.tr(namedArgs: {'minutes': totalMinutes.toString()});
           toInsert.add({
             'tenant_id': tenantId,
             'apartment_id': r.apartmentId,
@@ -649,7 +650,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
       }
 
       final serviceName = service.name.trim().isEmpty ? service.id : service.name;
-      final title = '$serviceName: Pravidelná údržba';
+      final title = '$serviceName: ${'admin.task_title_scheduled_maintenance'.tr()}';
 
       List<TeamMember> candidates;
       if (service.requiredRole == null || service.requiredRole!.trim().isEmpty || service.requiredRole!.toLowerCase() == 'any') {
@@ -681,7 +682,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
         zoneId: apartment?.zoneId,
       );
 
-      final description = getEstimateMinutesText?.call(totalMinutes) ?? 'Odhad: $totalMinutes min';
+      final description = getEstimateMinutesText?.call(totalMinutes) ?? 'admin.task_estimate_minutes'.tr(namedArgs: {'minutes': totalMinutes.toString()});
       toInsert.add({
         'tenant_id': tenantId,
         'apartment_id': apartmentId,
