@@ -1,5 +1,12 @@
 {
   "app": {"title": "FalcoNest"},
+  "task_status": {
+    "pending": "Návrh",
+    "assigned": "Zadáno",
+    "in_progress": "Probíhá",
+    "completed": "Hotovo",
+    "problem": "Problém"
+  },
   "invite": {
     "title": "Přijetí pozvánky",
     "welcome": "Nastavte si heslo a dokončete registraci. E-mail je předvyplněn z pozvánky.",
@@ -227,6 +234,7 @@
     "validation_mismatch": "Hesla se neshodují"
   },
   "worker": {
+    "offline_mode_banner": "Offline režim. Změny se odešlou, jakmile budete online.",
     "my_work": "Moje Práce",
     "today": "Dnes",
     "tomorrow": "Zítra",

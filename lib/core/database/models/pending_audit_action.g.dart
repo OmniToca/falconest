@@ -16,7 +16,7 @@ extension GetPendingAuditActionCollection on Isar {
 
 const PendingAuditActionSchema = CollectionSchema(
   name: r'PendingAuditAction',
-  id: 2346012127249937920,
+  id: 2346012127249937678,
   properties: {
     r'actionType': PropertySchema(
       id: 0,

@@ -15,7 +15,7 @@ extension GetTaskLocalCollection on Isar {
 
 const TaskLocalSchema = CollectionSchema(
   name: r'TaskLocal',
-  id: -9072514404709919744,
+  id: -9072514404709919410,
   properties: {
     r'apartmentSupabaseId': PropertySchema(
       id: 0,
@@ -27,45 +27,70 @@ const TaskLocalSchema = CollectionSchema(
       name: r'assignedUserSupabaseId',
       type: IsarType.string,
     ),
-    r'lastUpdated': PropertySchema(
+    r'description': PropertySchema(
       id: 2,
+      name: r'description',
+      type: IsarType.string,
+    ),
+    r'lastSyncedAt': PropertySchema(
+      id: 3,
+      name: r'lastSyncedAt',
+      type: IsarType.dateTime,
+    ),
+    r'lastUpdated': PropertySchema(
+      id: 4,
       name: r'lastUpdated',
       type: IsarType.dateTime,
     ),
     r'localUpdatedAt': PropertySchema(
-      id: 3,
+      id: 5,
       name: r'localUpdatedAt',
       type: IsarType.dateTime,
     ),
+    r'metadataJson': PropertySchema(
+      id: 6,
+      name: r'metadataJson',
+      type: IsarType.string,
+    ),
     r'photoUrl': PropertySchema(
-      id: 4,
+      id: 7,
       name: r'photoUrl',
       type: IsarType.string,
     ),
     r'scheduledStart': PropertySchema(
-      id: 5,
+      id: 8,
       name: r'scheduledStart',
       type: IsarType.dateTime,
     ),
     r'status': PropertySchema(
-      id: 6,
+      id: 9,
       name: r'status',
       type: IsarType.string,
     ),
     r'supabaseId': PropertySchema(
-      id: 7,
+      id: 10,
       name: r'supabaseId',
       type: IsarType.string,
     ),
     r'syncStatus': PropertySchema(
-      id: 8,
+      id: 11,
       name: r'syncStatus',
       type: IsarType.byte,
       enumMap: _TaskLocalsyncStatusEnumValueMap,
     ),
+    r'taskType': PropertySchema(
+      id: 12,
+      name: r'taskType',
+      type: IsarType.string,
+    ),
     r'tenantId': PropertySchema(
-      id: 9,
+      id: 13,
       name: r'tenantId',
+      type: IsarType.string,
+    ),
+    r'title': PropertySchema(
+      id: 14,
+      name: r'title',
       type: IsarType.string,
     )
   },
@@ -101,6 +126,13 @@ int _taskLocalEstimateSize(
       bytesCount += 3 + value.length * 3;
     }
   }
+  bytesCount += 3 + object.description.length * 3;
+  {
+    final value = object.metadataJson;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   {
     final value = object.photoUrl;
     if (value != null) {
@@ -114,7 +146,9 @@ int _taskLocalEstimateSize(
       bytesCount += 3 + value.length * 3;
     }
   }
+  bytesCount += 3 + object.taskType.length * 3;
   bytesCount += 3 + object.tenantId.length * 3;
+  bytesCount += 3 + object.title.length * 3;
   return bytesCount;
 }
 
@@ -126,14 +160,19 @@ void _taskLocalSerialize(
 ) {
   writer.writeString(offsets[0], object.apartmentSupabaseId);
   writer.writeString(offsets[1], object.assignedUserSupabaseId);
-  writer.writeDateTime(offsets[2], object.lastUpdated);
-  writer.writeDateTime(offsets[3], object.localUpdatedAt);
-  writer.writeString(offsets[4], object.photoUrl);
-  writer.writeDateTime(offsets[5], object.scheduledStart);
-  writer.writeString(offsets[6], object.status);
-  writer.writeString(offsets[7], object.supabaseId);
-  writer.writeByte(offsets[8], object.syncStatus.index);
-  writer.writeString(offsets[9], object.tenantId);
+  writer.writeString(offsets[2], object.description);
+  writer.writeDateTime(offsets[3], object.lastSyncedAt);
+  writer.writeDateTime(offsets[4], object.lastUpdated);
+  writer.writeDateTime(offsets[5], object.localUpdatedAt);
+  writer.writeString(offsets[6], object.metadataJson);
+  writer.writeString(offsets[7], object.photoUrl);
+  writer.writeDateTime(offsets[8], object.scheduledStart);
+  writer.writeString(offsets[9], object.status);
+  writer.writeString(offsets[10], object.supabaseId);
+  writer.writeByte(offsets[11], object.syncStatus.index);
+  writer.writeString(offsets[12], object.taskType);
+  writer.writeString(offsets[13], object.tenantId);
+  writer.writeString(offsets[14], object.title);
 }
 
 TaskLocal _taskLocalDeserialize(
@@ -145,17 +184,22 @@ TaskLocal _taskLocalDeserialize(
   final object = TaskLocal();
   object.apartmentSupabaseId = reader.readStringOrNull(offsets[0]);
   object.assignedUserSupabaseId = reader.readStringOrNull(offsets[1]);
+  object.description = reader.readString(offsets[2]);
   object.id = id;
-  object.lastUpdated = reader.readDateTime(offsets[2]);
-  object.localUpdatedAt = reader.readDateTime(offsets[3]);
-  object.photoUrl = reader.readStringOrNull(offsets[4]);
-  object.scheduledStart = reader.readDateTime(offsets[5]);
-  object.status = reader.readString(offsets[6]);
-  object.supabaseId = reader.readStringOrNull(offsets[7]);
+  object.lastSyncedAt = reader.readDateTimeOrNull(offsets[3]);
+  object.lastUpdated = reader.readDateTime(offsets[4]);
+  object.localUpdatedAt = reader.readDateTime(offsets[5]);
+  object.metadataJson = reader.readStringOrNull(offsets[6]);
+  object.photoUrl = reader.readStringOrNull(offsets[7]);
+  object.scheduledStart = reader.readDateTime(offsets[8]);
+  object.status = reader.readString(offsets[9]);
+  object.supabaseId = reader.readStringOrNull(offsets[10]);
   object.syncStatus =
-      _TaskLocalsyncStatusValueEnumMap[reader.readByteOrNull(offsets[8])] ??
+      _TaskLocalsyncStatusValueEnumMap[reader.readByteOrNull(offsets[11])] ??
           SyncStatus.synced;
-  object.tenantId = reader.readString(offsets[9]);
+  object.taskType = reader.readString(offsets[12]);
+  object.tenantId = reader.readString(offsets[13]);
+  object.title = reader.readString(offsets[14]);
   return object;
 }
 
@@ -171,21 +215,31 @@ P _taskLocalDeserializeProp<P>(
     case 1:
       return (reader.readStringOrNull(offset)) as P;
     case 2:
-      return (reader.readDateTime(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 3:
-      return (reader.readDateTime(offset)) as P;
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 4:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readDateTime(offset)) as P;
     case 5:
       return (reader.readDateTime(offset)) as P;
     case 6:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 7:
       return (reader.readStringOrNull(offset)) as P;
     case 8:
+      return (reader.readDateTime(offset)) as P;
+    case 9:
+      return (reader.readString(offset)) as P;
+    case 10:
+      return (reader.readStringOrNull(offset)) as P;
+    case 11:
       return (_TaskLocalsyncStatusValueEnumMap[reader.readByteOrNull(offset)] ??
           SyncStatus.synced) as P;
-    case 9:
+    case 12:
+      return (reader.readString(offset)) as P;
+    case 13:
+      return (reader.readString(offset)) as P;
+    case 14:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -602,6 +656,140 @@ extension TaskLocalQueryFilter
     });
   }
 
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> descriptionEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'description',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      descriptionGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'description',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> descriptionLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'description',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> descriptionBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'description',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      descriptionStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'description',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> descriptionEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'description',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> descriptionContains(
+      String value,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'description',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> descriptionMatches(
+      String pattern,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'description',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      descriptionIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'description',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      descriptionIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'description',
+        value: '',
+      ));
+    });
+  }
+
   QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> idEqualTo(
       Id value) {
     return QueryBuilder.apply(this, (query) {
@@ -647,6 +835,79 @@ extension TaskLocalQueryFilter
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.between(
         property: r'id',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      lastSyncedAtIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'lastSyncedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      lastSyncedAtIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'lastSyncedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> lastSyncedAtEqualTo(
+      DateTime? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'lastSyncedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      lastSyncedAtGreaterThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'lastSyncedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      lastSyncedAtLessThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'lastSyncedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> lastSyncedAtBetween(
+    DateTime? lower,
+    DateTime? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'lastSyncedAt',
         lower: lower,
         includeLower: includeLower,
         upper: upper,
@@ -761,6 +1022,159 @@ extension TaskLocalQueryFilter
         includeLower: includeLower,
         upper: upper,
         includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      metadataJsonIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'metadataJson',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      metadataJsonIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'metadataJson',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> metadataJsonEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'metadataJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      metadataJsonGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'metadataJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      metadataJsonLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'metadataJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> metadataJsonBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'metadataJson',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      metadataJsonStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'metadataJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      metadataJsonEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'metadataJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      metadataJsonContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'metadataJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> metadataJsonMatches(
+      String pattern,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'metadataJson',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      metadataJsonIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'metadataJson',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      metadataJsonIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'metadataJson',
+        value: '',
       ));
     });
   }
@@ -1304,6 +1718,137 @@ extension TaskLocalQueryFilter
     });
   }
 
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> taskTypeEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'taskType',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> taskTypeGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'taskType',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> taskTypeLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'taskType',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> taskTypeBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'taskType',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> taskTypeStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'taskType',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> taskTypeEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'taskType',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> taskTypeContains(
+      String value,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'taskType',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> taskTypeMatches(
+      String pattern,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'taskType',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> taskTypeIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'taskType',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      taskTypeIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'taskType',
+        value: '',
+      ));
+    });
+  }
+
   QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> tenantIdEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -1434,6 +1979,136 @@ extension TaskLocalQueryFilter
       ));
     });
   }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> titleEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'title',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> titleGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'title',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> titleLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'title',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> titleBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'title',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> titleStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'title',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> titleEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'title',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> titleContains(
+      String value,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'title',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> titleMatches(
+      String pattern,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'title',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> titleIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'title',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> titleIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'title',
+        value: '',
+      ));
+    });
+  }
 }
 
 extension TaskLocalQueryObject
@@ -1470,6 +2145,30 @@ extension TaskLocalQuerySortBy on QueryBuilder<TaskLocal, TaskLocal, QSortBy> {
     });
   }
 
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByDescription() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'description', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByDescriptionDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'description', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByLastSyncedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastSyncedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByLastSyncedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastSyncedAt', Sort.desc);
+    });
+  }
+
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByLastUpdated() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'lastUpdated', Sort.asc);
@@ -1491,6 +2190,18 @@ extension TaskLocalQuerySortBy on QueryBuilder<TaskLocal, TaskLocal, QSortBy> {
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByLocalUpdatedAtDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'localUpdatedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByMetadataJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'metadataJson', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByMetadataJsonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'metadataJson', Sort.desc);
     });
   }
 
@@ -1554,6 +2265,18 @@ extension TaskLocalQuerySortBy on QueryBuilder<TaskLocal, TaskLocal, QSortBy> {
     });
   }
 
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByTaskType() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'taskType', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByTaskTypeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'taskType', Sort.desc);
+    });
+  }
+
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByTenantId() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'tenantId', Sort.asc);
@@ -1563,6 +2286,18 @@ extension TaskLocalQuerySortBy on QueryBuilder<TaskLocal, TaskLocal, QSortBy> {
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByTenantIdDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'tenantId', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByTitle() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'title', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByTitleDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'title', Sort.desc);
     });
   }
 }
@@ -1596,6 +2331,18 @@ extension TaskLocalQuerySortThenBy
     });
   }
 
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByDescription() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'description', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByDescriptionDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'description', Sort.desc);
+    });
+  }
+
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenById() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'id', Sort.asc);
@@ -1605,6 +2352,18 @@ extension TaskLocalQuerySortThenBy
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByIdDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'id', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByLastSyncedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastSyncedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByLastSyncedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastSyncedAt', Sort.desc);
     });
   }
 
@@ -1629,6 +2388,18 @@ extension TaskLocalQuerySortThenBy
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByLocalUpdatedAtDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'localUpdatedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByMetadataJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'metadataJson', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByMetadataJsonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'metadataJson', Sort.desc);
     });
   }
 
@@ -1692,6 +2463,18 @@ extension TaskLocalQuerySortThenBy
     });
   }
 
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByTaskType() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'taskType', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByTaskTypeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'taskType', Sort.desc);
+    });
+  }
+
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByTenantId() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'tenantId', Sort.asc);
@@ -1701,6 +2484,18 @@ extension TaskLocalQuerySortThenBy
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByTenantIdDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'tenantId', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByTitle() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'title', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByTitleDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'title', Sort.desc);
     });
   }
 }
@@ -1723,6 +2518,19 @@ extension TaskLocalQueryWhereDistinct
     });
   }
 
+  QueryBuilder<TaskLocal, TaskLocal, QDistinct> distinctByDescription(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'description', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QDistinct> distinctByLastSyncedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'lastSyncedAt');
+    });
+  }
+
   QueryBuilder<TaskLocal, TaskLocal, QDistinct> distinctByLastUpdated() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'lastUpdated');
@@ -1732,6 +2540,13 @@ extension TaskLocalQueryWhereDistinct
   QueryBuilder<TaskLocal, TaskLocal, QDistinct> distinctByLocalUpdatedAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'localUpdatedAt');
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QDistinct> distinctByMetadataJson(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'metadataJson', caseSensitive: caseSensitive);
     });
   }
 
@@ -1768,10 +2583,24 @@ extension TaskLocalQueryWhereDistinct
     });
   }
 
+  QueryBuilder<TaskLocal, TaskLocal, QDistinct> distinctByTaskType(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'taskType', caseSensitive: caseSensitive);
+    });
+  }
+
   QueryBuilder<TaskLocal, TaskLocal, QDistinct> distinctByTenantId(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'tenantId', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QDistinct> distinctByTitle(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'title', caseSensitive: caseSensitive);
     });
   }
 }
@@ -1798,6 +2627,18 @@ extension TaskLocalQueryProperty
     });
   }
 
+  QueryBuilder<TaskLocal, String, QQueryOperations> descriptionProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'description');
+    });
+  }
+
+  QueryBuilder<TaskLocal, DateTime?, QQueryOperations> lastSyncedAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'lastSyncedAt');
+    });
+  }
+
   QueryBuilder<TaskLocal, DateTime, QQueryOperations> lastUpdatedProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'lastUpdated');
@@ -1807,6 +2648,12 @@ extension TaskLocalQueryProperty
   QueryBuilder<TaskLocal, DateTime, QQueryOperations> localUpdatedAtProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'localUpdatedAt');
+    });
+  }
+
+  QueryBuilder<TaskLocal, String?, QQueryOperations> metadataJsonProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'metadataJson');
     });
   }
 
@@ -1840,9 +2687,21 @@ extension TaskLocalQueryProperty
     });
   }
 
+  QueryBuilder<TaskLocal, String, QQueryOperations> taskTypeProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'taskType');
+    });
+  }
+
   QueryBuilder<TaskLocal, String, QQueryOperations> tenantIdProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'tenantId');
+    });
+  }
+
+  QueryBuilder<TaskLocal, String, QQueryOperations> titleProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'title');
     });
   }
 }

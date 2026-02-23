@@ -26,6 +26,7 @@ class AppAuthState {
     this.user,
     this.role,
     this.tenantId,
+    this.profileId,
     this.isImpersonating = false,
     this.isTenantActive,
     this.paidUntil,
@@ -37,6 +38,9 @@ class AppAuthState {
 
   /// Role z profiles – admin, worker, super_admin, property_owner, manager.
   final String? role;
+
+  /// profiles.id – UUID profilu. Pro Worker sync a filtry (assigned_to).
+  final String? profileId;
 
   /// Agentura (tenant) – NULL pro super_admin! Nullable je KRITICKÉ.
   final String? tenantId;
@@ -184,6 +188,7 @@ class AuthNotifier extends ChangeNotifier {
       user: _state.user,
       role: _state.role,
       tenantId: _state.tenantId,
+      profileId: _state.profileId,
       isImpersonating: true,
       isTenantActive: isTenantActive,
       paidUntil: paidUntil,
@@ -202,6 +207,7 @@ class AuthNotifier extends ChangeNotifier {
       user: _state.user,
       role: _state.role,
       tenantId: _state.tenantId,
+      profileId: _state.profileId,
       isImpersonating: false,
       isTenantActive: null,
       paidUntil: null,
@@ -230,6 +236,7 @@ class AuthNotifier extends ChangeNotifier {
         user: _state.user,
         role: _state.role,
         tenantId: _state.tenantId,
+        profileId: _state.profileId,
         isImpersonating: _state.isImpersonating,
         isTenantActive: _state.isTenantActive,
         paidUntil: paidUntil,
@@ -355,7 +362,7 @@ class AuthNotifier extends ChangeNotifier {
           }
           final response = await SupabaseService.client
               .from('profiles')
-              .select('role, tenant_id, language_code, preferred_currency')
+              .select('id, role, tenant_id, language_code, preferred_currency')
               .eq('auth_id', user.id)
               .isFilter('deleted_at', null)
               .maybeSingle();
@@ -405,14 +412,18 @@ class AuthNotifier extends ChangeNotifier {
 
       String? roleStr;
       String? tenantIdStr;
+      String? profileIdStr;
       String? languageCodeStr;
       String? preferredCurrencyStr;
 
       if (res != null && res is Map) {
         final r = res['role'];
         final t = res['tenant_id'];
+        final pid = res['id'];
         final lc = res['language_code'];
         final pc = res['preferred_currency'];
+        profileIdStr = pid?.toString().trim();
+        if (profileIdStr != null && profileIdStr.isEmpty) profileIdStr = null;
         if (lc is String && lc.trim().isNotEmpty) languageCodeStr = lc.trim();
         if (pc is String && pc.trim().isNotEmpty) preferredCurrencyStr = pc.trim().toUpperCase();
         // ignore: avoid_print
@@ -477,6 +488,7 @@ class AuthNotifier extends ChangeNotifier {
         user: user,
         role: role,
         tenantId: tenantIdStr,
+        profileId: profileIdStr,
         isImpersonating: false,
         isTenantActive: isTenantActive,
         paidUntil: paidUntil,
@@ -503,7 +515,7 @@ class AuthNotifier extends ChangeNotifier {
       // NEODHLASOVAT! Uživatel zůstane přihlášen, zobrazíme chybu.
       // Odhlášení pouze při explicitním kliknutí na Odhlásit se.
       _profileLoadError = 'login.error_profile_load'.tr();
-      _state = AppAuthState(user: user, role: null, tenantId: null, isImpersonating: false, isTenantActive: null, paidUntil: null, languageCode: null, preferredCurrency: null);
+      _state = AppAuthState(user: user, role: null, tenantId: null, profileId: null, isImpersonating: false, isTenantActive: null, paidUntil: null, languageCode: null, preferredCurrency: null);
     } finally {
       _isProfileLoading = false;
       notifyListeners();
@@ -523,6 +535,7 @@ class AuthNotifier extends ChangeNotifier {
       user: _state.user,
       role: _state.role,
       tenantId: _state.tenantId,
+      profileId: _state.profileId,
       isImpersonating: _state.isImpersonating,
       isTenantActive: _state.isTenantActive,
       paidUntil: _state.paidUntil,
@@ -545,6 +558,7 @@ class AuthNotifier extends ChangeNotifier {
       user: _state.user,
       role: _state.role,
       tenantId: _state.tenantId,
+      profileId: _state.profileId,
       isImpersonating: _state.isImpersonating,
       isTenantActive: _state.isTenantActive,
       paidUntil: _state.paidUntil,

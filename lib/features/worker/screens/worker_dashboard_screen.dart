@@ -5,8 +5,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/auth/pin_storage.dart';
+import 'package:falconest/core/providers/connectivity_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/features/worker/data/services/worker_sync_service.dart';
 import 'package:falconest/features/worker/providers/worker_dashboard_provider.dart';
 
 const _primaryBlue = Color(0xFF1565C0);
@@ -32,10 +35,25 @@ class _WorkerDashboardScreenState extends ConsumerState<WorkerDashboardScreen> {
       PinStorage.hasPin().then((v) {
         if (mounted) setState(() => _hasPin = v);
       });
+      // Jednorázový sync při otevření obrazovky – čtecí provider žádný sync nespouští.
+      Future.microtask(() async {
+        final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+        final workerId = ref.read(authNotifierProvider).state.profileId;
+        if (tenantId != null && workerId != null) {
+          await WorkerSyncService.syncTasksFromSupabase(workerId, tenantId);
+          if (mounted) ref.invalidate(workerTasksProvider);
+        }
+      });
     }
   }
 
+  /// Pull-to-refresh: stáhne čerstvá data ze Supabase a aktualizuje provider.
   Future<void> _refresh() async {
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    final workerId = ref.read(authNotifierProvider).state.profileId;
+    if (tenantId != null && workerId != null) {
+      await WorkerSyncService.syncTasksFromSupabase(workerId, tenantId);
+    }
     ref.invalidate(workerTasksProvider);
     await ref.read(workerTasksProvider.future);
   }
@@ -43,6 +61,7 @@ class _WorkerDashboardScreenState extends ConsumerState<WorkerDashboardScreen> {
   @override
   Widget build(BuildContext context) {
     final tasksAsync = ref.watch(workerTasksProvider);
+    final isOffline = ref.watch(isOfflineProvider).value ?? false;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F5),
@@ -65,54 +84,83 @@ class _WorkerDashboardScreenState extends ConsumerState<WorkerDashboardScreen> {
         ),
       ),
       drawer: _WorkerDrawer(hasPin: _hasPin ?? false),
-      body: RefreshIndicator(
-        onRefresh: _refresh,
-        child: tasksAsync.when(
-          data: (tasks) {
-            if (tasks.isEmpty) {
-              return SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                child: SizedBox(
-                  height: MediaQuery.of(context).size.height - 200,
-                  child: _EmptyState(),
-                ),
-              );
-            }
-            return _TaskList(tasks: tasks);
-          },
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => SingleChildScrollView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            child: SizedBox(
-              height: MediaQuery.of(context).size.height - 200,
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.error_outline, size: 48, color: Colors.red.shade400),
-                      const SizedBox(height: 16),
-                      Text(
-                        'common.error_with_message'.tr(namedArgs: {'message': '$e'}),
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.grey.shade700),
+      body: Column(
+        children: [
+          if (isOffline)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              color: Colors.orange.shade700,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.cloud_off, color: Colors.white, size: 20),
+                  const SizedBox(width: 8),
+                  Text(
+                    'worker.offline_mode_banner'.tr(),
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else
+            const SizedBox.shrink(),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: _refresh,
+              child: tasksAsync.when(
+                data: (tasks) {
+                  if (tasks.isEmpty) {
+                    return SingleChildScrollView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      child: SizedBox(
+                        height: MediaQuery.of(context).size.height - 200,
+                        child: _EmptyState(),
                       ),
-                      const SizedBox(height: 24),
-                      FilledButton.icon(
-                        onPressed: () {
-                          ref.invalidate(workerTasksProvider);
-                        },
-                        icon: const Icon(Icons.refresh),
-                        label: Text('common.retry'.tr()),
+                    );
+                  }
+                  return _TaskList(tasks: tasks);
+                },
+                loading: () => const Center(child: CircularProgressIndicator()),
+                error: (e, _) => SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  child: SizedBox(
+                    height: MediaQuery.of(context).size.height - 200,
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.error_outline, size: 48, color: Colors.red.shade400),
+                            const SizedBox(height: 16),
+                            Text(
+                              'common.error_with_message'.tr(namedArgs: {'message': '$e'}),
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Colors.grey.shade700),
+                            ),
+                            const SizedBox(height: 24),
+                            FilledButton.icon(
+                              onPressed: () {
+                                ref.invalidate(workerTasksProvider);
+                              },
+                              icon: const Icon(Icons.refresh),
+                              label: Text('common.retry'.tr()),
+                            ),
+                          ],
+                        ),
                       ),
-                    ],
+                    ),
                   ),
                 ),
               ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }

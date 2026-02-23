@@ -65,7 +65,11 @@ class TaskRow {
     this.reservationEndDate,
     this.reservationGuestCount,
     this.createdAt,
+    this.metadata,
   });
+
+  /// Flexibilní data pro UI (např. částka k vybrání, poznámky z rezervace, číslo letu).
+  final Map<String, dynamic>? metadata;
 
   final String id;
   final String apartmentId;
@@ -113,7 +117,7 @@ class TaskRow {
       }(),
       title: (json['title'] as String?)?.trim() ?? '',
       description: (json['description'] as String?)?.trim() ?? '',
-      status: (json['status'] as String?)?.trim() ?? 'Návrh',
+      status: (json['status'] as String?)?.trim() ?? 'pending',
       taskType: (json['task_type'] as String?)?.trim() ?? 'Jiné',
       dueDate: _parseDueDate(json['due_date'] ?? json['scheduled_start']),
       apartmentName: null,
@@ -131,7 +135,16 @@ class TaskRow {
         final s = v.toString().trim();
         return s.isEmpty ? null : s;
       }(),
+      metadata: _parseMetadata(json['metadata']),
     );
+  }
+
+  /// Parsuje metadata z JSONB – může přijít jako Map nebo null.
+  static Map<String, dynamic>? _parseMetadata(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    return null;
   }
 
   static DateTime? _parseOptionalDateTime(dynamic raw) {
@@ -200,6 +213,7 @@ class TaskRow {
       reservationEndDate: reservationEndDate,
       reservationGuestCount: reservationGuestCount,
       createdAt: TaskRow._parseOptionalDateTime(row['created_at']),
+      metadata: task.metadata,
     );
   }
 
@@ -226,7 +240,7 @@ class TaskRow {
   /// Mapuje model na formát pro Supabase. DB vyžaduje scheduled_start (NOT NULL).
   Map<String, dynamic> toMap() {
     final iso = dueDate.toIso8601String();
-    return {
+    final map = <String, dynamic>{
       'apartment_id': apartmentId,
       'assigned_to': assignedTo?.isEmpty ?? true ? null : assignedTo,
       'title': title,
@@ -236,6 +250,57 @@ class TaskRow {
       'due_date': iso,
       'scheduled_start': iso,
     };
+    if (metadata != null && metadata!.isNotEmpty) {
+      map['metadata'] = metadata;
+    }
+    return map;
+  }
+
+  /// Serializace do JSON pro API nebo lokální uložení.
+  Map<String, dynamic> toJson() => toMap();
+
+  TaskRow copyWith({
+    String? id,
+    String? apartmentId,
+    String? assignedTo,
+    String? title,
+    String? description,
+    String? status,
+    String? taskType,
+    DateTime? dueDate,
+    String? apartmentName,
+    String? assignedToName,
+    DateTime? deletedAt,
+    String? reservationId,
+    String? serviceId,
+    String? reservationGuestName,
+    DateTime? reservationStartDate,
+    DateTime? reservationEndDate,
+    int? reservationGuestCount,
+    DateTime? createdAt,
+    Map<String, dynamic>? metadata,
+  }) {
+    return TaskRow(
+      id: id ?? this.id,
+      apartmentId: apartmentId ?? this.apartmentId,
+      assignedTo: assignedTo ?? this.assignedTo,
+      title: title ?? this.title,
+      description: description ?? this.description,
+      status: status ?? this.status,
+      taskType: taskType ?? this.taskType,
+      dueDate: dueDate ?? this.dueDate,
+      apartmentName: apartmentName ?? this.apartmentName,
+      assignedToName: assignedToName ?? this.assignedToName,
+      deletedAt: deletedAt ?? this.deletedAt,
+      reservationId: reservationId ?? this.reservationId,
+      serviceId: serviceId ?? this.serviceId,
+      reservationGuestName: reservationGuestName ?? this.reservationGuestName,
+      reservationStartDate: reservationStartDate ?? this.reservationStartDate,
+      reservationEndDate: reservationEndDate ?? this.reservationEndDate,
+      reservationGuestCount: reservationGuestCount ?? this.reservationGuestCount,
+      createdAt: createdAt ?? this.createdAt,
+      metadata: metadata ?? this.metadata,
+    );
   }
 }
 
@@ -515,7 +580,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
             'assigned_to': result.assignTo,
             'title': title,
             'description': description,
-            'status': 'Návrh',
+            'status': 'pending',
             'task_type': resolvedTaskType,
             'scheduled_start': result.start.toIso8601String(),
             'due_date': result.end.toIso8601String(),
@@ -589,8 +654,8 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
       final service = catalogById[serviceId];
       if (service == null) continue;
 
-      // --- OCHRANNÝ ŠTÍT: Nepřidat úkol, pokud už existuje aktivní (Návrh, Nový, Probíhá) pro apartment+service ---
-      const activeStatuses = ['Návrh', 'Nový', 'Probíhá'];
+      // --- OCHRANNÝ ŠTÍT: Nepřidat úkol, pokud už existuje aktivní (pending/assigned/in_progress) pro apartment+service ---
+      const activeStatuses = ['pending', 'draft', 'Návrh', 'assigned', 'Nový', 'in_progress', 'Probíhá'];
       bool hasActive = tasksList.any((t) {
         final apt = t['apartment_id']?.toString().trim();
         final svc = t['service_id']?.toString().trim();
@@ -609,7 +674,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
           .where((t) =>
               t['apartment_id']?.toString() == apartmentId &&
               t['service_id']?.toString() == serviceId &&
-              ((t['status'] as String?)?.trim() ?? '') == 'Hotovo')
+              _isCompletedStatus((t['status'] as String?)?.trim() ?? ''))
           .toList();
       DateTime? baseDate;
       if (completed.isNotEmpty) {
@@ -690,7 +755,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
         'assigned_to': result.assignTo,
         'title': title,
         'description': description,
-        'status': 'Návrh',
+        'status': 'pending',
         'task_type': service.serviceType,
         'scheduled_start': result.start.toIso8601String(),
         'due_date': result.end.toIso8601String(),
@@ -707,7 +772,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
   }
 
   /// Aktualizuje stav úkolu v Supabase (pro Kanban drag & drop).
-  /// [newStatus] musí být jedna z hodnot: Návrh, Nový, Probíhá, Hotovo.
+  /// [newStatus] musí být systémová hodnota: pending, assigned, in_progress, completed, problem.
   /// Po úspěchu volající invaliduje provider úkolů pro překreslení UI.
   Future<void> updateTaskStatus(String taskId, String newStatus) async {
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
@@ -719,16 +784,21 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
         .eq('tenant_id', tenantId);
   }
 
-  /// Hromadně schválí všechny úkoly se stavem „Návrh“ (pending) – změní je na „Zadáno“ (Nový).
+  /// Hromadně schválí všechny úkoly se stavem pending – změní je na assigned.
+  /// Akceptuje i legacy hodnoty (Návrh, Nový) pro zpětnou kompatibilitu.
   /// Rozdělení do dávek (batch) po 50 kusech, aby nedošlo k chybě 400 Bad Request ze Supabase
   /// při příliš dlouhém URL/parametrech inFilter() při velkém počtu ID.
-  /// Vrací počet schválených úkolů. Volající má po úspěchu invalidovat provider úkolů.
   Future<int> approveAllPendingTasks() async {
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     if (tenantId == null || tenantId.isEmpty) return 0;
     final currentTasks = state.valueOrNull;
     if (currentTasks == null) return 0;
-    final pending = currentTasks.where((t) => t.status == 'Návrh').toList();
+    final pending = currentTasks
+        .where((t) {
+          final s = t.status.trim().toLowerCase();
+          return s == 'pending' || s == 'draft' || s == 'návrh';
+        })
+        .toList();
     if (pending.isEmpty) return 0;
     final ids = pending.map((e) => e.id).toList();
 
@@ -738,7 +808,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
       final batch = ids.sublist(i, end);
       await SupabaseService.client
           .from('tasks')
-          .update({'status': 'Nový'})
+          .update({'status': 'assigned'})
           .eq('tenant_id', tenantId)
           .inFilter('id', batch);
     }
@@ -747,7 +817,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
 
   /// Simulace přepočtu personálu: používá chytrý algoritmus (noční klid, kolize, zóny) jako při generování,
   /// ale NEUKLÁDÁ do DB. Vrací seznam návrhů změn pro dispečerské schválení.
-  /// Načítá pouze úkoly se statusem Návrh a Zadáno (Nový) od zítřka dál.
+  /// Načítá pouze úkoly se statusem pending/draft/návrh nebo assigned/nový od zítřka dál.
   Future<List<TaskRecalculationProposal>> recalculateAssignees() async {
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     if (tenantId == null || tenantId.isEmpty) return [];
@@ -784,7 +854,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
           .select('id, apartment_id, reservation_id, title, due_date, scheduled_start, assigned_to, task_type, status')
           .eq('tenant_id', tenantId)
           .isFilter('deleted_at', null)
-          .inFilter('status', ['Návrh', 'Nový'])
+          .inFilter('status', ['pending', 'draft', 'Návrh', 'assigned', 'Nový'])
           .gte('due_date', tomorrowStart.toIso8601String())
           .order('due_date', ascending: true);
     } catch (_) {
@@ -1272,12 +1342,18 @@ bool _taskAlreadyExists(
       m['reservation_id'] == reservationId && m['service_id'] == serviceId);
 }
 
+/// Vrací true, pokud status znamená dokončený úkol (completed, done, Hotovo + legacy).
+bool _isCompletedStatus(String status) {
+  final s = status.trim().toLowerCase();
+  return s == 'completed' || s == 'done' || s == 'hotovo' || s == 'dokončeno';
+}
+
 String _buildAlterTableSql() {
   return '''
 -- Přidání chybějících sloupců do tasks (spouštěj jeden po druhém, pokud už existují, přeskoč):
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS title TEXT DEFAULT '';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Návrh';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS task_type TEXT DEFAULT 'Jiné';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_date TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES auth.users(id) ON DELETE SET NULL;

@@ -21,11 +21,15 @@ import 'package:falconest/utils/task_visuals.dart';
 import 'package:falconest/widgets/task_legend.dart';
 
 /// Barvy pro stavy úkolu – stejný styl jako v ostatních admin obrazovkách.
-const _statusDraft = Color(0xFF7B1FA2);   // Návrh – fialová
+const _statusDraft = Color(0xFF7B1FA2);
 const _statusNew = Color(0xFF757575);
 const _statusInProgress = Color(0xFF1565C0);
 const _statusDone = Color(0xFF2E7D32);
 const _statusProblem = Color(0xFFC62828);
+
+/// Systémové hodnoty statusů v DB – backendová logika používá výhradně tyto stringy,
+/// překlad probíhá až ve vrstvě UI pomocí klíčů task_status.* v JSON.
+const _systemStatuses = ['pending', 'assigned', 'in_progress', 'completed', 'problem'];
 
 /// Filtr zobrazení úkolů podle data termínu (due_date).
 enum TasksDateFilter { all, today, tomorrow }
@@ -805,19 +809,41 @@ class _TasksFilterBar extends StatelessWidget {
   }
 }
 
-/// Stav sloupce Kanbanu a odpovídající hodnota v DB.
+/// Definice sloupce Kanbanu – systémový status (hodnota v DB) a i18n klíč pro nadpis.
 class _KanbanColumnDef {
-  const _KanbanColumnDef({required this.dbStatus, required this.titleKey});
-  final String dbStatus;
+  const _KanbanColumnDef({required this.systemStatus, required this.titleKey});
+  final String systemStatus;
   final String titleKey;
 }
 
-/// Rozdělení úkolů do 4 sloupců podle životního cyklu. Problém zobrazujeme ve sloupci Probíhá.
-List<TaskRow> _tasksForColumn(List<TaskRow> tasks, String dbStatus) {
-  if (dbStatus == 'Probíhá') {
-    return tasks.where((t) => t.status == 'Probíhá' || t.status == 'Problém').toList();
+/// Normalizuje surový status z DB na systémovou hodnotu (pending, assigned, in_progress, completed, problem).
+/// Zajišťuje zpětnou kompatibilitu s legacy hodnotami (Návrh, Nový, Probíhá, Hotovo).
+String _normalizeToSystemStatus(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return 'pending';
+  final s = raw.trim().toLowerCase();
+  if (s == 'pending' || s == 'draft' || s == 'návrh') return 'pending';
+  if (s == 'assigned' || s == 'new' || s == 'nový' || s == 'zadáno') return 'assigned';
+  if (s == 'in_progress' || s == 'probíhá') return 'in_progress';
+  if (s == 'completed' || s == 'done' || s == 'hotovo' || s == 'dokončeno') return 'completed';
+  if (s == 'problém' || s == 'problem' || s == 'issue') return 'problem';
+  if (_systemStatuses.contains(raw.trim())) return raw.trim();
+  return 'pending';
+}
+
+/// Lokalizovaný text statusu – využití easy_localization (task_status.* v JSON).
+String _getLocalizedStatus(String systemStatus) {
+  return 'task_status.$systemStatus'.tr();
+}
+
+/// Rozdělení úkolů do sloupců – filtrování čistě na základě systémových hodnot z DB.
+List<TaskRow> _tasksForColumn(List<TaskRow> tasks, String systemStatus) {
+  if (systemStatus == 'in_progress') {
+    return tasks.where((t) {
+      final norm = _normalizeToSystemStatus(t.status);
+      return norm == 'in_progress' || norm == 'problem';
+    }).toList();
   }
-  return tasks.where((t) => t.status == dbStatus).toList();
+  return tasks.where((t) => _normalizeToSystemStatus(t.status) == systemStatus).toList();
 }
 
 /// Kanban nástěnka se 4 sloupci a Drag & Drop.
@@ -837,10 +863,10 @@ class _KanbanBoard extends StatelessWidget {
   final ValueChanged<TaskRow> onDelete;
 
   static const _columns = [
-    _KanbanColumnDef(dbStatus: 'Návrh', titleKey: 'admin.tasks_kanban_pending'),
-    _KanbanColumnDef(dbStatus: 'Nový', titleKey: 'admin.tasks_kanban_assigned'),
-    _KanbanColumnDef(dbStatus: 'Probíhá', titleKey: 'admin.tasks_kanban_in_progress'),
-    _KanbanColumnDef(dbStatus: 'Hotovo', titleKey: 'admin.tasks_kanban_completed'),
+    _KanbanColumnDef(systemStatus: 'pending', titleKey: 'admin.tasks_kanban_pending'),
+    _KanbanColumnDef(systemStatus: 'assigned', titleKey: 'admin.tasks_kanban_assigned'),
+    _KanbanColumnDef(systemStatus: 'in_progress', titleKey: 'admin.tasks_kanban_in_progress'),
+    _KanbanColumnDef(systemStatus: 'completed', titleKey: 'admin.tasks_kanban_completed'),
   ];
 
   @override
@@ -850,13 +876,13 @@ class _KanbanBoard extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: _columns.map((col) {
-          final columnTasks = _tasksForColumn(tasks, col.dbStatus);
+          final columnTasks = _tasksForColumn(tasks, col.systemStatus);
           return Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 6),
               child: _KanbanColumn(
                 tasks: columnTasks,
-                dbStatus: col.dbStatus,
+                systemStatus: col.systemStatus,
                 titleKey: col.titleKey,
                 ref: ref,
                 categoriesByCode: categoriesByCode,
@@ -875,7 +901,7 @@ class _KanbanBoard extends StatelessWidget {
 class _KanbanColumn extends StatelessWidget {
   const _KanbanColumn({
     required this.tasks,
-    required this.dbStatus,
+    required this.systemStatus,
     required this.titleKey,
     required this.ref,
     required this.categoriesByCode,
@@ -884,7 +910,7 @@ class _KanbanColumn extends StatelessWidget {
   });
 
   final List<TaskRow> tasks;
-  final String dbStatus;
+  final String systemStatus;
   final String titleKey;
   final WidgetRef ref;
   final Map<String, TaskCategoryModel> categoriesByCode;
@@ -897,9 +923,9 @@ class _KanbanColumn extends StatelessWidget {
     return DragTarget<TaskRow>(
       onAcceptWithDetails: (details) async {
         final task = details.data;
-        if (task.status == dbStatus) return;
+        if (_normalizeToSystemStatus(task.status) == systemStatus) return;
         try {
-          await ref.read(adminTasksProvider.notifier).updateTaskStatus(task.id, dbStatus);
+          await ref.read(adminTasksProvider.notifier).updateTaskStatus(task.id, systemStatus);
           if (context.mounted) ref.invalidate(adminTasksProvider);
         } catch (e) {
           if (context.mounted) {
@@ -1000,7 +1026,7 @@ class _KanbanTaskCardContent extends StatelessWidget {
         ? 'admin.task_assigned'.tr(namedArgs: {'name': task.assignedToName!})
         : 'admin.task_unassigned'.tr();
     final dueStr = _formatDue(task.dueDate);
-    final statusColor = _TaskCard._statusColor(task.status);
+    final statusColor = _TaskCard._statusColor(_normalizeToSystemStatus(task.status));
     // Stejná hierarchie jako _TaskCard (bez ikony koše – drag feedback)
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -1056,7 +1082,7 @@ class _KanbanTaskCardContent extends StatelessWidget {
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Text(
-                _TaskCard._statusLabel(task.status),
+                _TaskCard._statusLabel(_normalizeToSystemStatus(task.status)),
                 style: TextStyle(
                   fontSize: 10,
                   fontWeight: FontWeight.bold,
@@ -1107,24 +1133,25 @@ class _TaskCard extends StatelessWidget {
   final ValueChanged<TaskRow> onEdit;
   final ValueChanged<TaskRow> onDelete;
 
-  static Color _statusColor(String status) {
-    switch (status) {
-      case 'Návrh':
+  /// Barva podle systémového statusu (pending, assigned, in_progress, completed, problem).
+  static Color _statusColor(String systemStatus) {
+    switch (systemStatus) {
+      case 'pending':
         return _statusDraft;
-      case 'Nový':
+      case 'assigned':
         return _statusNew;
-      case 'Probíhá':
+      case 'in_progress':
         return _statusInProgress;
-      case 'Hotovo':
-        return _statusDone;
-      case 'Problém':
+      case 'problem':
         return _statusProblem;
+      case 'completed':
+        return _statusDone;
       default:
         return _statusNew;
     }
   }
 
-  static String _statusLabel(String status) => _formatStatusLabel(status);
+  static String _statusLabel(String systemStatus) => _getLocalizedStatus(systemStatus);
 
   @override
   Widget build(BuildContext context) {
@@ -1227,15 +1254,15 @@ class _TaskCard extends StatelessWidget {
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
-                            color: _statusColor(task.status).withValues(alpha: 0.15),
+                            color: _statusColor(_normalizeToSystemStatus(task.status)).withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: Text(
-                            _statusLabel(task.status),
+                            _statusLabel(_normalizeToSystemStatus(task.status)),
                             style: TextStyle(
                               fontSize: 10,
                               fontWeight: FontWeight.bold,
-                              color: _statusColor(task.status),
+                              color: _statusColor(_normalizeToSystemStatus(task.status)),
                             ),
                           ),
                         ),
@@ -1353,40 +1380,6 @@ Future<String?> _showDateTimePicker(BuildContext context, {DateTime? initial}) a
 
 /// Hodnoty typů úkolů ukládané do DB. V UI se zobrazují přes lokalizaci.
 const _taskTypeValues = ['cleaning', 'transfer_in', 'transfer_out', 'check_in', 'check_out', 'issue', 'material'];
-const _statuses = ['Návrh', 'Nový', 'Probíhá', 'Hotovo', 'Problém'];
-
-/// Mapuje status z DB (pending, in_progress, completed atd.) na admin hodnoty (_statuses).
-/// Worker/Owner modul používá pending/in_progress/completed, admin používá Návrh/Nový/Probíhá/Hotovo.
-/// Fallback: neznámá hodnota -> Návrh.
-String _normalizeStatusForAdmin(String? raw) {
-  if (raw == null || raw.trim().isEmpty) return _statuses.first;
-  final s = raw.trim().toLowerCase();
-  if (s == 'pending' || s == 'draft' || s == 'návrh') return 'Návrh';
-  if (s == 'assigned' || s == 'new' || s == 'nový' || s == 'zadáno') return 'Nový';
-  if (s == 'in_progress' || s == 'probíhá') return 'Probíhá';
-  if (s == 'completed' || s == 'done' || s == 'hotovo' || s == 'dokončeno') return 'Hotovo';
-  if (s == 'problém' || s == 'problem' || s == 'issue') return 'Problém';
-  if (_statuses.contains(raw.trim())) return raw.trim();
-  return _statuses.first;
-}
-
-/// Lokalizovaný label statusu – používá se na badge i v dropdownu.
-String _formatStatusLabel(String status) {
-  switch (status) {
-    case 'Návrh':
-      return 'admin.status_draft'.tr();
-    case 'Nový':
-      return 'admin.status_assigned'.tr();
-    case 'Probíhá':
-      return 'admin.status_in_progress'.tr();
-    case 'Hotovo':
-      return 'admin.status_done'.tr();
-    case 'Problém':
-      return 'admin.status_problem'.tr();
-    default:
-      return status.isEmpty ? 'admin.status_assigned'.tr() : status;
-  }
-}
 
 /// Vrací lokalizační klíč pro daný task_type (DB hodnota nebo legacy).
 String _taskTypeLabelKey(String taskType) {
@@ -1440,7 +1433,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
   String? _selectedApartmentId;
   String? _selectedAssignedTo;
   String _taskType = _taskTypeValues.first;
-  String _status = _statuses.first;
+  String _status = _systemStatuses.first;
   bool _isSaving = false;
 
   @override
@@ -1676,18 +1669,18 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
-                  initialValue: _statuses.contains(_status) ? _status : _statuses.first,
+                  initialValue: _systemStatuses.contains(_status) ? _status : _systemStatuses.first,
                   decoration: const InputDecoration(
                     prefixIcon: Icon(Icons.list_alt_outlined),
                     border: OutlineInputBorder(),
                   ),
-                  items: _statuses
+                  items: _systemStatuses
                       .map((s) => DropdownMenuItem<String>(
                             value: s,
-                            child: Text(_formatStatusLabel(s)),
+                            child: Text(_getLocalizedStatus(s)),
                           ))
                       .toList(),
-                  onChanged: (v) => setState(() => _status = v ?? _statuses.first),
+                  onChanged: (v) => setState(() => _status = v ?? _systemStatuses.first),
                 ),
           ],
         ),
@@ -1937,7 +1930,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                 : (t.taskType == 'check_in' || t.taskType == 'check_out'
                     ? t.taskType
                     : _taskTypeValues.first)));
-    _status = _normalizeStatusForAdmin(t.status);
+    _status = _normalizeToSystemStatus(t.status);
   }
 
   @override
@@ -2192,18 +2185,18 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
-                  initialValue: _statuses.contains(_status) ? _status : _statuses.first,
+                  initialValue: _systemStatuses.contains(_status) ? _status : _systemStatuses.first,
                   decoration: const InputDecoration(
                     prefixIcon: Icon(Icons.list_alt_outlined),
                     border: OutlineInputBorder(),
                   ),
-                  items: _statuses
+                  items: _systemStatuses
                       .map((s) => DropdownMenuItem<String>(
                             value: s,
-                            child: Text(_formatStatusLabel(s)),
+                            child: Text(_getLocalizedStatus(s)),
                           ))
                       .toList(),
-                  onChanged: (v) => setState(() => _status = v ?? _statuses.first),
+                  onChanged: (v) => setState(() => _status = v ?? _systemStatuses.first),
                 ),
           ],
         ),

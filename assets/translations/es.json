@@ -1,4 +1,11 @@
 {
+  "task_status": {
+    "pending": "Borrador",
+    "assigned": "Asignado",
+    "in_progress": "En curso",
+    "completed": "Completado",
+    "problem": "Problema"
+  },
   "admin": {
     "absence_add": "Añadir ausencia",
     "absence_empty_list": "No tienes registros de ausencia",
@@ -1023,6 +1030,7 @@
     "title": "En espera de aprobación"
   },
   "worker": {
+    "offline_mode_banner": "Modo sin conexión. Los cambios se sincronizarán cuando estés en línea.",
     "empty": "Sin tareas",
     "empty_hint": "No tienes tareas programadas.",
     "later": "Más tarde",

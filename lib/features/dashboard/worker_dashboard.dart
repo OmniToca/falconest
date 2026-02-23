@@ -1,3 +1,5 @@
+// DEPRECATED: Tento soubor je zastaralý a bude smazán. Aktivní UI je v lib/features/worker/.
+// Nepoužívat pro nový vývoj – připravujeme přepojení WorkerDashboardScreen na Isar.
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';

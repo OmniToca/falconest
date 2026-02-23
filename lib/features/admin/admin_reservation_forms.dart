@@ -208,6 +208,15 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
         }
       }
 
+      // Pokud není čas vyplněn, použijeme standardní hotelové časy 15:00 a 10:00.
+      // Do payloadu nesmí jít null – generátor úkolů očekává platné timestamptz.
+      if (arrivalTimeUtc == null) {
+        arrivalTimeUtc = DateTime(_dateRange!.start.year, _dateRange!.start.month, _dateRange!.start.day, 15, 0, 0).toUtc();
+      }
+      if (departureTimeUtc == null) {
+        departureTimeUtc = DateTime(_dateRange!.end.year, _dateRange!.end.month, _dateRange!.end.day, 10, 0, 0).toUtc();
+      }
+
       // Dvoukrokové ukládání (Override Pattern Tier 3): nejdřív záznam v reservations,
       // potom služby rezervace v reservation_services (závisí na reservation_id).
       // KROK 1: Vložení rezervace a získání nového id (pro reservation_services).
@@ -216,6 +225,7 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
         'apartment_id': _selectedApartmentId,
         'start_date': startDate,
         'end_date': endDate,
+        'status': 'new',
         'guest_name': _guestNameController.text.trim().isEmpty
             ? null
             : _guestNameController.text.trim(),
@@ -223,11 +233,10 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
             ? null
             : _guestPhoneController.text.trim(),
         'reservation_source': _reservationSource,
-        'needs_transfer': false,
         'guest_adults': guestAdults,
         'guest_children': guestChildren,
-        'arrival_time': arrivalTimeUtc?.toIso8601String(),
-        'departure_time': departureTimeUtc?.toIso8601String(),
+        'arrival_time': arrivalTimeUtc.toIso8601String(),
+        'departure_time': departureTimeUtc.toIso8601String(),
         'internal_note': _internalNoteController.text.trim().isEmpty
             ? null
             : _internalNoteController.text.trim(),

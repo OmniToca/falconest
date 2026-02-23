@@ -32,6 +32,8 @@ class IsarService {
       return;
     }
 
+    // KRITICKÉ: await před použitím – path_provider může v Release na iOS blokovat,
+    // dokud není Flutter binding hotový (zajištěno v main.dart jako první krok).
     final dir = await getApplicationDocumentsDirectory();
 
     _instance = await Isar.open(

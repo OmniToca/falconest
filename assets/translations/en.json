@@ -1,5 +1,12 @@
 {
   "app": {"title": "FalcoNest"},
+  "task_status": {
+    "pending": "Draft",
+    "assigned": "To Do",
+    "in_progress": "In progress",
+    "completed": "Done",
+    "problem": "Problem"
+  },
   "invite": {
     "title": "Accept invitation",
     "welcome": "Set your password and complete registration. Email is pre-filled from the invitation.",
@@ -227,6 +234,7 @@
     "validation_mismatch": "Passwords do not match"
   },
   "worker": {
+    "offline_mode_banner": "Offline mode. Changes will sync when online.",
     "my_work": "My Work",
     "today": "Today",
     "tomorrow": "Tomorrow",

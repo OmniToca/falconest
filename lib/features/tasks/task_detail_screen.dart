@@ -1,13 +1,14 @@
+// DEPRECATED: Tento soubor je zastaralý a bude smazán. Aktivní UI je v lib/features/worker/.
+// Nepoužívat pro nový vývoj – připravujeme přepojení WorkerTaskDetailScreen na Isar.
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import 'package:falconest/core/database/models/apartment_local.dart';
 import 'package:falconest/core/services/supabase_service.dart';
-import 'package:falconest/core/database/models/task_local.dart';
 import 'package:falconest/core/services/photo_service.dart';
+import 'package:falconest/features/tasks/models/task_detail_data.dart';
 import 'package:falconest/features/dashboard/providers/todays_tasks_provider.dart';
 import 'package:falconest/features/tasks/providers/task_detail_provider.dart';
 
@@ -51,11 +52,7 @@ class TaskDetailScreen extends ConsumerWidget {
           if (data == null) {
             return _buildNotFound(context);
           }
-          return _TaskDetailContent(
-            task: data.task,
-            apartment: data.apartment,
-            taskId: taskId,
-          );
+          return _TaskDetailContent(data: data, taskId: taskId);
         },
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (_, _) => _buildNotFound(context),
@@ -91,20 +88,20 @@ class TaskDetailScreen extends ConsumerWidget {
 }
 
 /// Hlavní obsah – karty s detaily a akční tlačítko.
+///
+/// Používá [TaskDetailData] DTO – bez Isar importů (web-safe).
 class _TaskDetailContent extends ConsumerWidget {
   const _TaskDetailContent({
-    required this.task,
-    required this.apartment,
+    required this.data,
     required this.taskId,
   });
 
-  final TaskLocal task;
-  final ApartmentLocal? apartment;
+  final TaskDetailData data;
   final int taskId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final isInProgress = task.status == 'in_progress';
+    final isInProgress = data.status == 'in_progress';
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
@@ -118,12 +115,12 @@ class _TaskDetailContent extends ConsumerWidget {
               _DetailRow(
                 icon: Icons.access_time,
                 label: 'task_detail.scheduled_start'.tr(),
-                value: _formatDateTime(task.scheduledStart),
+                value: _formatDateTime(data.scheduledStart),
               ),
               _DetailRow(
                 icon: Icons.info_outline,
                 label: 'task_detail.status'.tr(),
-                value: _getStatusLabel(task.status),
+                value: _getStatusLabel(data.status),
               ),
             ],
           ),
@@ -136,19 +133,19 @@ class _TaskDetailContent extends ConsumerWidget {
               _DetailRow(
                 icon: Icons.apartment,
                 label: 'task_detail.apartment_name'.tr(),
-                value: apartment?.name ?? 'task_detail.no_apartment'.tr(),
+                value: data.apartmentName ?? 'task_detail.no_apartment'.tr(),
               ),
-              if (apartment?.address != null && apartment!.address!.isNotEmpty)
+              if (data.apartmentAddress != null && data.apartmentAddress!.isNotEmpty)
                 _DetailRow(
                   icon: Icons.location_on_outlined,
                   label: 'task_detail.address'.tr(),
-                  value: apartment!.address!,
+                  value: data.apartmentAddress!,
                 ),
-              if (apartment?.keybox != null && apartment!.keybox!.isNotEmpty)
+              if (data.apartmentKeybox != null && data.apartmentKeybox!.isNotEmpty)
                 _DetailRow(
                   icon: Icons.key,
                   label: 'task_detail.key_code'.tr(),
-                  value: apartment!.keybox!,
+                  value: data.apartmentKeybox!,
                 ),
             ],
           ),
@@ -158,7 +155,7 @@ class _TaskDetailContent extends ConsumerWidget {
           if (!kIsWeb && isInProgress)
             _TakePhotoButton(
               taskId: taskId,
-              hasPhoto: task.photoUrl != null && task.photoUrl!.isNotEmpty,
+              hasPhoto: data.photoUrl != null && data.photoUrl!.isNotEmpty,
               onPhotoTaken: () {
                 ref.invalidate(taskDetailProvider(taskId));
               },
@@ -171,12 +168,12 @@ class _TaskDetailContent extends ConsumerWidget {
               isInProgress: isInProgress,
               canEndCleaning:
                   isInProgress &&
-                  task.photoUrl != null &&
-                  task.photoUrl!.isNotEmpty,
+                  data.photoUrl != null &&
+                  data.photoUrl!.isNotEmpty,
               onPressed: () => _onActionPressed(context, ref),
             ),
             if (isInProgress &&
-                (task.photoUrl == null || task.photoUrl!.isEmpty)) ...[
+                (data.photoUrl == null || data.photoUrl!.isEmpty)) ...[
               const SizedBox(height: 8),
               Text(
                 'task_detail.photo_required_hint'.tr(),
@@ -215,7 +212,7 @@ class _TaskDetailContent extends ConsumerWidget {
   }
 
   Future<void> _onActionPressed(BuildContext context, WidgetRef ref) async {
-    final newStatus = task.status == 'in_progress'
+    final newStatus = data.status == 'in_progress'
         ? 'completed'
         : 'in_progress';
     await updateTaskStatus(taskId: taskId, status: newStatus);

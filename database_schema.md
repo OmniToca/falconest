@@ -125,6 +125,7 @@
 | tasks | deleted_at | timestamp with time zone | YES |
 | tasks | reservation_id | uuid | YES (FK → reservations ON DELETE CASCADE) – vazba na rezervaci, pro mazání při změně termínu |
 | tasks | service_id | uuid | YES (FK → tenant_services ON DELETE SET NULL) – vazba na službu; pro scheduled úkoly a ochranný štít |
+| tasks | metadata | jsonb | NO (default '{}') – flexibilní data pro UI (částka k vybrání, poznámky z rezervace, číslo letu, trackování času) |
 | tenant_modules | id | uuid | NO |
 | tenant_modules | tenant_id | uuid | YES |
 | tenant_modules | module_id | uuid | YES |
