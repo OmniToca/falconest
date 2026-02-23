@@ -32,6 +32,7 @@ class PlanningTask {
     this.status,
     this.assignedUserName,
     this.apartmentName,
+    this.metadata,
   });
 
   final String id;
@@ -44,6 +45,8 @@ class PlanningTask {
   final String? status;
   final String? assignedUserName;
   final String? apartmentName;
+  /// JSONB metadata z tasks (custom_note, amount_to_collect, expected_audit_total, collection_breakdown).
+  final Map<String, dynamic>? metadata;
 
   String get resourceId => assignedTo ?? kUnassignedResourceId;
 
@@ -59,6 +62,7 @@ class PlanningTask {
         status: status,
         assignedUserName: assignedUserName ?? this.assignedUserName,
         apartmentName: apartmentName ?? this.apartmentName,
+        metadata: metadata,
       );
 
   TaskRow toTaskRow({DateTime? roundedDueDate}) => TaskRow(
@@ -72,6 +76,7 @@ class PlanningTask {
         dueDate: roundedDueDate ?? scheduledStart,
         apartmentName: apartmentName,
         assignedToName: assignedUserName,
+        metadata: metadata,
       );
 }
 
@@ -98,6 +103,14 @@ int parseDurationMinutesFromDescription(String? description) {
     minutes += int.parse(minReg.firstMatch(s)!.group(1) ?? '0');
   }
   return minutes > 0 ? minutes : 60;
+}
+
+/// Parsuje metadata z JSONB – může přijít jako Map nebo null.
+Map<String, dynamic>? _parseMetadata(dynamic raw) {
+  if (raw == null) return null;
+  if (raw is Map<String, dynamic>) return raw;
+  if (raw is Map) return Map<String, dynamic>.from(raw);
+  return null;
 }
 
 List<PlanningTask> _parseTasksFromResponse(dynamic res) {
@@ -162,6 +175,7 @@ List<PlanningTask> _parseTasksFromResponse(dynamic res) {
             : (map['status']?.toString() ?? '').trim(),
         assignedUserName: workerName,
         apartmentName: aptName == 'Neznámý' ? null : aptName,
+        metadata: _parseMetadata(map['metadata']),
       ));
     } catch (e) {
       if (kDebugMode) {
@@ -312,7 +326,7 @@ final planningCalendarAllTasksProvider =
     final res = await SupabaseService.client
         .from('tasks')
         .select(
-            'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, apartment_id, profiles(first_name, last_name, name), apartments(name)')
+            'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, apartment_id, metadata, profiles(first_name, last_name, name), apartments(name)')
         .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
         .gte('scheduled_start', start.toUtc().toIso8601String())
@@ -342,7 +356,7 @@ final planningCalendarAllTasksForMonthProvider =
     final res = await SupabaseService.client
         .from('tasks')
         .select(
-            'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, apartment_id, profiles(first_name, last_name, name), apartments(name)')
+            'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, apartment_id, metadata, profiles(first_name, last_name, name), apartments(name)')
         .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
         .gte('scheduled_start', start.toUtc().toIso8601String())

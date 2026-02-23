@@ -8,6 +8,7 @@ import 'package:falconest/core/presentation/widgets/modern_admin_panel.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/admin_reservation_utils.dart';
+import 'package:falconest/features/admin/admin_tasks_screen.dart';
 import 'package:falconest/features/admin/models/reservation_service_model.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
@@ -862,10 +863,12 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
 class RelatedTasksList extends StatelessWidget {
   const RelatedTasksList({
     super.key,
+    required this.ref,
     required this.reservation,
     required this.tasksAsync,
   });
 
+  final WidgetRef ref;
   final ReservationRow reservation;
   final AsyncValue<List<TaskRow>> tasksAsync;
 
@@ -912,6 +915,13 @@ class RelatedTasksList extends StatelessWidget {
                   child: ListTile(
                     dense: true,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    // Otevření plného dialogu úkolu pro zobrazení metadat a financí.
+                    onTap: () => AdminTasksScreen.showEditTaskDialog(
+                      context,
+                      ref,
+                      t,
+                      onReservationTap: null,
+                    ),
                     leading: CircleAvatar(
                       radius: 18,
                       backgroundColor: Theme.of(context).colorScheme.primaryContainer,
@@ -935,7 +945,7 @@ class RelatedTasksList extends StatelessWidget {
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
-                            t.assignedToName ?? '–',
+                            t.assignedToName ?? 'planning_calendar.unknown'.tr(),
                             style: const TextStyle(
                               fontSize: 13,
                               fontWeight: FontWeight.bold,
@@ -947,7 +957,7 @@ class RelatedTasksList extends StatelessWidget {
                     ),
                     trailing: Chip(
                       label: Text(
-                        t.status,
+                        reservationTaskStatusLabelKey(t.status).tr(),
                         style: const TextStyle(fontSize: 11, color: Colors.white),
                       ),
                       backgroundColor: reservationTaskStatusChipColor(t.status),
@@ -1604,6 +1614,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
         ),
         const SizedBox(height: 8),
         RelatedTasksList(
+          ref: ref,
           reservation: widget.reservation,
           tasksAsync: tasksAsync,
         ),

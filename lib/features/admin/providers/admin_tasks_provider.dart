@@ -5,9 +5,11 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/features/admin/models/reservation_service_model.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
+import 'package:falconest/features/admin/providers/reservation_services_repository.dart';
 import 'package:falconest/features/admin/providers/task_assignment_engine.dart';
 import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
 
@@ -308,6 +310,8 @@ class TaskRow {
 /// [triggerType] určuje, na které datum (check-in / check-out / on_demand) se úkol vytvoří.
 /// [durationMinutes] – časová náročnost / rezerva z katalogu (fallback 60).
 /// [serviceId] – id služby z katalogu (pro vazbu do tasks.service_id a ochranný štít).
+/// [apartmentServiceId] – id z apartment_services (pro párování s reservation_services).
+/// [isMandatory] – pokud true, úkol se vždy generuje; jinak jen když je v reservation_services.
 class _ServiceTrigger {
   const _ServiceTrigger({
     required this.serviceName,
@@ -316,6 +320,8 @@ class _ServiceTrigger {
     required this.triggerType,
     this.durationMinutes,
     required this.serviceId,
+    required this.apartmentServiceId,
+    this.isMandatory = false,
   });
   final String serviceName;
   final String? requiredRole;
@@ -324,6 +330,8 @@ class _ServiceTrigger {
   /// Časová náročnost / rezerva v minutách z katalogu (null = použít fallback 60).
   final int? durationMinutes;
   final String serviceId;
+  final String apartmentServiceId;
+  final bool isMandatory;
 }
 
 /// Notifier pro úkoly – načítání seznamu a generování návrhů (chytrý dispečink).
@@ -421,28 +429,32 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
     final tasksList = tasksRaw as List;
 
     // --- FÁZE 1: Načtení aktivních služeb bytů (apartment_services) + katalog (tenant_services) ---
-    // Služby bytu určují, které úkoly se generují a kdy (trigger_type). Z katalogu bereme název a required_role.
+    // Služby bytu určují, které úkoly se generují a kdy (trigger_type). Z katalogu bereme název, required_role, service_type.
     final apartmentServicesRaw = await SupabaseService.client
         .from('apartment_services')
-        .select('apartment_id, service_id, trigger_type')
+        .select('id, apartment_id, service_id, trigger_type, is_mandatory')
         .eq('tenant_id', tenantId);
     final catalog = await ref.read(tenantServicesProvider.future);
     final catalogById = {for (final s in catalog) s.id: s};
 
-    // Sestavení mapy: apartment_id -> seznam služeb s triggerem before_checkin / after_checkout / both_ways / on_demand.
-    // scheduled se zpracovává samostatně v generateScheduledTasks().
+    // Sestavení mapy: apartment_id -> seznam služeb. apartmentServiceId -> serviceType (pro metadata).
     const triggerDriven = ['before_checkin', 'after_checkout', 'both_ways', 'on_demand'];
     final servicesByApartment = <String, List<_ServiceTrigger>>{};
+    final apartmentServiceIdToServiceType = <String, String>{};
     for (final row in apartmentServicesRaw as List) {
       final map = row as Map<String, dynamic>;
+      final apartmentServiceId = (map['id'] as String?)?.trim() ?? '';
       final apartmentId = (map['apartment_id'] as String?)?.trim() ?? '';
       final serviceId = (map['service_id'] as String?)?.trim() ?? '';
       final triggerType = (map['trigger_type'] as String?)?.trim() ?? '';
-      if (apartmentId.isEmpty || serviceId.isEmpty || !triggerDriven.contains(triggerType)) {
+      final isMandatory = map['is_mandatory'] == true || map['is_mandatory'] == 1;
+      if (apartmentId.isEmpty || serviceId.isEmpty || apartmentServiceId.isEmpty ||
+          !triggerDriven.contains(triggerType)) {
         continue;
       }
       final service = catalogById[serviceId];
       if (service == null) continue; // služba smazaná nebo neaktivní v katalogu
+      apartmentServiceIdToServiceType[apartmentServiceId] = service.serviceType.trim().toLowerCase();
       servicesByApartment.putIfAbsent(apartmentId, () => []).add(
             _ServiceTrigger(
               serviceName: service.name.trim().isEmpty ? service.id : service.name,
@@ -451,9 +463,15 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
               triggerType: triggerType,
               durationMinutes: service.durationMinutes,
               serviceId: serviceId,
+              apartmentServiceId: apartmentServiceId,
+              isMandatory: isMandatory,
             ),
           );
     }
+
+    // --- FÁZE 2: Načtení reservation_services pro všechny rezervace – pro filtr volitelných a metadata ---
+    final reservationIds = reservations.map((r) => r.id).where((id) => id.isNotEmpty).toList();
+    final reservationServicesByRes = await fetchByReservationIds(reservationIds);
 
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
@@ -475,13 +493,48 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
           .toList()
           ..sort((a, b) => _getServicePriority(a.serviceType).compareTo(_getServicePriority(b.serviceType)));
 
+      // Mapa reservation_services pro tuto rezervaci: apartment_service_id -> řádek.
+      final resServicesList = reservationServicesByRes[r.id] ?? [];
+      final resServicesByApt = <String, ReservationServiceRow>{
+        for (final rs in resServicesList) rs.apartmentServiceId: rs,
+      };
+
+      // Rozdělení financí podle service_type: Řidič vybírá pouze za transfer, Check-in vybírá zbytek
+      // (úklid, extra, katalog), Uklízečka finance nevidí. expectedAuditTotal = celkový součet
+      // od hosta pro Check-out audit (ověření, že host zaplatil vše).
+      double checkInTotal = 0;
+      final checkInBreakdown = <String, num>{};
+      double expectedAuditTotal = 0;
+      final expectedAuditBreakdown = <String, dynamic>{};
+      for (final rs in resServicesList) {
+        final st = apartmentServiceIdToServiceType[rs.apartmentServiceId] ?? '';
+        final price = (rs.chargedPrice ?? 0).toDouble();
+        if (rs.payerType == 'guest' && price > 0) {
+          expectedAuditTotal += price;
+          final key = st.isEmpty ? 'extra' : st;
+          expectedAuditBreakdown[key] = ((expectedAuditBreakdown[key] as num?) ?? 0.0) + price;
+          // Transfer (transfer_in, transfer_out nebo legacy 'transfer') – ne do checkInTotal.
+          if (st != 'transfer_in' && st != 'transfer_out' && st != 'transfer') {
+            checkInTotal += price;
+            checkInBreakdown[key] = (checkInBreakdown[key] ?? 0) + price;
+          }
+        }
+      }
+
       // Štafetový kolík – mapa sleduje, od kdy je byt volný v daný den.
       // Posun času se aplikuje VÝHRADNĚ na fyzické úkoly v bytě (údržba a úklid). Transfer, extra atd. běží paralelně s fixním časem.
       final apartmentDayAvailableFrom = <String, DateTime>{};
 
       for (final svc in apartmentServicesList) {
+        // Nepovinná služba bez záznamu v reservation_services – úkol negenerujeme.
+        final reservationService = resServicesByApt[svc.apartmentServiceId];
+        if (!svc.isMandatory && reservationService == null) continue;
+
         // Správný typ úkolu z katalogu – Transfer nesmí skončit jako Úklid (ovlivňuje noční klid).
         final resolvedTaskType = _resolveTaskType(svc.requiredRole, svc.serviceType, svc.serviceName);
+
+        // service_type ze systémového katalogu (tenant_services) – nikoliv z lokalizovaného názvu.
+        final serviceTypeNorm = svc.serviceType.trim().toLowerCase();
 
         // Určení dat, na která má být úkol vygenerován podle trigger_type.
         // Používáme efektivní časy z rezervace (arrival_time/departure_time, ne jen parsed string).
@@ -572,6 +625,32 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
           );
 
           final description = getEstimateMinutesText?.call(totalMinutes) ?? 'admin.task_estimate_minutes'.tr(namedArgs: {'minutes': totalMinutes.toString()});
+
+          // Metadata podle service_type: custom_note, amount_to_collect, collection_breakdown, expected_audit_total.
+          final metadata = <String, dynamic>{};
+          if (reservationService != null) {
+            final note = reservationService.customNote?.trim();
+            if (note != null && note.isNotEmpty) metadata['custom_note'] = note;
+            final price = (reservationService.chargedPrice ?? 0).toDouble();
+            final payerGuest = reservationService.payerType == 'guest';
+
+            if (serviceTypeNorm == 'transfer_in' ||
+                serviceTypeNorm == 'transfer_out' ||
+                serviceTypeNorm == 'transfer') {
+              if (payerGuest && price > 0) metadata['amount_to_collect'] = price;
+            } else if (serviceTypeNorm == 'check_in') {
+              if (checkInTotal > 0) {
+                metadata['amount_to_collect'] = checkInTotal;
+                metadata['collection_breakdown'] = Map<String, dynamic>.from(
+                    checkInBreakdown.map((k, v) => MapEntry(k, v)));
+              }
+            } else if (serviceTypeNorm == 'check_out') {
+              if (expectedAuditTotal > 0) metadata['expected_audit_total'] = expectedAuditTotal;
+              if (expectedAuditBreakdown.isNotEmpty) metadata['collection_breakdown'] = expectedAuditBreakdown;
+            }
+            // cleaning, maintenance, extra: pouze custom_note (žádné finance)
+          }
+
           toInsert.add({
             'tenant_id': tenantId,
             'apartment_id': r.apartmentId,
@@ -584,6 +663,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
             'task_type': resolvedTaskType,
             'scheduled_start': result.start.toIso8601String(),
             'due_date': result.end.toIso8601String(),
+            if (metadata.isNotEmpty) 'metadata': metadata,
           });
         }
       }

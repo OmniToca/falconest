@@ -206,17 +206,22 @@ DateTime? parseReservationDateTime(String? s) {
   return null;
 }
 
+/// Normalizuje task_type / service_type z DB na kanonický identifikátor.
+/// Podporuje hodnoty z tenant_services.service_type: transfer_in, transfer_out, check_in, check_out, cleaning, maintenance, extra.
 String _reservationNormalizeTaskType(String? raw) {
   if (raw == null || raw.trim().isEmpty) return 'other';
   final s = raw.trim().toLowerCase();
   if (s == 'cleaning' || s == 'úklid' || s == 'uklid') return 'cleaning';
   if (s == 'transfer_in' || s.contains('příjezd') || s.contains('prijezd') || (s.contains('transfer') && s.contains('in'))) return 'transfer_in';
   if (s == 'transfer_out' || s.contains('odjezd') || (s.contains('transfer') && s.contains('out'))) return 'transfer_out';
+  if (s == 'transfer') return 'transfer_in'; // fallback pro samotné "transfer"
   if (s == 'check_in' || s == 'check-in') return 'check_in';
   if (s == 'check_out' || s == 'check-out') return 'check_out';
+  if (s == 'maintenance' || s.contains('údržba') || s.contains('udrzba')) return 'maintenance';
+  if (s == 'extra') return 'extra';
   if (s == 'issue' || s.contains('závada') || s.contains('zavada')) return 'issue';
   if (s == 'material' || s.contains('materiál') || s.contains('material')) return 'material';
-  if (s == 'other' || s == 'jiné' || s == 'jine' || s == 'other') return 'other';
+  if (s == 'other') return 'other';
   return 'other';
 }
 
@@ -234,6 +239,10 @@ String reservationTaskTypeLabelKey(String taskType) {
       return 'admin.task_type_check_in';
     case 'check_out':
       return 'admin.task_type_check_out';
+    case 'maintenance':
+      return 'admin.task_type_maintenance';
+    case 'extra':
+      return 'admin.task_type_extra';
     case 'issue':
       return 'admin.task_type_issue';
     case 'material':
@@ -254,10 +263,13 @@ String reservationTaskTypeEmoji(String taskType) {
     case 'check_in':
     case 'check_out':
       return '🔑';
+    case 'maintenance':
     case 'issue':
       return '🔧';
     case 'material':
       return '📦';
+    case 'extra':
+      return '✨';
     default:
       return '📋';
   }
@@ -275,20 +287,45 @@ IconData reservationTaskTypeIcon(String taskType) {
       return Icons.key;
     case 'check_out':
       return Icons.key_off;
+    case 'maintenance':
     case 'issue':
       return Icons.build;
     case 'material':
       return Icons.inventory_2;
+    case 'extra':
+      return Icons.star_outline;
     default:
       return Icons.task_alt;
   }
 }
 
+/// Normalizuje status z DB na systémovou hodnotu (pending, assigned, in_progress, completed, problem).
+String _reservationNormalizeStatus(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return 'pending';
+  final s = raw.trim().toLowerCase();
+  if (s == 'pending' || s == 'draft' || s == 'návrh') return 'pending';
+  if (s == 'assigned' || s == 'new' || s == 'nový' || s == 'zadáno') return 'assigned';
+  if (s == 'in_progress' || s == 'probíhá') return 'in_progress';
+  if (s == 'completed' || s == 'done' || s == 'hotovo' || s == 'dokončeno') return 'completed';
+  if (s == 'problém' || s == 'problem' || s == 'issue') return 'problem';
+  return 'pending';
+}
+
+/// i18n klíč pro stav úkolu (task_status.*).
+String reservationTaskStatusLabelKey(String status) => 'task_status.${_reservationNormalizeStatus(status)}';
+
 /// Barva Chipu pro stav úkolu (Návrh, Zadáno, Probíhá, Hotovo).
 Color reservationTaskStatusChipColor(String status) {
-  final s = status.toLowerCase();
-  if (s.contains('hotovo') || s.contains('completed') || s.contains('done')) return Colors.green;
-  if (s.contains('probíhá') || s.contains('progress') || s.contains('in progress')) return Colors.blue;
-  if (s.contains('zadáno') || s.contains('assigned')) return Colors.orange;
-  return Colors.grey;
+  final norm = _reservationNormalizeStatus(status);
+  switch (norm) {
+    case 'completed':
+      return Colors.green;
+    case 'in_progress':
+    case 'problem':
+      return Colors.blue;
+    case 'assigned':
+      return Colors.orange;
+    default:
+      return Colors.grey;
+  }
 }

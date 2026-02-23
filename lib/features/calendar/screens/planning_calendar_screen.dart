@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/features/admin/admin_layout.dart';
 import 'package:falconest/features/admin/admin_reservations_screen.dart';
+// Sdílená komponenta pro zobrazení financí a poznámek z rezervace je v dialogu úpravy úkolu (AdminTasksScreen).
 import 'package:falconest/features/admin/admin_tasks_screen.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/models/task_category_model.dart';

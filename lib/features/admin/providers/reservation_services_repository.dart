@@ -1,6 +1,28 @@
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/models/reservation_service_model.dart';
 
+/// Načte všechny záznamy reservation_services pro dané rezervace (např. pro generátor úkolů).
+/// Vrací mapu reservation_id -> seznam řádků.
+Future<Map<String, List<ReservationServiceRow>>> fetchByReservationIds(
+  List<String> reservationIds,
+) async {
+  if (reservationIds.isEmpty) return {};
+  final ids = reservationIds.where((id) => id.isNotEmpty).toSet().toList();
+  if (ids.isEmpty) return {};
+  final res = await SupabaseService.client
+      .from('reservation_services')
+      .select()
+      .inFilter('reservation_id', ids);
+  final list = (res as List).cast<Map<String, dynamic>>();
+  final result = <String, List<ReservationServiceRow>>{};
+  for (final e in list) {
+    final row = ReservationServiceRow.fromJson(e);
+    if (row.id.isEmpty) continue;
+    result.putIfAbsent(row.reservationId, () => []).add(row);
+  }
+  return result;
+}
+
 /// Načte všechny záznamy reservation_services pro danou rezervaci (pro předvyplnění Tabu 2 v dialogu).
 Future<List<ReservationServiceRow>> fetchByReservationId(String reservationId) async {
   if (reservationId.isEmpty) return [];

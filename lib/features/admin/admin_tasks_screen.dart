@@ -17,6 +17,8 @@ import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/premium_upsell_dialog.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
+// Sdílená komponenta pro zobrazení financí a poznámek z rezervace.
+import 'package:falconest/features/admin/widgets/task_metadata_section.dart';
 import 'package:falconest/utils/task_visuals.dart';
 import 'package:falconest/widgets/task_legend.dart';
 
@@ -2034,11 +2036,12 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
       maxWidth: 800,
       content: Form(
         key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _TaskContextSection(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _TaskContextSection(
               task: widget.task,
               onReservationTap: widget.onReservationTap,
             ),
@@ -2064,6 +2067,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                     alignLabelWithHint: true,
                   ),
                 ),
+                TaskMetadataSection(metadata: widget.task.metadata),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
                   initialValue: _taskType,
@@ -2198,7 +2202,8 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                       .toList(),
                   onChanged: (v) => setState(() => _status = v ?? _systemStatuses.first),
                 ),
-          ],
+            ],
+          ),
         ),
       ),
       actions: [
