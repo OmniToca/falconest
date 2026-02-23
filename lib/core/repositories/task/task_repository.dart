@@ -29,7 +29,7 @@ class WorkerTask {
   final String? apartmentAddress;
 }
 
-/// Detail úkolu pro Worker Task Detail Screen (keybox, ownerNotes, photoUrl).
+/// Detail úkolu pro Worker Task Detail Screen (keybox, ownerNotes, photoUrl, metadata, časová razítka).
 class WorkerTaskDetail {
   const WorkerTaskDetail({
     required this.id,
@@ -44,6 +44,9 @@ class WorkerTaskDetail {
     this.keybox,
     this.ownerNotes,
     this.photoUrl,
+    this.metadata,
+    this.startedAt,
+    this.completedAt,
   });
 
   final String id;
@@ -58,6 +61,12 @@ class WorkerTaskDetail {
   final String? keybox;
   final String? ownerNotes;
   final String? photoUrl;
+  /// JSONB metadata z tasks (amount_to_collect, custom_note, expected_audit_total, collection_breakdown).
+  final Map<String, dynamic>? metadata;
+  /// Reálný čas zahájení práce (UTC).
+  final DateTime? startedAt;
+  /// Reálný čas dokončení úkolu (UTC).
+  final DateTime? completedAt;
 }
 
 /// Repozitář pro čtení úkolů přiřazených pracovníkovi.
@@ -71,5 +80,15 @@ abstract class ITaskRepository {
   Future<WorkerTaskDetail?> getWorkerTaskDetail(String tenantId, String taskId);
 
   /// Aktualizuje status úkolu (offline: pending, pak sync).
-  Future<void> updateTaskStatus(String tenantId, String taskId, String status);
+  /// [startedAt] – nastaví se při přechodu do in_progress (Time Tracking).
+  /// [completedAt] – nastaví se při přechodu do completed (Time Tracking).
+  /// [metadataOverlay] – volitelně sloučí dodatečné klíče do metadata (např. cash_collection_failed).
+  Future<void> updateTaskStatus(
+    String tenantId,
+    String taskId,
+    String status, {
+    DateTime? startedAt,
+    DateTime? completedAt,
+    Map<String, dynamic>? metadataOverlay,
+  });
 }

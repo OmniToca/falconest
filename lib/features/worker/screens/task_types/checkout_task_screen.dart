@@ -5,14 +5,13 @@ import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
-import 'package:falconest/features/worker/utils/cash_collection_dialog.dart';
 
 const _primaryBlue = Color(0xFF1565C0);
 
-/// MVP obrazovka pro úkoly typu Check-in.
-/// Jednoduché zobrazení dat a tlačítko Dokončit.
-class CheckinTaskScreen extends ConsumerWidget {
-  const CheckinTaskScreen({super.key, required this.taskId});
+/// MVP obrazovka pro úkoly typu Check-out (vlastní obrazovka – odděleno od Check-in).
+/// Zobrazuje data úkolu a tlačítko Dokončit. Může zobrazovat očekávaný audit z metadat.
+class CheckoutTaskScreen extends ConsumerWidget {
+  const CheckoutTaskScreen({super.key, required this.taskId});
 
   final String taskId;
 
@@ -28,7 +27,7 @@ class CheckinTaskScreen extends ConsumerWidget {
           );
         }
         return Scaffold(
-          backgroundColor: const Color(0xFFFFF3E0),
+          backgroundColor: const Color(0xFFE8F5E9),
           appBar: AppBar(
             title: Text(
               _appBarTitle(detail),
@@ -62,13 +61,13 @@ class CheckinTaskScreen extends ConsumerWidget {
                           detail.description.isNotEmpty ? detail.description : '—',
                           style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
                         ),
-                        ..._buildCheckinMetadata(context, detail.metadata ?? {}),
+                        ..._buildCheckoutMetadata(context, detail.metadata ?? {}),
                       ],
                     ),
                   ),
                 ),
                 const SizedBox(height: 16),
-                _buildActionButton(context, ref, taskId, detail, 'worker.task_detail_finish'),
+                _buildActionButton(context, ref, taskId, detail.status, 'worker.task_detail_finish'),
               ],
             ),
           ),
@@ -83,8 +82,7 @@ class CheckinTaskScreen extends ConsumerWidget {
 
   // Dvoufázové odpracování: Nejprve Zahájit (in_progress), poté Dokončit (completed).
   // Uložení přesného UTC času pro sledování reálné doby práce.
-  Widget _buildActionButton(BuildContext context, WidgetRef ref, String taskId, dynamic detail, String finishKey) {
-    final status = detail?.status ?? '';
+  Widget _buildActionButton(BuildContext context, WidgetRef ref, String taskId, String status, String finishKey) {
     final s = status.trim().toLowerCase();
     final isInProgress = s == 'in_progress' || s == 'probíhá';
     final isCompleted = s == 'completed' || s == 'done' || s == 'dokončeno' || s == 'hotovo';
@@ -108,24 +106,12 @@ class CheckinTaskScreen extends ConsumerWidget {
         width: double.infinity,
         child: FilledButton(
           onPressed: () async {
-            final result = await maybeShowCashCollectionDialog(
-              context,
-              ref,
-              detail,
-              taskId: taskId,
-              onCompleted: () {
-                ref.invalidate(workerTaskDetailProvider(taskId));
-                if (context.mounted) context.pop();
-              },
-            );
-            if (result == null) {
-              await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
-                    taskId,
-                    'completed',
-                    completedAt: DateTime.now().toUtc(),
-                  );
-              if (context.mounted) context.pop();
-            }
+            await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
+                  taskId,
+                  'completed',
+                  completedAt: DateTime.now().toUtc(),
+                );
+            if (context.mounted) context.pop();
           },
           style: FilledButton.styleFrom(
             backgroundColor: _primaryBlue,
@@ -211,54 +197,46 @@ class CheckinTaskScreen extends ConsumerWidget {
     }
   }
 
-  /// Vykreslení metadat pro Check-in: custom_note (instrukce k předání klíčů), banner na peníze, rozpad platby.
-  List<Widget> _buildCheckinMetadata(BuildContext context, Map<String, dynamic> meta) {
+  /// Vykreslení metadat pro Check-out: custom_note (na co si dát pozor), audit, rozpad platby.
+  List<Widget> _buildCheckoutMetadata(BuildContext context, Map<String, dynamic> meta) {
     final widgets = <Widget>[];
 
-    // Poznámka (instrukce k předání klíčů).
+    // Poznámka (na co si dát pozor při kontrole bytu).
     final note = meta['custom_note'];
     final noteText = note is String ? note.trim() : (note?.toString().trim() ?? '');
     if (noteText.isNotEmpty) {
       widgets.addAll([
         const SizedBox(height: 16),
-        _buildCustomNoteCard(noteText, icon: Icons.key),
+        _buildCustomNoteCard(noteText, icon: Icons.checklist),
       ]);
     }
 
-    // Vykreslení obřího banneru pro výběr hotovosti.
-    final amountRaw = meta['amount_to_collect'];
-    final amount = (amountRaw is num) ? amountRaw.toDouble() : (amountRaw != null ? double.tryParse(amountRaw.toString()) : null);
-    if (amount != null && amount > 0) {
-      widgets.addAll([
-        const SizedBox(height: 16),
-        _buildAmountBanner(context, amount),
-      ]);
-    }
+    // Informační karta s očekávaným auditem (expected_audit_total) a ikonou účtenky.
+    final expectedTotal = meta['expected_audit_total'];
+    final amount = (expectedTotal is num) ? expectedTotal.toDouble() : (expectedTotal != null ? double.tryParse(expectedTotal.toString()) : null);
+    final hasBreakdown = meta['collection_breakdown'] is Map && (meta['collection_breakdown'] as Map).isNotEmpty;
 
-    // Detailní rozpad platby (collection_breakdown) – klíče přeloženy přes admin.task_type_*.
-    final breakdown = meta['collection_breakdown'];
-    if (breakdown is Map && breakdown.isNotEmpty) {
-      widgets.addAll([
-        const SizedBox(height: 12),
-        _buildBreakdownCard(breakdown),
-      ]);
+    if (amount != null || hasBreakdown) {
+      widgets.add(const SizedBox(height: 16));
+      widgets.add(_buildAuditCard(context, amount, meta['collection_breakdown']));
     }
 
     return widgets;
   }
 
+  /// Karta s poznámkou pro check-out (na co si dát pozor při kontrole).
   Widget _buildCustomNoteCard(String text, {IconData icon = Icons.note_outlined}) {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.orange.shade50,
+        color: Colors.green.shade50,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.orange.shade200),
+        border: Border.all(color: Colors.green.shade200),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 24, color: Colors.orange.shade700),
+          Icon(icon, size: 24, color: Colors.green.shade700),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -278,32 +256,46 @@ class CheckinTaskScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildAmountBanner(BuildContext context, num amount) {
-    final formatted = NumberFormat.currency(locale: context.locale.toString(), symbol: '€', decimalDigits: 2).format(amount);
+  /// Informační karta s očekávaným auditem a detailním rozpadem – ikona účtenky.
+  Widget _buildAuditCard(BuildContext context, double? amount, dynamic breakdownRaw) {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.orange.shade100,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.orange.shade400, width: 2),
+        color: Colors.green.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.green.shade200),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(
-            'worker.task_amount_to_collect'.tr(),
-            style: TextStyle(fontSize: 16, color: Colors.grey.shade800),
+          Row(
+            children: [
+              Icon(Icons.receipt_long, size: 24, color: Colors.green.shade700),
+              const SizedBox(width: 8),
+              Text(
+                'worker.task_expected_audit'.tr(),
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Colors.grey.shade800),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
-          Text(
-            formatted,
-            style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.orange.shade900),
-          ),
+          if (amount != null && amount > 0) ...[
+            const SizedBox(height: 6),
+            Text(
+              NumberFormat.currency(locale: context.locale.toString(), symbol: '€', decimalDigits: 2).format(amount),
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.green.shade800),
+            ),
+          ],
+          if (breakdownRaw is Map && breakdownRaw.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            _buildBreakdownCard(breakdownRaw),
+          ],
         ],
       ),
     );
   }
 
-  Widget _buildBreakdownCard(Map<dynamic, dynamic> map) {
+  /// Detailní rozpad auditu – klíče přeloženy přes admin.task_type_*.
+  Widget _buildBreakdownCard(Map map) {
     final parts = <Widget>[];
     for (final e in map.entries) {
       final key = e.key.toString().toLowerCase().replaceAll('-', '_');

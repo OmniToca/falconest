@@ -8,6 +8,7 @@ import 'package:falconest/core/repositories/task/task_repository.dart';
 import 'package:falconest/core/repositories/task/task_repository_export.dart';
 import 'package:falconest/features/worker/data/services/worker_sync_service.dart';
 import 'package:falconest/features/worker/providers/worker_dashboard_provider.dart';
+import 'package:falconest/features/worker/providers/worker_sync_state_provider.dart';
 
 /// Re-export WorkerTaskDetail pro konzumenty (Worker UI).
 export 'package:falconest/core/repositories/task/task_repository.dart' show WorkerTaskDetail;
@@ -55,7 +56,16 @@ class WorkerTaskStatusNotifier extends StateNotifier<AsyncValue<void>> {
 
   final Ref _ref;
 
-  Future<void> updateStatus(String taskId, String status) async {
+  /// [startedAt] – při přechodu do in_progress (Time Tracking).
+  /// [completedAt] – při přechodu do completed (Time Tracking).
+  /// [metadataOverlay] – volitelně sloučí klíče do metadata (např. cash_collection_failed).
+  Future<void> updateStatus(
+    String taskId,
+    String status, {
+    DateTime? startedAt,
+    DateTime? completedAt,
+    Map<String, dynamic>? metadataOverlay,
+  }) async {
     state = const AsyncValue.loading();
     final tenantId = _ref.read(authNotifierProvider).tenantIdForData;
 
@@ -69,13 +79,23 @@ class WorkerTaskStatusNotifier extends StateNotifier<AsyncValue<void>> {
       }
 
       final repo = getTaskRepository();
-      await repo.updateTaskStatus(tenantId, taskId, status);
+      await repo.updateTaskStatus(
+        tenantId,
+        taskId,
+        status,
+        startedAt: startedAt,
+        completedAt: completedAt,
+        metadataOverlay: metadataOverlay,
+      );
 
       _ref.invalidate(workerTaskDetailProvider(taskId));
       _ref.invalidate(workerTasksProvider);
       state = const AsyncValue.data(null);
 
-      unawaited(WorkerSyncService.pushPendingUpdates(tenantId));
+      unawaited(WorkerSyncService.pushPendingUpdates(
+        tenantId,
+        onSyncError: _ref.read(workerSyncStateProvider.notifier).reportSyncError,
+      ));
     } catch (e, st) {
       state = AsyncValue.error(e, st);
     }

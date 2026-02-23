@@ -28,6 +28,9 @@ class TaskLocal {
   /// Pro lokální zobrazení lze vyhledat ApartmentLocal podle supabaseId.
   String? apartmentSupabaseId;
 
+  /// Supabase UUID rezervace – vazba na reservations. Pro automatický update statusu při Check-inu.
+  String? reservationSupabaseId;
+
   /// Supabase UUID přiřazeného uživatele (profil). Null = nepřiřazeno.
   String? assignedUserSupabaseId;
 
@@ -68,13 +71,19 @@ class TaskLocal {
   /// Při čtení: jsonDecode(metadataJson) pro Map. Při zápisu: jsonEncode(map).
   String? metadataJson;
 
+  /// Reálný čas zahájení práce (UTC) – nastaví se při přechodu na in_progress.
+  DateTime? startedAt;
+
+  /// Reálný čas dokončení úkolu (UTC) – nastaví se při přechodu na completed.
+  DateTime? completedAt;
+
   /// Implicitní konstruktor – potřebný pro Isar deserializaci a factory.
   TaskLocal();
 
   /// Vytvoří TaskLocal z mapy (např. JSON odpověď ze Supabase).
   ///
   /// Klíče: id, tenant_id, apartment_id, assigned_to, title, description,
-  /// task_type, scheduled_start, status, photo_url, metadata.
+  /// task_type, scheduled_start, status, photo_url, metadata, started_at, completed_at.
   /// metadata (JSONB) se serializuje do metadataJson.
   /// Pro vložení do Isar použij isar.taskLocals.put(obj) – id se přiřadí automaticky.
   factory TaskLocal.fromMap(Map<String, dynamic> map) {
@@ -95,6 +104,9 @@ class TaskLocal {
       ..apartmentSupabaseId = (map['apartment_id']?.toString() ?? '').trim().isEmpty
           ? null
           : (map['apartment_id']?.toString() ?? '').trim()
+      ..reservationSupabaseId = (map['reservation_id']?.toString() ?? '').trim().isEmpty
+          ? null
+          : (map['reservation_id']?.toString() ?? '').trim()
       ..assignedUserSupabaseId = (map['assigned_to']?.toString() ?? '').trim().isEmpty
           ? null
           : (map['assigned_to']?.toString() ?? '').trim()
@@ -110,7 +122,17 @@ class TaskLocal {
       ..lastSyncedAt = now
       ..syncStatus = SyncStatus.synced
       ..lastUpdated = now
-      ..metadataJson = _encodeMetadata(map['metadata']);
+      ..metadataJson = _encodeMetadata(map['metadata'])
+      ..startedAt = _parseOptionalDateTime(map['started_at'])
+      ..completedAt = _parseOptionalDateTime(map['completed_at']);
+  }
+
+  /// Parsuje volitelné časové razítko z Supabase (timestamptz).
+  static DateTime? _parseOptionalDateTime(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is DateTime) return raw.toUtc();
+    if (raw is String) return DateTime.tryParse(raw)?.toUtc();
+    return null;
   }
 
   /// Serializuje metadata (Map/JSONB) do JSON stringu pro Isar.

@@ -27,69 +27,84 @@ const TaskLocalSchema = CollectionSchema(
       name: r'assignedUserSupabaseId',
       type: IsarType.string,
     ),
-    r'description': PropertySchema(
+    r'completedAt': PropertySchema(
       id: 2,
+      name: r'completedAt',
+      type: IsarType.dateTime,
+    ),
+    r'description': PropertySchema(
+      id: 3,
       name: r'description',
       type: IsarType.string,
     ),
     r'lastSyncedAt': PropertySchema(
-      id: 3,
+      id: 4,
       name: r'lastSyncedAt',
       type: IsarType.dateTime,
     ),
     r'lastUpdated': PropertySchema(
-      id: 4,
+      id: 5,
       name: r'lastUpdated',
       type: IsarType.dateTime,
     ),
     r'localUpdatedAt': PropertySchema(
-      id: 5,
+      id: 6,
       name: r'localUpdatedAt',
       type: IsarType.dateTime,
     ),
     r'metadataJson': PropertySchema(
-      id: 6,
+      id: 7,
       name: r'metadataJson',
       type: IsarType.string,
     ),
     r'photoUrl': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'photoUrl',
       type: IsarType.string,
     ),
+    r'reservationSupabaseId': PropertySchema(
+      id: 9,
+      name: r'reservationSupabaseId',
+      type: IsarType.string,
+    ),
     r'scheduledStart': PropertySchema(
-      id: 8,
+      id: 10,
       name: r'scheduledStart',
       type: IsarType.dateTime,
     ),
+    r'startedAt': PropertySchema(
+      id: 11,
+      name: r'startedAt',
+      type: IsarType.dateTime,
+    ),
     r'status': PropertySchema(
-      id: 9,
+      id: 12,
       name: r'status',
       type: IsarType.string,
     ),
     r'supabaseId': PropertySchema(
-      id: 10,
+      id: 13,
       name: r'supabaseId',
       type: IsarType.string,
     ),
     r'syncStatus': PropertySchema(
-      id: 11,
+      id: 14,
       name: r'syncStatus',
       type: IsarType.byte,
       enumMap: _TaskLocalsyncStatusEnumValueMap,
     ),
     r'taskType': PropertySchema(
-      id: 12,
+      id: 15,
       name: r'taskType',
       type: IsarType.string,
     ),
     r'tenantId': PropertySchema(
-      id: 13,
+      id: 16,
       name: r'tenantId',
       type: IsarType.string,
     ),
     r'title': PropertySchema(
-      id: 14,
+      id: 17,
       name: r'title',
       type: IsarType.string,
     )
@@ -139,6 +154,12 @@ int _taskLocalEstimateSize(
       bytesCount += 3 + value.length * 3;
     }
   }
+  {
+    final value = object.reservationSupabaseId;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.status.length * 3;
   {
     final value = object.supabaseId;
@@ -160,19 +181,22 @@ void _taskLocalSerialize(
 ) {
   writer.writeString(offsets[0], object.apartmentSupabaseId);
   writer.writeString(offsets[1], object.assignedUserSupabaseId);
-  writer.writeString(offsets[2], object.description);
-  writer.writeDateTime(offsets[3], object.lastSyncedAt);
-  writer.writeDateTime(offsets[4], object.lastUpdated);
-  writer.writeDateTime(offsets[5], object.localUpdatedAt);
-  writer.writeString(offsets[6], object.metadataJson);
-  writer.writeString(offsets[7], object.photoUrl);
-  writer.writeDateTime(offsets[8], object.scheduledStart);
-  writer.writeString(offsets[9], object.status);
-  writer.writeString(offsets[10], object.supabaseId);
-  writer.writeByte(offsets[11], object.syncStatus.index);
-  writer.writeString(offsets[12], object.taskType);
-  writer.writeString(offsets[13], object.tenantId);
-  writer.writeString(offsets[14], object.title);
+  writer.writeDateTime(offsets[2], object.completedAt);
+  writer.writeString(offsets[3], object.description);
+  writer.writeDateTime(offsets[4], object.lastSyncedAt);
+  writer.writeDateTime(offsets[5], object.lastUpdated);
+  writer.writeDateTime(offsets[6], object.localUpdatedAt);
+  writer.writeString(offsets[7], object.metadataJson);
+  writer.writeString(offsets[8], object.photoUrl);
+  writer.writeString(offsets[9], object.reservationSupabaseId);
+  writer.writeDateTime(offsets[10], object.scheduledStart);
+  writer.writeDateTime(offsets[11], object.startedAt);
+  writer.writeString(offsets[12], object.status);
+  writer.writeString(offsets[13], object.supabaseId);
+  writer.writeByte(offsets[14], object.syncStatus.index);
+  writer.writeString(offsets[15], object.taskType);
+  writer.writeString(offsets[16], object.tenantId);
+  writer.writeString(offsets[17], object.title);
 }
 
 TaskLocal _taskLocalDeserialize(
@@ -184,22 +208,25 @@ TaskLocal _taskLocalDeserialize(
   final object = TaskLocal();
   object.apartmentSupabaseId = reader.readStringOrNull(offsets[0]);
   object.assignedUserSupabaseId = reader.readStringOrNull(offsets[1]);
-  object.description = reader.readString(offsets[2]);
+  object.completedAt = reader.readDateTimeOrNull(offsets[2]);
+  object.description = reader.readString(offsets[3]);
   object.id = id;
-  object.lastSyncedAt = reader.readDateTimeOrNull(offsets[3]);
-  object.lastUpdated = reader.readDateTime(offsets[4]);
-  object.localUpdatedAt = reader.readDateTime(offsets[5]);
-  object.metadataJson = reader.readStringOrNull(offsets[6]);
-  object.photoUrl = reader.readStringOrNull(offsets[7]);
-  object.scheduledStart = reader.readDateTime(offsets[8]);
-  object.status = reader.readString(offsets[9]);
-  object.supabaseId = reader.readStringOrNull(offsets[10]);
+  object.lastSyncedAt = reader.readDateTimeOrNull(offsets[4]);
+  object.lastUpdated = reader.readDateTime(offsets[5]);
+  object.localUpdatedAt = reader.readDateTime(offsets[6]);
+  object.metadataJson = reader.readStringOrNull(offsets[7]);
+  object.photoUrl = reader.readStringOrNull(offsets[8]);
+  object.reservationSupabaseId = reader.readStringOrNull(offsets[9]);
+  object.scheduledStart = reader.readDateTime(offsets[10]);
+  object.startedAt = reader.readDateTimeOrNull(offsets[11]);
+  object.status = reader.readString(offsets[12]);
+  object.supabaseId = reader.readStringOrNull(offsets[13]);
   object.syncStatus =
-      _TaskLocalsyncStatusValueEnumMap[reader.readByteOrNull(offsets[11])] ??
+      _TaskLocalsyncStatusValueEnumMap[reader.readByteOrNull(offsets[14])] ??
           SyncStatus.synced;
-  object.taskType = reader.readString(offsets[12]);
-  object.tenantId = reader.readString(offsets[13]);
-  object.title = reader.readString(offsets[14]);
+  object.taskType = reader.readString(offsets[15]);
+  object.tenantId = reader.readString(offsets[16]);
+  object.title = reader.readString(offsets[17]);
   return object;
 }
 
@@ -215,31 +242,37 @@ P _taskLocalDeserializeProp<P>(
     case 1:
       return (reader.readStringOrNull(offset)) as P;
     case 2:
-      return (reader.readString(offset)) as P;
-    case 3:
       return (reader.readDateTimeOrNull(offset)) as P;
+    case 3:
+      return (reader.readString(offset)) as P;
     case 4:
-      return (reader.readDateTime(offset)) as P;
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 5:
       return (reader.readDateTime(offset)) as P;
     case 6:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readDateTime(offset)) as P;
     case 7:
       return (reader.readStringOrNull(offset)) as P;
     case 8:
-      return (reader.readDateTime(offset)) as P;
-    case 9:
-      return (reader.readString(offset)) as P;
-    case 10:
       return (reader.readStringOrNull(offset)) as P;
+    case 9:
+      return (reader.readStringOrNull(offset)) as P;
+    case 10:
+      return (reader.readDateTime(offset)) as P;
     case 11:
-      return (_TaskLocalsyncStatusValueEnumMap[reader.readByteOrNull(offset)] ??
-          SyncStatus.synced) as P;
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 12:
       return (reader.readString(offset)) as P;
     case 13:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 14:
+      return (_TaskLocalsyncStatusValueEnumMap[reader.readByteOrNull(offset)] ??
+          SyncStatus.synced) as P;
+    case 15:
+      return (reader.readString(offset)) as P;
+    case 16:
+      return (reader.readString(offset)) as P;
+    case 17:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -652,6 +685,78 @@ extension TaskLocalQueryFilter
       return query.addFilterCondition(FilterCondition.greaterThan(
         property: r'assignedUserSupabaseId',
         value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      completedAtIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'completedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      completedAtIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'completedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> completedAtEqualTo(
+      DateTime? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'completedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      completedAtGreaterThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'completedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> completedAtLessThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'completedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> completedAtBetween(
+    DateTime? lower,
+    DateTime? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'completedAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
       ));
     });
   }
@@ -1328,6 +1433,161 @@ extension TaskLocalQueryFilter
   }
 
   QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      reservationSupabaseIdIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'reservationSupabaseId',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      reservationSupabaseIdIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'reservationSupabaseId',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      reservationSupabaseIdEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'reservationSupabaseId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      reservationSupabaseIdGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'reservationSupabaseId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      reservationSupabaseIdLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'reservationSupabaseId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      reservationSupabaseIdBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'reservationSupabaseId',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      reservationSupabaseIdStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'reservationSupabaseId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      reservationSupabaseIdEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'reservationSupabaseId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      reservationSupabaseIdContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'reservationSupabaseId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      reservationSupabaseIdMatches(String pattern,
+          {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'reservationSupabaseId',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      reservationSupabaseIdIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'reservationSupabaseId',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      reservationSupabaseIdIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'reservationSupabaseId',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
       scheduledStartEqualTo(DateTime value) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.equalTo(
@@ -1375,6 +1635,77 @@ extension TaskLocalQueryFilter
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.between(
         property: r'scheduledStart',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> startedAtIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'startedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      startedAtIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'startedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> startedAtEqualTo(
+      DateTime? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'startedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition>
+      startedAtGreaterThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'startedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> startedAtLessThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'startedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterFilterCondition> startedAtBetween(
+    DateTime? lower,
+    DateTime? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'startedAt',
         lower: lower,
         includeLower: includeLower,
         upper: upper,
@@ -2145,6 +2476,18 @@ extension TaskLocalQuerySortBy on QueryBuilder<TaskLocal, TaskLocal, QSortBy> {
     });
   }
 
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByCompletedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'completedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByCompletedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'completedAt', Sort.desc);
+    });
+  }
+
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByDescription() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'description', Sort.asc);
@@ -2217,6 +2560,20 @@ extension TaskLocalQuerySortBy on QueryBuilder<TaskLocal, TaskLocal, QSortBy> {
     });
   }
 
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy>
+      sortByReservationSupabaseId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationSupabaseId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy>
+      sortByReservationSupabaseIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationSupabaseId', Sort.desc);
+    });
+  }
+
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByScheduledStart() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'scheduledStart', Sort.asc);
@@ -2226,6 +2583,18 @@ extension TaskLocalQuerySortBy on QueryBuilder<TaskLocal, TaskLocal, QSortBy> {
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByScheduledStartDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'scheduledStart', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByStartedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'startedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> sortByStartedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'startedAt', Sort.desc);
     });
   }
 
@@ -2331,6 +2700,18 @@ extension TaskLocalQuerySortThenBy
     });
   }
 
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByCompletedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'completedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByCompletedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'completedAt', Sort.desc);
+    });
+  }
+
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByDescription() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'description', Sort.asc);
@@ -2415,6 +2796,20 @@ extension TaskLocalQuerySortThenBy
     });
   }
 
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy>
+      thenByReservationSupabaseId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationSupabaseId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy>
+      thenByReservationSupabaseIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationSupabaseId', Sort.desc);
+    });
+  }
+
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByScheduledStart() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'scheduledStart', Sort.asc);
@@ -2424,6 +2819,18 @@ extension TaskLocalQuerySortThenBy
   QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByScheduledStartDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'scheduledStart', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByStartedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'startedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QAfterSortBy> thenByStartedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'startedAt', Sort.desc);
     });
   }
 
@@ -2518,6 +2925,12 @@ extension TaskLocalQueryWhereDistinct
     });
   }
 
+  QueryBuilder<TaskLocal, TaskLocal, QDistinct> distinctByCompletedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'completedAt');
+    });
+  }
+
   QueryBuilder<TaskLocal, TaskLocal, QDistinct> distinctByDescription(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
@@ -2557,9 +2970,23 @@ extension TaskLocalQueryWhereDistinct
     });
   }
 
+  QueryBuilder<TaskLocal, TaskLocal, QDistinct> distinctByReservationSupabaseId(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'reservationSupabaseId',
+          caseSensitive: caseSensitive);
+    });
+  }
+
   QueryBuilder<TaskLocal, TaskLocal, QDistinct> distinctByScheduledStart() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'scheduledStart');
+    });
+  }
+
+  QueryBuilder<TaskLocal, TaskLocal, QDistinct> distinctByStartedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'startedAt');
     });
   }
 
@@ -2627,6 +3054,12 @@ extension TaskLocalQueryProperty
     });
   }
 
+  QueryBuilder<TaskLocal, DateTime?, QQueryOperations> completedAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'completedAt');
+    });
+  }
+
   QueryBuilder<TaskLocal, String, QQueryOperations> descriptionProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'description');
@@ -2663,9 +3096,22 @@ extension TaskLocalQueryProperty
     });
   }
 
+  QueryBuilder<TaskLocal, String?, QQueryOperations>
+      reservationSupabaseIdProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'reservationSupabaseId');
+    });
+  }
+
   QueryBuilder<TaskLocal, DateTime, QQueryOperations> scheduledStartProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'scheduledStart');
+    });
+  }
+
+  QueryBuilder<TaskLocal, DateTime?, QQueryOperations> startedAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'startedAt');
     });
   }
 

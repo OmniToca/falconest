@@ -52,18 +52,16 @@ bool _tasksOverlap(
   return newStart.isBefore(existingEnd) && newEnd.isAfter(existingStart);
 }
 
-/// Posun okna při hledání volného místa – 60 minut dopředu.
-const int _shiftMinutes = 60;
-
 /// Rovnoměrné rozložení S KONTROLOU KOLIZÍ: z kandidátů vybere toho, kdo má v daný den nejméně práce
 /// a zároveň nemá v časovém okně [taskStart, taskEnd] žádný jiný úkol (z existingTasksRaw ani toInsert).
 ///
 /// Překryv: (taskStart < stávajícíKonec) && (taskEnd > stávajícíStart) → kandidát vyřazen.
 /// Ze zbylých (volných) kandidátů vybere toho s minimálním počtem úkolů za daný den.
 ///
-/// [deadline] – úkol nesmí končit po této chvíli; při kolizi se posouvá až do deadline.
-/// [applyNightRest] – pokud true, úkol nesmí spadat do 20:00–07:00 (noční klid); při spadu se přesune na 7:00.
-/// attempts < 100 – bezpečnostní pojistka proti zamrznutí UI.
+/// [isSacredTask] – Svaté úkoly (check-in, check-out, transfery) NESMÍ být posouvány v čase.
+/// Při kolizi všech kandidátů vrací Nepřiřazeno. Flexibilní úkoly (úklid, údržba) hledají volný slot
+/// v dynamickém okně mezi odjezdem hosta a příjezdem dalšího (deadline), max 100 iterací po 30 min.
+/// [applyNightRest] – pokud true, respektuje pracovní dobu 07:00–19:00; mimo ni přesouvá na 7:00.
 ({String? assignTo, DateTime start, DateTime end}) pickAssigneeWithCollisionAvoidance({
   required List<TeamMember> candidates,
   required DateTime taskStart,
@@ -73,29 +71,41 @@ const int _shiftMinutes = 60;
   required List<dynamic> existingTasksRaw,
   required List<Map<String, dynamic>> toInsert,
   String? zoneId,
+  bool isSacredTask = false,
 }) {
   if (candidates.isEmpty) {
     return (assignTo: null, start: taskStart, end: taskEnd);
   }
 
   final taskDuration = taskEnd.difference(taskStart);
-  DateTime tryStart = taskStart;
-  DateTime tryEnd = taskEnd;
-  int attempts = 0;
+  /// Posun v minutách při kolizi – pouze pro flexibilní úkoly (úklid, údržba).
+  const int shiftMinutes = 30;
+  /// Štědrý limit iterací pro dlouhé úklidy (až 5 h) – hledání volného slotu v okně do deadline.
+  const int maxShiftIterations = 100;
 
-  while (tryEnd.isBefore(deadline) && attempts < 100) {
+  for (int shiftAttempt = 0; shiftAttempt < (isSacredTask ? 1 : maxShiftIterations); shiftAttempt++) {
+    DateTime tryStart = taskStart.add(Duration(minutes: shiftAttempt * shiftMinutes));
+    DateTime tryEnd = tryStart.add(taskDuration);
 
-    // Noční klid (20:00–07:00): úkoly mimo transfer/check-in/out se přesouvají na 7:00.
+    // Kontrola deadline: pokud by posunutý úklid skončil až po příjezdu dalšího hosta, ukonči hledání.
+    if (tryEnd.isAfter(deadline)) break;
+
+    // Pracovní doba 07:00–19:00: úkoly s applyNightRest nesmí spadat mimo toto okno.
     if (applyNightRest) {
-      if (tryStart.hour >= 20) {
-        final nextDay = tryStart.add(const Duration(days: 1));
-        tryStart = DateTime(nextDay.year, nextDay.month, nextDay.day, 7, 0, 0);
-        tryEnd = tryStart.add(taskDuration);
-      } else if (tryStart.hour < 7) {
+      if (tryStart.hour < 7) {
         tryStart = DateTime(tryStart.year, tryStart.month, tryStart.day, 7, 0, 0);
         tryEnd = tryStart.add(taskDuration);
       }
+      // Pokud čas přesáhne 19:00, přesouváme začátek úkolu na 07:00 následujícího rána.
+      final workDayEnd = DateTime(tryStart.year, tryStart.month, tryStart.day, 19, 0, 0);
+      if (tryStart.isAfter(workDayEnd)) {
+        final nextDay = tryStart.add(const Duration(days: 1));
+        tryStart = DateTime(nextDay.year, nextDay.month, nextDay.day, 7, 0, 0);
+        tryEnd = tryStart.add(taskDuration);
+      }
     }
+
+    if (tryEnd.isAfter(deadline)) break;
 
     // Pro každého kandidáta: zkontrolovat, zda má v okně [tryStart, tryEnd] nějaký úkol
     final freeCandidates = <TeamMember>[];
@@ -211,11 +221,7 @@ const int _shiftMinutes = 60;
       final winner = freeCandidates.first;
       return (assignTo: assignableId(winner), start: tryStart, end: tryEnd);
     }
-
-    // Chytré posunutí: posunout okno o 60 min dopředu a zkusit znovu (až do deadline).
-    tryStart = tryStart.add(const Duration(minutes: _shiftMinutes));
-    tryEnd = tryStart.add(taskDuration);
-    attempts++;
+    if (isSacredTask) break;
   }
 
   return (assignTo: null, start: taskStart, end: taskEnd);

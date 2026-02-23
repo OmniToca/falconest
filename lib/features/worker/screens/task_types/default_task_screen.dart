@@ -42,21 +42,32 @@ class DefaultTaskScreen extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  detail.title.isNotEmpty ? detail.title : detail.apartmentName ?? '—',
-                  style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87),
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          detail.title.isNotEmpty ? detail.title : detail.apartmentName ?? '—',
+                          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87),
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          detail.apartmentAddress ?? '—',
+                          style: TextStyle(fontSize: 16, color: Colors.grey.shade800),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          detail.description.isNotEmpty ? detail.description : '—',
+                          style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+                        ),
+                        // Poznámka (custom_note) pro ostatní typy úkolů.
+                        ..._buildDefaultMetadata(detail.metadata ?? {}),
+                      ],
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 16),
-                Text(
-                  detail.apartmentAddress ?? '—',
-                  style: TextStyle(fontSize: 16, color: Colors.grey.shade800),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  detail.description.isNotEmpty ? detail.description : '—',
-                  style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
-                ),
-                const Spacer(),
                 _buildActionButton(context, ref, taskId, detail.status, 'worker.task_detail_finish'),
               ],
             ),
@@ -71,6 +82,7 @@ class DefaultTaskScreen extends ConsumerWidget {
   }
 
   // Dvoufázové odpracování: Nejprve Zahájit (in_progress), poté Dokončit (completed).
+  // Uložení přesného UTC času pro sledování reálné doby práce.
   Widget _buildActionButton(BuildContext context, WidgetRef ref, String taskId, String status, String finishKey) {
     final s = status.trim().toLowerCase();
     final isInProgress = s == 'in_progress' || s == 'probíhá';
@@ -95,7 +107,11 @@ class DefaultTaskScreen extends ConsumerWidget {
         width: double.infinity,
         child: FilledButton(
           onPressed: () async {
-            await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(taskId, 'completed');
+            await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
+                  taskId,
+                  'completed',
+                  completedAt: DateTime.now().toUtc(),
+                );
             if (context.mounted) context.pop();
           },
           style: FilledButton.styleFrom(
@@ -111,7 +127,11 @@ class DefaultTaskScreen extends ConsumerWidget {
       width: double.infinity,
       child: FilledButton(
         onPressed: () async {
-          await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(taskId, 'in_progress');
+          await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
+                taskId,
+                'in_progress',
+                startedAt: DateTime.now().toUtc(),
+              );
         },
         style: FilledButton.styleFrom(
           backgroundColor: _primaryBlue,
@@ -119,6 +139,49 @@ class DefaultTaskScreen extends ConsumerWidget {
           padding: const EdgeInsets.symmetric(vertical: 16),
         ),
         child: Text('worker.task_detail_start_work'.tr()),
+      ),
+    );
+  }
+
+  /// Vykreslení metadat pro Ostatní typy úkolů – custom_note.
+  List<Widget> _buildDefaultMetadata(Map<String, dynamic> meta) {
+    final note = meta['custom_note'];
+    final noteText = note is String ? note.trim() : (note?.toString().trim() ?? '');
+    if (noteText.isEmpty) return [];
+
+    return [
+      const SizedBox(height: 16),
+      _buildCustomNoteCard(noteText, icon: Icons.assignment_outlined),
+    ];
+  }
+
+  Widget _buildCustomNoteCard(String text, {IconData icon = Icons.note_outlined}) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 24, color: Colors.grey.shade700),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'worker.custom_note'.tr(),
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade700),
+                ),
+                const SizedBox(height: 4),
+                Text(text, style: TextStyle(fontSize: 14, color: Colors.grey.shade800)),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

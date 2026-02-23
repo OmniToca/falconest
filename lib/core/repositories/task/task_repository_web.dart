@@ -96,7 +96,7 @@ class TaskRepositoryWeb implements ITaskRepository {
     try {
       final res = await SupabaseService.client
           .from('tasks')
-          .select('id, title, description, task_type, scheduled_start, status, apartment_id, photo_url')
+          .select('id, title, description, task_type, scheduled_start, status, apartment_id, photo_url, metadata, started_at, completed_at')
           .eq('tenant_id', tenantId)
           .eq('id', taskId)
           .maybeSingle();
@@ -130,6 +130,12 @@ class TaskRepositoryWeb implements ITaskRepository {
       } else {
         start = DateTime.now();
       }
+      final rawMeta = map['metadata'];
+      Map<String, dynamic>? metadata;
+      if (rawMeta != null && rawMeta is Map) {
+        metadata = Map<String, dynamic>.from(rawMeta);
+      }
+
       return WorkerTaskDetail(
         id: taskId,
         title: (map['title'] as String?)?.trim() ?? '',
@@ -143,6 +149,9 @@ class TaskRepositoryWeb implements ITaskRepository {
         keybox: keybox?.isEmpty ?? true ? null : keybox,
         ownerNotes: ownerNotes?.isEmpty ?? true ? null : ownerNotes,
         photoUrl: (map['photo_url'] as String?)?.trim().isEmpty ?? true ? null : (map['photo_url'] as String?)?.trim(),
+        metadata: metadata,
+        startedAt: _parseOptDateTime(map['started_at']),
+        completedAt: _parseOptDateTime(map['completed_at']),
       );
     } catch (_) {
       return null;
@@ -150,12 +159,44 @@ class TaskRepositoryWeb implements ITaskRepository {
   }
 
   @override
-  Future<void> updateTaskStatus(String tenantId, String taskId, String status) async {
+  Future<void> updateTaskStatus(
+    String tenantId,
+    String taskId,
+    String status, {
+    DateTime? startedAt,
+    DateTime? completedAt,
+    Map<String, dynamic>? metadataOverlay,
+  }) async {
+    final updates = <String, dynamic>{'status': status};
+    if (startedAt != null) updates['started_at'] = startedAt.toUtc().toIso8601String();
+    if (completedAt != null) updates['completed_at'] = completedAt.toUtc().toIso8601String();
+
+    if (metadataOverlay != null && metadataOverlay.isNotEmpty) {
+      final res = await SupabaseService.client
+          .from('tasks')
+          .select('metadata')
+          .eq('id', taskId)
+          .eq('tenant_id', tenantId)
+          .maybeSingle();
+      final existing = res != null && res is Map
+          ? (res['metadata'] is Map ? Map<String, dynamic>.from(res['metadata'] as Map) : <String, dynamic>{})
+          : <String, dynamic>{};
+      final merged = Map<String, dynamic>.from(existing)..addAll(metadataOverlay);
+      updates['metadata'] = merged;
+    }
+
     await SupabaseService.client
         .from('tasks')
-        .update({'status': status})
+        .update(updates)
         .eq('id', taskId)
         .eq('tenant_id', tenantId);
+  }
+
+  static DateTime? _parseOptDateTime(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is DateTime) return raw;
+    if (raw is String) return DateTime.tryParse(raw);
+    return null;
   }
 }
 

@@ -5,7 +5,17 @@
 class WorkerSyncService {
   WorkerSyncService._();
 
-  static Future<void> syncTasksFromSupabase(String workerId, String tenantId) async {}
+  static Future<void> syncTasksFromSupabase(
+    String workerId,
+    String tenantId, {
+    void Function(String)? onSyncError,
+  }) async {}
 
-  static Future<void> pushPendingUpdates(String tenantId) async {}
+  static Future<void> pushPendingUpdates(
+    String tenantId, {
+    void Function(String)? onSyncError,
+  }) async {}
+
+  /// Na webu vždy 0 – není Isar.
+  static Future<int> getPendingSyncCount(String tenantId) async => 0;
 }

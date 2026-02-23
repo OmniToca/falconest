@@ -17,6 +17,8 @@ import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/premium_upsell_dialog.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
+import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
+import 'package:falconest/features/settings/models/tenant_service_model.dart';
 // Sdílená komponenta pro zobrazení financí a poznámek z rezervace.
 import 'package:falconest/features/admin/widgets/task_metadata_section.dart';
 import 'package:falconest/utils/task_visuals.dart';
@@ -1380,10 +1382,7 @@ Future<String?> _showDateTimePicker(BuildContext context, {DateTime? initial}) a
   return _formatDateTime(dt);
 }
 
-/// Hodnoty typů úkolů ukládané do DB. V UI se zobrazují přes lokalizaci.
-const _taskTypeValues = ['cleaning', 'transfer_in', 'transfer_out', 'check_in', 'check_out', 'issue', 'material'];
-
-/// Vrací lokalizační klíč pro daný task_type (DB hodnota nebo legacy).
+/// Vrací lokalizační klíč pro daný task_type (fallback pro smazané/systémové typy mimo katalog).
 String _taskTypeLabelKey(String taskType) {
   switch (taskType) {
     case 'cleaning':
@@ -1416,6 +1415,37 @@ bool _isTaskTypeAlert(String? taskType) {
   return taskType == 'issue' || taskType == 'material';
 }
 
+/// Dynamické načtení typů úkolů z katalogu klienta (tenant_services) s fallbackem pro smazané/systémové typy.
+/// [catalog] = aktivní služby z DB, [currentValue] = typ úkolu při editaci – pokud není v katalogu, přidá se uměle.
+List<DropdownMenuItem<String>> _buildTaskTypeDropdownItems(
+  List<TenantServiceModel> catalog,
+  String? currentValue,
+) {
+  final typeToName = <String, String>{};
+  for (final s in catalog) {
+    final st = s.serviceType.trim().toLowerCase();
+    if (st.isNotEmpty && !typeToName.containsKey(st)) {
+      typeToName[st] = s.name.trim().isEmpty ? st : s.name.trim();
+    }
+  }
+  final items = typeToName.entries
+      .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
+      .toList();
+  if (currentValue != null && currentValue.trim().isNotEmpty) {
+    final cv = currentValue.trim().toLowerCase();
+    if (!typeToName.containsKey(cv)) {
+      items.insert(0, DropdownMenuItem(
+        value: cv,
+        child: Text(_taskTypeLabelKey(cv).tr()),
+      ));
+    }
+  }
+  if (items.isEmpty) {
+    items.add(DropdownMenuItem(value: 'extra', child: Text(_taskTypeLabelKey('extra').tr())));
+  }
+  return items;
+}
+
 /// Dialog pro přidání nového úkolu.
 class _AddTaskDialog extends ConsumerStatefulWidget {
   const _AddTaskDialog({required this.ref, required this.onSaved});
@@ -1434,7 +1464,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
   final _dueDateController = TextEditingController();
   String? _selectedApartmentId;
   String? _selectedAssignedTo;
-  String _taskType = _taskTypeValues.first;
+  String _taskType = 'extra';
   String _status = _systemStatuses.first;
   bool _isSaving = false;
 
@@ -1531,6 +1561,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
   Widget build(BuildContext context) {
     final apartmentsAsync = ref.watch(apartmentsProvider);
     final teamAsync = ref.watch(adminTeamProvider);
+    final catalogAsync = ref.watch(tenantServicesProvider);
 
     return ModernAdminPanel(
       title: 'admin.tasks_add'.tr(),
@@ -1563,20 +1594,45 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
-                  initialValue: _taskType,
-                  decoration: InputDecoration(
-                    prefixIcon: const Icon(Icons.list_alt_outlined),
-                    labelText: 'admin.task_type_label'.tr(),
-                    border: const OutlineInputBorder(),
+                catalogAsync.when(
+                  data: (catalog) {
+                    // Dynamické načtení typů úkolů z katalogu klienta (tenant_services) s fallbackem pro smazané/systémové typy.
+                    final items = _buildTaskTypeDropdownItems(catalog, null);
+                    final validValue = items.any((i) => i.value == _taskType)
+                        ? _taskType
+                        : (items.isNotEmpty ? items.first.value! : 'extra');
+                    if (validValue != _taskType) WidgetsBinding.instance.addPostFrameCallback((_) => setState(() => _taskType = validValue));
+                    return DropdownButtonFormField<String>(
+                      value: validValue,
+                      decoration: InputDecoration(
+                        prefixIcon: const Icon(Icons.list_alt_outlined),
+                        labelText: 'admin.task_type_label'.tr(),
+                        border: const OutlineInputBorder(),
+                      ),
+                      items: items,
+                      onChanged: (v) => setState(() => _taskType = v ?? 'extra'),
+                    );
+                  },
+                  loading: () => DropdownButtonFormField<String>(
+                    value: 'extra',
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.list_alt_outlined),
+                      labelText: 'admin.task_type_label'.tr(),
+                      border: const OutlineInputBorder(),
+                    ),
+                    items: [DropdownMenuItem(value: 'extra', child: Text(_taskTypeLabelKey('extra').tr()))],
+                    onChanged: null,
                   ),
-                  items: _taskTypeValues
-                      .map((v) => DropdownMenuItem(
-                            value: v,
-                            child: Text(_taskTypeLabelKey(v).tr()),
-                          ))
-                      .toList(),
-                  onChanged: (v) => setState(() => _taskType = v ?? _taskTypeValues.first),
+                  error: (_, __) => DropdownButtonFormField<String>(
+                    value: 'extra',
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.list_alt_outlined),
+                      labelText: 'admin.task_type_label'.tr(),
+                      border: const OutlineInputBorder(),
+                    ),
+                    items: [DropdownMenuItem(value: 'extra', child: Text(_taskTypeLabelKey('extra').tr()))],
+                    onChanged: (v) => setState(() => _taskType = v ?? 'extra'),
+                  ),
                 ),
                 const SizedBox(height: 12),
                 apartmentsAsync.when(
@@ -1923,15 +1979,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
     _dueDateController = TextEditingController(text: _formatDateTime(t.dueDate));
     _selectedApartmentId = t.apartmentId;
     _selectedAssignedTo = t.assignedTo;
-    _taskType = _taskTypeValues.contains(t.taskType)
-        ? t.taskType
-        : (t.taskType == 'Úklid'
-            ? 'cleaning'
-            : (t.taskType == 'Transfer'
-                ? 'transfer_in'
-                : (t.taskType == 'check_in' || t.taskType == 'check_out'
-                    ? t.taskType
-                    : _taskTypeValues.first)));
+    _taskType = t.taskType.trim().isEmpty ? 'extra' : t.taskType.trim().toLowerCase();
     _status = _normalizeToSystemStatus(t.status);
   }
 
@@ -2030,6 +2078,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
   Widget build(BuildContext context) {
     final apartmentsAsync = ref.watch(apartmentsProvider);
     final teamAsync = ref.watch(adminTeamProvider);
+    final catalogAsync = ref.watch(tenantServicesProvider);
 
     return ModernAdminPanel(
       title: 'admin.tasks_edit'.tr(),
@@ -2069,20 +2118,42 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                 ),
                 TaskMetadataSection(metadata: widget.task.metadata),
                 const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
-                  initialValue: _taskType,
-                  decoration: InputDecoration(
-                    prefixIcon: const Icon(Icons.list_alt_outlined),
-                    labelText: 'admin.task_type_label'.tr(),
-                    border: const OutlineInputBorder(),
+                catalogAsync.when(
+                  data: (catalog) {
+                    // Dynamické načtení typů úkolů z katalogu klienta (tenant_services) s fallbackem pro smazané/systémové typy.
+                    final items = _buildTaskTypeDropdownItems(catalog, _taskType);
+                    final validValue = items.any((i) => i.value == _taskType) ? _taskType : items.first.value!;
+                    return DropdownButtonFormField<String>(
+                      value: validValue,
+                      decoration: InputDecoration(
+                        prefixIcon: const Icon(Icons.list_alt_outlined),
+                        labelText: 'admin.task_type_label'.tr(),
+                        border: const OutlineInputBorder(),
+                      ),
+                      items: items,
+                      onChanged: (v) => setState(() => _taskType = v ?? validValue),
+                    );
+                  },
+                  loading: () => DropdownButtonFormField<String>(
+                    value: _taskType,
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.list_alt_outlined),
+                      labelText: 'admin.task_type_label'.tr(),
+                      border: const OutlineInputBorder(),
+                    ),
+                    items: [DropdownMenuItem(value: _taskType, child: Text(_taskTypeLabelKey(_taskType).tr()))],
+                    onChanged: null,
                   ),
-                  items: _taskTypeValues
-                      .map((v) => DropdownMenuItem(
-                            value: v,
-                            child: Text(_taskTypeLabelKey(v).tr()),
-                          ))
-                      .toList(),
-                  onChanged: (v) => setState(() => _taskType = v ?? _taskTypeValues.first),
+                  error: (_, __) => DropdownButtonFormField<String>(
+                    value: _taskType,
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.list_alt_outlined),
+                      labelText: 'admin.task_type_label'.tr(),
+                      border: const OutlineInputBorder(),
+                    ),
+                    items: [DropdownMenuItem(value: _taskType, child: Text(_taskTypeLabelKey(_taskType).tr()))],
+                    onChanged: (v) => setState(() => _taskType = v ?? _taskType),
+                  ),
                 ),
                 const SizedBox(height: 12),
                 apartmentsAsync.when(

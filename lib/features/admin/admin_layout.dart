@@ -10,6 +10,7 @@ import 'package:falconest/features/admin/admin_dashboard_screen.dart';
 import 'package:falconest/features/admin/admin_reservations_screen.dart';
 import 'package:falconest/features/admin/admin_tasks_screen.dart';
 import 'package:falconest/features/admin/admin_team_screen.dart';
+import 'package:falconest/features/admin/finance_dashboard_screen.dart';
 import 'package:falconest/features/calendar/screens/planning_calendar_screen.dart';
 import 'package:falconest/features/admin/models/module_model.dart';
 import 'package:falconest/features/admin/providers/current_tenant_name_provider.dart';
@@ -27,6 +28,7 @@ const int adminTabIndexApartments = 2;
 const int adminTabIndexReservations = 3;
 const int adminTabIndexTasks = 4;
 const int adminTabIndexPlanningCalendar = 5;
+const int adminTabIndexFinance = 6;
 
 /// Umožňuje přepnutí záložky z vnořených obrazovek (např. z dashboardu po kliknutí na akci).
 class AdminTabScope extends InheritedWidget {
@@ -71,6 +73,7 @@ class _AdminLayoutState extends State<AdminLayout> {
     const AdminReservationsScreen(),
     const AdminTasksScreen(),
     const PlanningCalendarScreen(),
+    const FinanceDashboardScreen(),
   ];
 
   void _switchToTab(int index) {
@@ -369,7 +372,12 @@ class _AdminSidebar extends ConsumerWidget {
     final allModules = (rawModules == null || rawModules.isEmpty)
         ? _fallbackModules()
         : rawModules;
-    final visibleModules = allModules.where((m) => m.showInMenu).toList();
+    final financeActive = isModuleActive(ref, 'finance');
+    final visibleModules = allModules.where((m) {
+      if (!m.showInMenu) return false;
+      if (m.key == 'finance' && !financeActive) return false;
+      return true;
+    }).toList();
 
     return SafeArea(
       child: SizedBox(
@@ -412,7 +420,7 @@ class _AdminSidebar extends ConsumerWidget {
                       Navigator.of(context).pop();
                     }
                     if (tabIndex != null) {
-                      onIndexChanged(tabIndex.clamp(0, adminTabIndexPlanningCalendar));
+                      onIndexChanged(tabIndex.clamp(0, adminTabIndexFinance));
                     } else {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(

@@ -1,6 +1,7 @@
 /// Mobilní implementace AuditLogRepository – Isar offline-first.
 ///
 /// Kompiluje se pouze pro dart:io. Používá PendingAuditAction pro offline zápis.
+import 'package:isar/isar.dart';
 import 'package:falconest/core/database/isar_service.dart';
 import 'package:falconest/core/database/models/pending_audit_action.dart';
 import 'package:falconest/core/database/models/sync_status.dart';
@@ -109,10 +110,10 @@ class AuditLogRepository {
   static Future<void> processPendingAuditActions() async {
     try {
       final isar = IsarService.instance;
-      final pending = isar.pendingAuditActions
+      final pending = await isar.pendingAuditActions
           .filter()
           .syncStatusEqualTo(SyncStatus.pending)
-          .findAllSync();
+          .findAll();
       for (final p in pending) {
         try {
           if (p.actionType == 'restore') {

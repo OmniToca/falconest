@@ -5,9 +5,12 @@ import 'package:go_router/go_router.dart';
 
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
 import 'package:falconest/features/worker/screens/task_types/checkin_task_screen.dart';
+import 'package:falconest/features/worker/screens/task_types/checkout_task_screen.dart';
 import 'package:falconest/features/worker/screens/task_types/cleaning_task_screen.dart';
 import 'package:falconest/features/worker/screens/task_types/default_task_screen.dart';
 import 'package:falconest/features/worker/screens/task_types/issue_task_screen.dart';
+import 'package:falconest/features/worker/screens/task_types/maintenance_task_screen.dart';
+import 'package:falconest/features/worker/screens/task_types/material_task_screen.dart';
 import 'package:falconest/features/worker/screens/task_types/transfer_task_screen.dart';
 
 /// Rozcestník detailu úkolu – načte data a podle task_type zobrazí MVP obrazovku daného typu.
@@ -30,14 +33,23 @@ class WorkerTaskDetailScreen extends ConsumerWidget {
         if (type == 'transfer_in' || type == 'transfer_out') {
           return TransferTaskScreen(taskId: taskId);
         }
-        if (type == 'check_in' || type == 'check_out') {
+        if (type == 'check_in') {
           return CheckinTaskScreen(taskId: taskId);
+        }
+        if (type == 'check_out') {
+          return CheckoutTaskScreen(taskId: taskId);
         }
         if (type == 'issue') {
           return IssueTaskScreen(taskId: taskId);
         }
         if (type == 'cleaning') {
           return CleaningTaskScreen(taskId: taskId);
+        }
+        if (type == 'maintenance') {
+          return MaintenanceTaskScreen(taskId: taskId);
+        }
+        if (type == 'material') {
+          return MaterialTaskScreen(taskId: taskId);
         }
         return DefaultTaskScreen(taskId: taskId);
       },

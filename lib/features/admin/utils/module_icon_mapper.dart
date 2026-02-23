@@ -45,7 +45,7 @@ class ModuleIconMapper {
     'reservations': 3,
     'tasks': 4,
     'planning_calendar': 5,
-    'finance': null,
+    'finance': 6,
     'warehouse': null,
     'smart_lock': null,
     'automation': null,

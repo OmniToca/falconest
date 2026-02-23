@@ -201,6 +201,44 @@
 | task_categories | color_hex | text | NO – HEX barva pozadí, např. '#FFF3E0' |
 | task_categories | icon_name | text | YES – název Material Icons ikony, např. 'directions_car', 'key' |
 | task_categories | order_index | integer | YES (default 0) – pořadí v legendě a dropdownu |
+| employee_cash_wallets | id | uuid | NO |
+| employee_cash_wallets | tenant_id | uuid | NO (FK → tenants) |
+| employee_cash_wallets | profile_id | uuid | NO (FK → profiles) |
+| employee_cash_wallets | balance | numeric | NO (default 0) – aktuální dlužná hotovost u zaměstnance |
+| employee_cash_wallets | updated_at | timestamp with time zone | YES (default now()) |
+| employee_cash_transactions | id | uuid | NO |
+| employee_cash_transactions | tenant_id | uuid | NO (FK → tenants) |
+| employee_cash_transactions | wallet_id | uuid | NO (FK → employee_cash_wallets) |
+| employee_cash_transactions | task_id | uuid | YES (FK → tasks) – vazba na úkol (Check-in, Transfer) |
+| employee_cash_transactions | amount | numeric | NO – kladné (výběr), záporné (odevzdání) |
+| employee_cash_transactions | transaction_type | text | NO – 'COLLECTED_FROM_GUEST' nebo 'HANDED_TO_AGENCY' |
+| employee_cash_transactions | created_by | uuid | NO (FK → profiles) |
+| employee_cash_transactions | created_at | timestamp with time zone | YES (default now()) |
+
+---
+
+### Modul Finance – Zaměstnanecká pokladna (Cash Accountability)
+
+Modul **Finance** je hlavní modul (zdarma) obsahující **Zaměstnaneckou pokladnu** pro evidenci hotovosti vybrané od hostů. Placený sub-modul **finance_export** (Podklady pro fakturaci) bude přidán později.
+
+**Systém je nezávislý na tenant_wallets a wallet_transactions** – ty slouží pro předplacené kredity, nikoliv pro hotovostní evidenci.
+
+**employee_cash_wallets** – Kapsa zaměstnance:
+- Jeden řádek na (tenant_id, profile_id); UNIQUE constraint.
+- **balance** – aktuální dlužná hotovost u zaměstnance (kladná = má u sebe peníze vybrané od hostů).
+- **updated_at** – poslední změna stavu.
+
+**employee_cash_transactions** – Účetní kniha výběrů:
+- Append-only záznamy transakcí.
+- **transaction_type**: `COLLECTED_FROM_GUEST` (výběr od hosta při Check-in/Transfer), `HANDED_TO_AGENCY` (odevzdání agentuře).
+- **amount**: kladné = výběr (zvyšuje balance), záporné = odevzdání (snižuje balance).
+- **task_id** – volitelná vazba na úkol (Check-in, Transfer) pro audit.
+
+**RLS:** Oba tabulky mají RLS zapnuté; přístup pouze na řádky, kde tenant_id odpovídá tenant_id přihlášeného uživatele (profiles.auth_id = auth.uid()). Super Admin má plný přístup.
+
+**Registr modulů:**
+- **finance** – hlavní modul, zdarma (price_eur = 0), show_in_menu = true.
+- **finance_export** – placený sub-modul, parent_module_key = 'finance', show_in_menu = false, price_eur = 29, pricing_type = 'fixed'.
 
 ---
 
@@ -252,6 +290,8 @@ Systém **tenant_wallets** + **wallet_transactions** slouží pro předplacené 
 
 ### Registr modulů (modules.key) – reference
 
+- **finance** – Hlavní modul Finance a Hotovost (zdarma). Obsahuje Zaměstnaneckou pokladnu. show_in_menu = true.
+- **finance_export** – Placený sub-modul Podklady pro fakturaci. parent_module_key = 'finance', show_in_menu = false, price_eur = 29.
 - **automatic_tasks** – Feature flag / sub-modul patřící k modulu `tasks`. Odemkne premium funkce na obrazovce Úkoly (Generovat návrhy, Přepočítat personál). Nemá vlastní obrazovku: v tabulce `modules` má `show_in_menu = false` a `parent_module_key = 'tasks'`. V Super Admin Tenant Detail se zobrazuje s lokalizovaným názvem a ikonou díky `ModuleIconMapper` (ikona: auto_awesome, label: admin.menu_automatic_tasks).
 
 ---

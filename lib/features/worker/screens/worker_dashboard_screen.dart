@@ -5,12 +5,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/auth/pin_storage.dart';
 import 'package:falconest/core/providers/connectivity_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
-import 'package:falconest/features/worker/data/services/worker_sync_service.dart';
 import 'package:falconest/features/worker/providers/worker_dashboard_provider.dart';
+import 'package:falconest/features/worker/providers/worker_sync_state_provider.dart';
 
 const _primaryBlue = Color(0xFF1565C0);
 
@@ -37,31 +36,34 @@ class _WorkerDashboardScreenState extends ConsumerState<WorkerDashboardScreen> {
       });
       // Jednorázový sync při otevření obrazovky – čtecí provider žádný sync nespouští.
       Future.microtask(() async {
-        final tenantId = ref.read(authNotifierProvider).tenantIdForData;
-        final workerId = ref.read(authNotifierProvider).state.profileId;
-        if (tenantId != null && workerId != null) {
-          await WorkerSyncService.syncTasksFromSupabase(workerId, tenantId);
-          if (mounted) ref.invalidate(workerTasksProvider);
-        }
+        await ref.read(workerSyncStateProvider.notifier).runSync();
+        if (mounted) ref.invalidate(workerTasksProvider);
       });
     }
   }
 
   /// Pull-to-refresh: stáhne čerstvá data ze Supabase a aktualizuje provider.
   Future<void> _refresh() async {
-    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
-    final workerId = ref.read(authNotifierProvider).state.profileId;
-    if (tenantId != null && workerId != null) {
-      await WorkerSyncService.syncTasksFromSupabase(workerId, tenantId);
-    }
+    await ref.read(workerSyncStateProvider.notifier).runSync();
     ref.invalidate(workerTasksProvider);
     await ref.read(workerTasksProvider.future);
+    if (mounted && ref.read(workerSyncStateProvider) == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('worker.sync_success'.tr()),
+          backgroundColor: Colors.green.shade700,
+          behavior: SnackBarBehavior.fixed,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final tasksAsync = ref.watch(workerTasksProvider);
     final isOffline = ref.watch(isOfflineProvider).value ?? false;
+    final syncError = ref.watch(workerSyncStateProvider);
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F5),
@@ -109,6 +111,36 @@ class _WorkerDashboardScreenState extends ConsumerState<WorkerDashboardScreen> {
             )
           else
             const SizedBox.shrink(),
+          // Vizuální upozornění pro pracovníka, že synchronizace na pozadí selhala.
+          // Práce je v bezpečí v lokální DB, ale backend o ní zatím neví.
+          if (syncError != null && syncError.isNotEmpty)
+            Material(
+              color: Colors.red.shade700,
+              child: InkWell(
+                onTap: () => ref.read(workerSyncStateProvider.notifier).clearSyncError(),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  child: Row(
+                    children: [
+                      Icon(Icons.cloud_off, color: Colors.white, size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'worker.sync_error_banner'.tr(),
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                      Icon(Icons.close, color: Colors.white, size: 18),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           Expanded(
             child: RefreshIndicator(
               onRefresh: _refresh,

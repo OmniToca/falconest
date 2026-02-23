@@ -302,35 +302,17 @@ final adminReservationsProvider =
   if (apartmentIds.isEmpty) return [];
 
   try {
-    /// Načtení rezervací – pouze pro byty tohoto tenanta.
-    List<dynamic> list;
-    try {
-      final response = await SupabaseService.client
-          .from('reservations')
-          .select(
-            'id, apartment_id, guest_name, guest_phone, reservation_source, needs_transfer, status, '
-            'start_date, end_date, guest_adults, guest_children, arrival_time, departure_time, internal_note',
-          )
-          .inFilter('apartment_id', apartmentIds)
-          .isFilter('deleted_at', null)
-          .order('start_date', ascending: true);
-      list = response as List;
-    } on PostgrestException catch (e) {
-      if (e.code == '42703' || e.message.contains('column')) {
-        // ignore: avoid_print
-        print('>>> Chybí sloupce guest_name/check_in/check_out/needs_transfer. '
-            'Spusť: supabase/migrations/20250217_reservations_extended.sql');
-        final response = await SupabaseService.client
-            .from('reservations')
-            .select('id, apartment_id, start_date, end_date')
-            .inFilter('apartment_id', apartmentIds)
-            .isFilter('deleted_at', null)
-            .order('start_date', ascending: true);
-        list = response as List;
-      } else {
-        rethrow;
-      }
-    }
+    /// Načtení rezervací – včetně arrival_time, departure_time pro generátor úkolů.
+    /// Žádný fallback na zjednodušený dotaz – chybějící sloupce musí vyvolat chybu.
+    final list = await SupabaseService.client
+        .from('reservations')
+        .select(
+          'id, apartment_id, guest_name, guest_phone, reservation_source, needs_transfer, status, '
+          'start_date, end_date, guest_adults, guest_children, arrival_time, departure_time, internal_note',
+        )
+        .inFilter('apartment_id', apartmentIds)
+        .isFilter('deleted_at', null)
+        .order('start_date', ascending: true) as List;
     var rows = list
         .map((e) => ReservationRow.fromJson(e as Map<String, dynamic>))
         .toList();
@@ -378,13 +360,7 @@ final adminReservationsProvider =
     print('--- CHYBA NAČÍTÁNÍ REZERVACÍ: $e');
     if (e.code == '42703' || e.message.contains('column')) {
       // ignore: avoid_print
-      print('>>> Chybí sloupce v tabulce reservations. Spusť v Supabase SQL Editoru:');
-      // ignore: avoid_print
-      print('>>> supabase/migrations/20250217_reservations_extended.sql');
-      // ignore: avoid_print
-      print('>>> Nebo: ALTER TABLE reservations ADD COLUMN IF NOT EXISTS guest_name TEXT, '
-          'ADD COLUMN IF NOT EXISTS check_in TEXT, ADD COLUMN IF NOT EXISTS check_out TEXT, '
-          'ADD COLUMN IF NOT EXISTS needs_transfer BOOLEAN DEFAULT false;');
+      print('>>> Chybí sloupce v tabulce reservations (potřeba arrival_time, departure_time). Spusť migrace.');
     }
     rethrow;
   } catch (e, st) {

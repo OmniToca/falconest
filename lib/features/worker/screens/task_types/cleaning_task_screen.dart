@@ -42,21 +42,32 @@ class CleaningTaskScreen extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  detail.title.isNotEmpty ? detail.title : detail.apartmentName ?? '—',
-                  style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87),
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          detail.title.isNotEmpty ? detail.title : detail.apartmentName ?? '—',
+                          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87),
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          detail.apartmentAddress ?? '—',
+                          style: TextStyle(fontSize: 16, color: Colors.grey.shade800),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          detail.description.isNotEmpty ? detail.description : '—',
+                          style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+                        ),
+                        // Bezpečnost: Uklízečka vidí pouze poznámky, žádné finance (amount_to_collect, breakdown ignorovány).
+                        ..._buildCleaningMetadata(detail.metadata ?? {}),
+                      ],
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 16),
-                Text(
-                  detail.apartmentAddress ?? '—',
-                  style: TextStyle(fontSize: 16, color: Colors.grey.shade800),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  detail.description.isNotEmpty ? detail.description : '—',
-                  style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
-                ),
-                const Spacer(),
                 _buildActionButton(context, ref, taskId, detail.status, 'worker.task_detail_finish'),
               ],
             ),
@@ -91,12 +102,17 @@ class CleaningTaskScreen extends ConsumerWidget {
     }
 
     // Dvoufázové odpracování: Nejprve Zahájit (in_progress), poté Dokončit (completed).
+    // Uložení přesného UTC času pro sledování reálné doby práce.
     if (isInProgress) {
       return SizedBox(
         width: double.infinity,
         child: FilledButton(
           onPressed: () async {
-            await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(taskId, 'completed');
+            await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
+                  taskId,
+                  'completed',
+                  completedAt: DateTime.now().toUtc(),
+                );
             if (context.mounted) context.pop();
           },
           style: FilledButton.styleFrom(
@@ -113,7 +129,11 @@ class CleaningTaskScreen extends ConsumerWidget {
       width: double.infinity,
       child: FilledButton(
         onPressed: () async {
-          await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(taskId, 'in_progress');
+          await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
+                taskId,
+                'in_progress',
+                startedAt: DateTime.now().toUtc(),
+              );
         },
         style: FilledButton.styleFrom(
           backgroundColor: _primaryBlue,
@@ -121,6 +141,51 @@ class CleaningTaskScreen extends ConsumerWidget {
           padding: const EdgeInsets.symmetric(vertical: 16),
         ),
         child: Text('worker.task_detail_start_work'.tr()),
+      ),
+    );
+  }
+
+  /// Vykreslení metadat pro Úklid – POUZE custom_note, žádné finance.
+  /// Bezpečnostní pravidlo: amount_to_collect i collection_breakdown jsou záměrně ignorovány.
+  List<Widget> _buildCleaningMetadata(Map<String, dynamic> meta) {
+    final note = meta['custom_note'];
+    final noteText = note is String ? note.trim() : (note?.toString().trim() ?? '');
+    if (noteText.isEmpty) return [];
+
+    return [
+      const SizedBox(height: 16),
+      _buildCustomNoteCard(noteText, icon: Icons.cleaning_services),
+    ];
+  }
+
+  /// Hezká čitelná karta s poznámkou – ikona úklidu.
+  Widget _buildCustomNoteCard(String text, {IconData icon = Icons.note_outlined}) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.purple.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.purple.shade200),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 24, color: Colors.purple.shade700),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'worker.custom_note'.tr(),
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade700),
+                ),
+                const SizedBox(height: 4),
+                Text(text, style: TextStyle(fontSize: 14, color: Colors.grey.shade800)),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

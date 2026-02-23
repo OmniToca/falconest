@@ -1,5 +1,6 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -954,6 +955,11 @@ class RelatedTasksList extends StatelessWidget {
                           ),
                         ),
                       ],
+                    ),
+                    // Výpis používá skutečný naplánovaný začátek úkolu, aby se shodoval s kalendářem.
+                    subtitle: Text(
+                      DateFormat('dd.MM.yyyy HH:mm').format((t.scheduledStart ?? t.dueDate).toLocal()),
+                      style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
                     ),
                     trailing: Chip(
                       label: Text(

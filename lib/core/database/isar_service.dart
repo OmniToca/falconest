@@ -4,6 +4,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'models/apartment_local.dart';
 import 'models/pending_audit_action.dart';
+import 'models/reservation_local.dart';
 import 'models/task_local.dart';
 
 /// Služba pro inicializaci a přístup k Isar lokální databázi.
@@ -37,7 +38,7 @@ class IsarService {
     final dir = await getApplicationDocumentsDirectory();
 
     _instance = await Isar.open(
-      [ApartmentLocalSchema, TaskLocalSchema, PendingAuditActionSchema],
+      [ApartmentLocalSchema, TaskLocalSchema, ReservationLocalSchema, PendingAuditActionSchema],
       directory: dir.path,
       name: 'falconest',
     );
