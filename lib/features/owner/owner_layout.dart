@@ -3,6 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/features/owner/owner_apartments_screen.dart';
+import 'package:falconest/features/owner/owner_reservations_screen.dart';
+import 'package:falconest/features/owner/owner_tasks_screen.dart';
+import 'package:falconest/features/owner/owner_planning_calendar_screen.dart';
 
 /// Práh šířky v pixelech – pod ním Drawer, nad ním permanentní Sidebar.
 const double _breakpointWidth = 800;
@@ -13,25 +17,55 @@ const _surfaceBg = Color(0xFFFFFFFF);
 const _accentColor = Color(0xFF1976D2);
 const _textMuted = Color(0xFF616161);
 
+/// Indexy záložek v klientském portálu.
+const int _ownerTabApartments = 0;
+const int _ownerTabReservations = 1;
+const int _ownerTabTasks = 2;
+const int _ownerTabCalendar = 3;
+
 /// Responzivní layout pro klientský portál majitelů bytů (role property_owner).
+///
+/// REFACTOR: Přechod z ShellRoute na IndexedStack pro stabilnější navigaci v Klientském portálu.
+/// Používá lokální stav (_selectedIndex) místo GoRouter pro přepínání záložek – stejný princip jako Admin.
 ///
 /// Pomocí [LayoutBuilder] mění chování podle šířky obrazovky:
 /// - **Úzké (< 800 px)**: Vysouvací [Drawer] s hamburger ikonou v AppBar
 /// - **Široké (>= 800 px)**: Stálý levý postranní panel vedle obsahu
 ///
 /// Prémiový design: více whitespace, jemné stíny, zakulacené rohy.
-class OwnerLayout extends StatelessWidget {
-  const OwnerLayout({super.key, required this.child});
+class OwnerLayout extends StatefulWidget {
+  const OwnerLayout({super.key});
 
-  /// Hlavní obsah – widget vrácený vnořenou route.
-  final Widget child;
+  @override
+  State<OwnerLayout> createState() => _OwnerLayoutState();
+}
+
+class _OwnerLayoutState extends State<OwnerLayout> {
+  int _selectedIndex = _ownerTabApartments;
 
   @override
   Widget build(BuildContext context) {
+    final body = IndexedStack(
+      index: _selectedIndex,
+      children: const [
+        OwnerApartmentsScreen(),
+        OwnerReservationsScreen(),
+        OwnerTasksScreen(),
+        OwnerPlanningCalendarScreen(),
+      ],
+    );
     return LayoutBuilder(
       builder: (context, constraints) {
         final isWide = constraints.maxWidth >= _breakpointWidth;
-        return isWide ? _WideLayout(child: child) : _NarrowLayout(child: child);
+        return isWide
+            ? _WideLayout(
+                body: body,
+                onIndexChanged: (i) => setState(() => _selectedIndex = i),
+              )
+            : _NarrowLayout(
+                body: body,
+                onIndexChanged: (i) => setState(() => _selectedIndex = i),
+              );
       },
     );
   }
@@ -39,9 +73,10 @@ class OwnerLayout extends StatelessWidget {
 
 /// Layout pro široké obrazovky – stálý Sidebar + obsah.
 class _WideLayout extends StatelessWidget {
-  const _WideLayout({required this.child});
+  const _WideLayout({required this.body, required this.onIndexChanged});
 
-  final Widget child;
+  final Widget body;
+  final void Function(int index) onIndexChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -49,8 +84,8 @@ class _WideLayout extends StatelessWidget {
       backgroundColor: _surfaceBg,
       body: Row(
         children: [
-          _OwnerSidebar(isDrawer: false),
-          Expanded(child: child),
+          _OwnerSidebar(isDrawer: false, onIndexChanged: onIndexChanged),
+          Expanded(child: body),
         ],
       ),
     );
@@ -59,9 +94,10 @@ class _WideLayout extends StatelessWidget {
 
 /// Layout pro úzké obrazovky – AppBar s hamburgerem + Drawer.
 class _NarrowLayout extends StatelessWidget {
-  const _NarrowLayout({required this.child});
+  const _NarrowLayout({required this.body, required this.onIndexChanged});
 
-  final Widget child;
+  final Widget body;
+  final void Function(int index) onIndexChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -77,8 +113,9 @@ class _NarrowLayout extends StatelessWidget {
           onPressed: () => Scaffold.of(context).openDrawer(),
         ),
       ),
-      drawer: Drawer(child: _OwnerSidebar(isDrawer: true)),
-      body: child,
+      drawer: Drawer(
+          child: _OwnerSidebar(isDrawer: true, onIndexChanged: onIndexChanged)),
+      body: body,
     );
   }
 }
@@ -87,10 +124,15 @@ class _NarrowLayout extends StatelessWidget {
 ///
 /// Obsahuje uvítání, navigační položky a odhlášení. Prémiový vzhled
 /// s většími odsazeními a jemnými stíny.
+/// Volá [onIndexChanged] místo context.go – přepíná záložky lokálním setState.
 class _OwnerSidebar extends StatelessWidget {
-  const _OwnerSidebar({required this.isDrawer});
+  const _OwnerSidebar({
+    required this.isDrawer,
+    required this.onIndexChanged,
+  });
 
   final bool isDrawer;
+  final void Function(int index) onIndexChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -116,16 +158,30 @@ class _OwnerSidebar extends StatelessWidget {
               ),
               const Divider(height: 1, indent: 24, endIndent: 24),
               const SizedBox(height: 16),
-              // Navigační položky
+              // Navigační položky – Přepnutí záložky přes setState (IndexedStack).
               _OwnerNavItem(
                 icon: Icons.apartment_outlined,
                 label: 'owner.menu_apartments'.tr(),
-                path: '/owner/apartments',
+                isDrawer: isDrawer,
+                onTap: () => onIndexChanged(_ownerTabApartments),
               ),
               _OwnerNavItem(
                 icon: Icons.calendar_today_outlined,
                 label: 'owner.menu_reservations'.tr(),
-                path: '/owner/reservations',
+                isDrawer: isDrawer,
+                onTap: () => onIndexChanged(_ownerTabReservations),
+              ),
+              _OwnerNavItem(
+                icon: Icons.task_alt,
+                label: 'owner.menu_tasks'.tr(),
+                isDrawer: isDrawer,
+                onTap: () => onIndexChanged(_ownerTabTasks),
+              ),
+              _OwnerNavItem(
+                icon: Icons.calendar_month,
+                label: 'owner.menu_calendar'.tr(),
+                isDrawer: isDrawer,
+                onTap: () => onIndexChanged(_ownerTabCalendar),
               ),
               const Spacer(),
               const Divider(height: 1, indent: 24, endIndent: 24),
@@ -142,16 +198,19 @@ class _OwnerSidebar extends StatelessWidget {
 }
 
 /// Položka navigace – jemnější design s větším paddingem.
+/// Volá [onTap] – lokální přepnutí záložky, ne context.go.
 class _OwnerNavItem extends StatelessWidget {
   const _OwnerNavItem({
     required this.icon,
     required this.label,
-    required this.path,
+    required this.isDrawer,
+    required this.onTap,
   });
 
   final IconData icon;
   final String label;
-  final String path;
+  final bool isDrawer;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -174,10 +233,11 @@ class _OwnerNavItem extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
           ),
           onTap: () {
-            if (Scaffold.of(context).isDrawerOpen) {
+            // Na úzkých obrazovkách nejprve zavřeme Drawer, pak přepneme záložku.
+            if (isDrawer && Scaffold.maybeOf(context)?.isDrawerOpen == true) {
               Navigator.of(context).pop();
             }
-            context.go(path);
+            onTap();
           },
         ),
       ),

@@ -38,7 +38,7 @@ final failedCashCollectionsProvider =
     final res = await SupabaseService.client
         .from('tasks')
         .select(
-          'id, title, metadata, completed_at, assigned_to, profiles(name, first_name, last_name)',
+          'id, title, metadata, completed_at, assigned_to, profiles!tasks_assigned_to_fkey(name, first_name, last_name)',
         )
         .eq('tenant_id', tenantId)
         .eq('status', 'completed')
@@ -66,7 +66,8 @@ final failedCashCollectionsProvider =
 
       final title = (map['title'] as String?)?.trim() ?? '—';
       String workerName = '—';
-      final profilesData = map['profiles'];
+      // BUGFIX: PostgREST vrací pod profiles!tasks_assigned_to_fkey při explicitním FK.
+      final profilesData = map['profiles'] ?? map['profiles!tasks_assigned_to_fkey'];
       if (profilesData != null && profilesData is Map) {
         final p = Map<String, dynamic>.from(profilesData);
         final name = (p['name'] as String?)?.trim();

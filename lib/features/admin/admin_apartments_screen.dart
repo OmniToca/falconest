@@ -12,6 +12,7 @@ import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/models/apartment_service_model.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
+import 'package:falconest/features/admin/providers/apartment_owners_provider.dart';
 import 'package:falconest/features/admin/providers/apartment_services_repository.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/apartment_status_provider.dart';
@@ -2062,6 +2063,163 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
     );
   }
 
+  /// Tab 3: Sekce Majitelé – výpis přiřazených majitelů, přidání existujícího nebo pozvání nového.
+  Widget _buildTab3Owners(BuildContext context) {
+    final ownersAsync = ref.watch(apartmentOwnersForApartmentProvider(widget.apartment.id));
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'admin.section_owners'.tr(),
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                color: Colors.grey.shade700,
+                fontWeight: FontWeight.w600,
+              ),
+        ),
+        const SizedBox(height: 12),
+        ownersAsync.when(
+          data: (owners) {
+            if (owners.isEmpty) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Text(
+                  'admin.owners_empty'.tr(),
+                  style: TextStyle(color: Colors.grey.shade600),
+                ),
+              );
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: owners.map((o) => _OwnerListTile(
+                owner: o,
+                onRemove: () => _removeOwner(context, o.id, o.name),
+              )).toList(),
+            );
+          },
+          loading: () => const Padding(
+            padding: EdgeInsets.all(24),
+            child: Center(child: CircularProgressIndicator()),
+          ),
+          error: (e, _) => Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(
+              'common.error_with_message'.tr(namedArgs: {'message': e.toString()}),
+              style: TextStyle(color: Colors.red.shade700),
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            OutlinedButton.icon(
+              onPressed: () => _showAddExistingOwnerDialog(context),
+              icon: const Icon(Icons.person_add_outlined, size: 20),
+              label: Text('admin.btn_add_existing_owner'.tr()),
+            ),
+            const SizedBox(width: 12),
+            FilledButton.icon(
+              onPressed: () => _showInviteNewOwnerDialog(context),
+              icon: const Icon(Icons.mail_outline, size: 20),
+              label: Text('admin.btn_invite_new_owner'.tr()),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// Odebere majitele z bytu (soft delete v apartment_owners).
+  Future<void> _removeOwner(BuildContext context, String apartmentOwnersId, String ownerName) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+          title: Text('admin.owners_remove'.tr()),
+          content: Text('admin.owners_remove_confirm'.tr(namedArgs: {'name': ownerName})),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text('common.cancel'.tr()),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text('admin.owners_remove'.tr()),
+            ),
+          ],
+        ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await ApartmentOwnersRepository.removeOwner(apartmentOwnersId: apartmentOwnersId);
+      if (!mounted) return;
+      ref.invalidate(apartmentOwnersForApartmentProvider(widget.apartment.id));
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('admin.owners_remove_success'.tr()),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('common.error_with_message'.tr(namedArgs: {'message': '$e'})),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  void _showAddExistingOwnerDialog(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => _AddExistingOwnerDialog(
+        ref: ref,
+        apartmentId: widget.apartment.id,
+        tenantId: ref.read(authNotifierProvider).tenantIdForData ?? '',
+        onAdded: () {
+          ref.invalidate(apartmentOwnersForApartmentProvider(widget.apartment.id));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('admin.owners_add_success'.tr()),
+              backgroundColor: Colors.green,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _showInviteNewOwnerDialog(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => _InviteNewOwnerDialog(
+        ref: ref,
+        apartmentId: widget.apartment.id,
+        tenantId: ref.read(authNotifierProvider).tenantIdForData ?? '',
+        onInvited: (email) {
+          ref.invalidate(apartmentOwnersForApartmentProvider(widget.apartment.id));
+          ref.invalidate(propertyOwnersInTenantProvider);
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('admin.owners_invite_success'.tr(namedArgs: {'email': email})),
+                backgroundColor: Colors.green,
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ModernAdminPanel(
@@ -2070,7 +2228,7 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
       content: Form(
         key: _formKey,
         child: DefaultTabController(
-          length: 2,
+          length: 3,
           child: Column(
             mainAxisSize: MainAxisSize.max,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2080,6 +2238,7 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
                 tabs: [
                   Tab(icon: const Icon(Icons.info_outline), text: 'admin.tab_basic_info'.tr()),
                   Tab(icon: const Icon(Icons.room_service_outlined), text: 'admin.tab_services_pricing'.tr()),
+                  Tab(icon: const Icon(Icons.person_outline), text: 'admin.tab_owners'.tr()),
                 ],
               ),
               const SizedBox(height: 8),
@@ -2088,6 +2247,7 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
                   children: [
                     SingleChildScrollView(child: _buildTab1Basic(context)),
                     SingleChildScrollView(child: _buildTab2Services(context)),
+                    SingleChildScrollView(child: _buildTab3Owners(context)),
                   ],
                 ),
               ),
@@ -2113,5 +2273,341 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
         ),
       ],
     );
+  }
+}
+
+/// Řádek seznamu majitele – jméno, e-mail, badge „Čeká“, tlačítko Odebrat.
+class _OwnerListTile extends StatelessWidget {
+  const _OwnerListTile({
+    required this.owner,
+    required this.onRemove,
+  });
+
+  final ApartmentOwnerRow owner;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        leading: CircleAvatar(
+          backgroundColor: Colors.grey.shade200,
+          child: Icon(Icons.person, color: Colors.grey.shade600),
+        ),
+        title: Text(owner.name),
+        subtitle: owner.email != null && owner.email!.isNotEmpty
+            ? Text(owner.email!, style: TextStyle(fontSize: 12, color: Colors.grey.shade600))
+            : null,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (owner.isPending)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.orange.shade100,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'admin.owners_pending_badge'.tr(),
+                  style: TextStyle(fontSize: 11, color: Colors.orange.shade800),
+                ),
+              ),
+            const SizedBox(width: 8),
+            IconButton(
+              icon: Icon(Icons.remove_circle_outline, color: Colors.red.shade600),
+              tooltip: 'admin.owners_remove'.tr(),
+              onPressed: onRemove,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Dialog pro přidání existujícího majitele – dropdown s profily role=property_owner.
+class _AddExistingOwnerDialog extends ConsumerStatefulWidget {
+  const _AddExistingOwnerDialog({
+    required this.ref,
+    required this.apartmentId,
+    required this.tenantId,
+    required this.onAdded,
+  });
+
+  final WidgetRef ref;
+  final String apartmentId;
+  final String tenantId;
+  final VoidCallback onAdded;
+
+  @override
+  ConsumerState<_AddExistingOwnerDialog> createState() => _AddExistingOwnerDialogState();
+}
+
+class _AddExistingOwnerDialogState extends ConsumerState<_AddExistingOwnerDialog> {
+  String? _selectedProfileId;
+  bool _isSaving = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final ownersAsync = ref.watch(propertyOwnersInTenantProvider);
+    final currentOwners = ref.watch(apartmentOwnersForApartmentProvider(widget.apartmentId)).valueOrNull ?? [];
+    final currentOwnerIds = currentOwners.map((o) => o.ownerId).toSet();
+
+    return AlertDialog(
+      title: Text('admin.dialog_add_existing_owner'.tr()),
+      content: SizedBox(
+        width: 400,
+        child: ownersAsync.when(
+          data: (allOwners) {
+            final available = allOwners.where((o) => !currentOwnerIds.contains(o.profileId)).toList();
+            if (available.isEmpty) {
+              return Text(
+                'admin.owners_no_available'.tr(),
+                style: TextStyle(color: Colors.grey.shade600),
+              );
+            }
+            return DropdownButtonFormField<String>(
+              initialValue: _selectedProfileId,
+              decoration: InputDecoration(
+                labelText: 'admin.owners_select_hint'.tr(),
+                border: const OutlineInputBorder(),
+              ),
+              items: available
+                  .map((o) => DropdownMenuItem(
+                        value: o.profileId,
+                        child: Text(o.name + (o.email != null ? ' (${o.email})' : '')),
+                      ))
+                  .toList(),
+              onChanged: _isSaving ? null : (v) => setState(() => _selectedProfileId = v),
+            );
+          },
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, _) => Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isSaving ? null : () => Navigator.of(context).pop(),
+          child: Text('common.cancel'.tr()),
+        ),
+        FilledButton(
+          onPressed: (_isSaving || _selectedProfileId == null) ? null : () => _addOwner(),
+          child: _isSaving
+              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+              : Text('common.save'.tr()),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _addOwner() async {
+    if (_selectedProfileId == null) return;
+    setState(() => _isSaving = true);
+    try {
+      await ApartmentOwnersRepository.addOwner(
+        apartmentId: widget.apartmentId,
+        ownerId: _selectedProfileId!,
+        tenantId: widget.tenantId,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      widget.onAdded();
+    } on PostgrestException catch (e) {
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.owners_add_error'.tr(namedArgs: {'error': e.message})),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.owners_add_error'.tr(namedArgs: {'error': '$e'})),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+}
+
+/// Dialog pro pozvání nového majitele – e-mail, jméno, příjmení.
+/// Vytvoření pozvánky pro majitele a okamžité provázání jeho ghost profilu s tímto bytem,
+/// aby po registraci rovnou viděl svá data.
+class _InviteNewOwnerDialog extends ConsumerStatefulWidget {
+  const _InviteNewOwnerDialog({
+    required this.ref,
+    required this.apartmentId,
+    required this.tenantId,
+    required this.onInvited,
+  });
+
+  final WidgetRef ref;
+  final String apartmentId;
+  final String tenantId;
+  final void Function(String email) onInvited;
+
+  @override
+  ConsumerState<_InviteNewOwnerDialog> createState() => _InviteNewOwnerDialogState();
+}
+
+class _InviteNewOwnerDialogState extends ConsumerState<_InviteNewOwnerDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _emailController = TextEditingController();
+  final _firstNameController = TextEditingController();
+  final _lastNameController = TextEditingController();
+  bool _isSaving = false;
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _firstNameController.dispose();
+    _lastNameController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('admin.dialog_invite_new_owner'.tr()),
+      content: SizedBox(
+        width: 400,
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextFormField(
+                controller: _emailController,
+                decoration: InputDecoration(
+                  labelText: 'admin.team_field_email'.tr(),
+                  border: const OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.emailAddress,
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? 'admin.team_validation_email'.tr() : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _firstNameController,
+                decoration: InputDecoration(
+                  labelText: 'admin.team_field_first_name'.tr(),
+                  border: const OutlineInputBorder(),
+                ),
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? 'admin.team_validation_first_name'.tr() : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _lastNameController,
+                decoration: InputDecoration(
+                  labelText: 'admin.team_field_last_name'.tr(),
+                  border: const OutlineInputBorder(),
+                ),
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? 'admin.team_validation_last_name'.tr() : null,
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isSaving ? null : () => Navigator.of(context).pop(),
+          child: Text('common.cancel'.tr()),
+        ),
+        FilledButton(
+          onPressed: _isSaving ? null : () => _inviteOwner(),
+          child: _isSaving
+              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+              : Text('admin.btn_invite_new_owner'.tr()),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _inviteOwner() async {
+    if (!_formKey.currentState!.validate()) return;
+    final email = _emailController.text.trim();
+    final firstName = _firstNameController.text.trim();
+    final lastName = _lastNameController.text.trim();
+    var displayName = '$firstName $lastName'.trim();
+    if (displayName.isEmpty) displayName = email.split('@').first;
+    if (displayName.isEmpty) displayName = email;
+
+    setState(() => _isSaving = true);
+
+    try {
+      // Vytvoření pozvánky pro majitele a okamžité provázání jeho ghost profilu s tímto bytem,
+      // aby po registraci rovnou viděl svá data.
+      final profilePayload = <String, dynamic>{
+        'tenant_id': widget.tenantId,
+        'email': email,
+        'first_name': firstName,
+        'last_name': lastName.isEmpty ? ' ' : lastName,
+        'name': displayName,
+        'status': 'pending',
+        'role': 'property_owner',
+        'roles': [],
+      };
+      final profileRes = await SupabaseService.client
+          .from('profiles')
+          .insert(profilePayload)
+          .select('id')
+          .single();
+      final profileId = (profileRes as Map)['id']?.toString();
+      if (profileId == null || profileId.isEmpty) {
+        throw PostgrestException(message: 'Profil nebyl vytvořen', code: '500', details: 'internal');
+      }
+
+      final invPayload = <String, dynamic>{
+        'tenant_id': widget.tenantId,
+        'profile_id': profileId,
+        'email': email,
+        'first_name': firstName,
+        'last_name': lastName,
+        'role': 'property_owner',
+        'roles': [],
+      };
+      await SupabaseService.client.from('invitations').insert(invPayload);
+
+      await ApartmentOwnersRepository.addOwner(
+        apartmentId: widget.apartmentId,
+        ownerId: profileId,
+        tenantId: widget.tenantId,
+      );
+
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      widget.onInvited(email);
+    } on PostgrestException catch (e) {
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.owners_invite_error'.tr(namedArgs: {'error': e.message})),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.owners_invite_error'.tr(namedArgs: {'error': '$e'})),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 }

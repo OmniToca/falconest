@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
 /// Stav bytu odvozený od posledního (nejnovějšího) úkolu.
@@ -39,8 +40,9 @@ class OwnerApartmentWithStatus {
 
 /// Provider načítající byty majitele z Supabase včetně vnořených úkolů.
 ///
-/// Dotaz: apartments.select('*, tasks(*)') – RLS na backendu automaticky
-/// vrátí jen byty, kde je přihlášený uživatel v apartment_owners.
+/// BUGFIX: Striktní filtrace apartmánů – majitel vidí pouze ty byty, se kterými
+/// má vazbu v tabulce apartment_owners. Dvoukrokový dotaz zajišťuje obranu v hloubce
+/// i při případné chybě RLS.
 ///
 /// Logika výpočtu stavu bytu:
 /// 1. Pro každý byt vezmeme pole tasks (vnořené z joinu).
@@ -53,9 +55,32 @@ class OwnerApartmentWithStatus {
 final ownerApartmentsProvider = FutureProvider<List<OwnerApartmentWithStatus>>((
   ref,
 ) async {
+  final profileId = ref.watch(authNotifierProvider).state.profileId;
+  if (profileId == null || profileId.isEmpty) return [];
+
+  // Krok 1: Získat pouze ID apartmánů přiřazených majiteli v apartment_owners.
+  final ownersRes = await SupabaseService.client
+      .from('apartment_owners')
+      .select('apartment_id')
+      .eq('owner_id', profileId)
+      .isFilter('deleted_at', null);
+
+  final ownerList = ownersRes as List;
+  if (ownerList.isEmpty) return [];
+
+  final apartmentIds = ownerList
+      .map((e) => (e as Map)['apartment_id']?.toString())
+      .where((id) => id != null && id.isNotEmpty)
+      .cast<String>()
+      .toList();
+
+  if (apartmentIds.isEmpty) return [];
+
+  // Krok 2: Načíst apartmány s úkoly – pouze ty z výše získaného seznamu.
   final response = await SupabaseService.client
       .from('apartments')
       .select('id, name, address, tasks(scheduled_start, status)')
+      .inFilter('id', apartmentIds)
       .isFilter('deleted_at', null);
 
   return _parseAndComputeStatus(response as List);

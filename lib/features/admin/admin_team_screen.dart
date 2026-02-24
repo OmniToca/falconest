@@ -11,6 +11,7 @@ import 'package:falconest/core/services/audit_log_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
+import 'package:falconest/features/admin/providers/apartment_owners_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/settings/models/tenant_service_model.dart';
 import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
@@ -123,9 +124,13 @@ class _AdminTeamScreenState extends ConsumerState<AdminTeamScreen> {
       body: teamAsync.when(
         data: (members) {
           final filtered = _computeFiltered(members);
-          final activeMembers = filtered.where((m) => !m.isFromInvitation).toList();
-          final pendingInvitations = filtered.where((m) => m.isFromInvitation).toList();
-          final hasAny = activeMembers.isNotEmpty || pendingInvitations.isNotEmpty;
+          // Majitelé se zobrazují v samostatné sekci – vyřazujeme je z aktivních a čekajících.
+          final staffOnly = filtered.where((m) => m.role != 'property_owner').toList();
+          final activeMembers = staffOnly.where((m) => !m.isFromInvitation).toList();
+          final pendingInvitations = staffOnly.where((m) => m.isFromInvitation).toList();
+          final hasAny = activeMembers.isNotEmpty ||
+              pendingInvitations.isNotEmpty ||
+              ref.watch(propertyOwnersInTenantProvider).valueOrNull?.isNotEmpty == true;
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -216,6 +221,82 @@ class _AdminTeamScreenState extends ConsumerState<AdminTeamScreen> {
                                           .toList(),
                                     ),
                                   ],
+                                  // Sekce Majitelé – profily s role=property_owner, zjednodušené karty.
+                                  Consumer(
+                                    builder: (context, ref, _) {
+                                      final ownersAsync = ref.watch(propertyOwnersInTenantProvider);
+                                      return ownersAsync.when(
+                                        data: (owners) {
+                                          if (owners.isEmpty) return const SizedBox.shrink();
+                                          return Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              const SizedBox(height: 16),
+                                              Padding(
+                                                padding: const EdgeInsets.only(bottom: 8),
+                                                child: Row(
+                                                  children: [
+                                                    Icon(Icons.home_outlined,
+                                                        size: 18, color: Colors.teal.shade700),
+                                                    const SizedBox(width: 6),
+                                                    Text(
+                                                      'admin.team_section_owners'.tr(),
+                                                      style: Theme.of(context)
+                                                          .textTheme
+                                                          .titleSmall
+                                                          ?.copyWith(
+                                                            fontWeight: FontWeight.bold,
+                                                            color: Colors.teal.shade800,
+                                                          ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                              Wrap(
+                                                spacing: 16,
+                                                runSpacing: 16,
+                                                children: owners
+                                                    .map((o) => SizedBox(
+                                                          width: cardWidth,
+                                                          child: _OwnerCard(
+                                                            owner: o,
+                                                            onCopyLink: o.isPending
+                                                                ? () {
+                                                                    final token = o.profileId;
+                                                                    final origin = Uri.base.origin;
+                                                                    final inviteUrl =
+                                                                        '$origin/#/invite?token=$token';
+                                                                    Clipboard.setData(
+                                                                        ClipboardData(text: inviteUrl));
+                                                                    ScaffoldMessenger.of(context)
+                                                                        .showSnackBar(
+                                                                      SnackBar(
+                                                                        content: Text(
+                                                                            'admin.team_invite_copied_snackbar'.tr()),
+                                                                        behavior:
+                                                                            SnackBarBehavior.floating,
+                                                                      ),
+                                                                    );
+                                                                  }
+                                                                : null,
+                                                            onDelete: () =>
+                                                                _showDeleteConfirm(
+                                                              context,
+                                                              ref,
+                                                              _ownerToTeamMember(o),
+                                                            ),
+                                                          ),
+                                                        ))
+                                                    .toList(),
+                                              ),
+                                            ],
+                                          );
+                                        },
+                                        loading: () => const SizedBox.shrink(),
+                                        error: (_, __) => const SizedBox.shrink(),
+                                      );
+                                    },
+                                  ),
                                 ],
                               );
                             },
@@ -254,7 +335,10 @@ class _AdminTeamScreenState extends ConsumerState<AdminTeamScreen> {
     showDialog<void>(
       context: context,
       builder: (ctx) => _AddMemberDialog(
-        onAdded: () => ref.invalidate(adminTeamProvider),
+        onAdded: () {
+          ref.invalidate(adminTeamProvider);
+          ref.invalidate(propertyOwnersInTenantProvider);
+        },
       ),
     );
   }
@@ -292,7 +376,10 @@ class _AdminTeamScreenState extends ConsumerState<AdminTeamScreen> {
       builder: (ctx) => _DeleteConfirmDialog(
         member: member,
         ref: ref,
-        onDeleted: () => ref.invalidate(adminTeamProvider),
+        onDeleted: () {
+          ref.invalidate(adminTeamProvider);
+          ref.invalidate(propertyOwnersInTenantProvider);
+        },
       ),
     );
   }
@@ -725,6 +812,133 @@ class _MemberCard extends ConsumerWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Převod PropertyOwnerOption na TeamMember pro využití standardní mazací logiky.
+TeamMember _ownerToTeamMember(PropertyOwnerOption o) {
+  return TeamMember(
+    id: o.profileId,
+    name: o.name,
+    email: o.email,
+    role: 'property_owner',
+    roles: const [],
+    isFromInvitation: o.isPending,
+    profileId: o.profileId,
+  );
+}
+
+/// Zjednodušená karta majitele – ikona, jméno, e-mail. Bez pracovních úvazků a smluv.
+class _OwnerCard extends StatelessWidget {
+  const _OwnerCard({
+    required this.owner,
+    required this.onDelete,
+    this.onCopyLink,
+  });
+
+  final PropertyOwnerOption owner;
+  final VoidCallback onDelete;
+  /// Volitelné – pro čekající pozvánky umožňuje kopírovat zvací odkaz do schránky.
+  final VoidCallback? onCopyLink;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.teal.shade100),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 24,
+              backgroundColor: Colors.teal.shade100,
+              child: Icon(Icons.person_outline, color: Colors.teal.shade700, size: 28),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    owner.name,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 16,
+                    ),
+                  ),
+                  if (owner.email != null && owner.email!.isNotEmpty)
+                    Text(
+                      owner.email!,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.grey.shade600,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  if (owner.isPending)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade100,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          'admin.team_status_pending'.tr(),
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.orange.shade800,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Tlačítko pro zkopírování odkazu pozvánky majitele do schránky. Používá stejnou logiku jako běžné pozvánky.
+                if (onCopyLink != null)
+                  IconButton(
+                    icon: Icon(Icons.link, color: Colors.blue.shade700),
+                    tooltip: 'admin.team_invite_copy_tooltip'.tr(),
+                    onPressed: onCopyLink,
+                    style: IconButton.styleFrom(
+                      backgroundColor: Colors.blue.shade50,
+                    ),
+                  ),
+                // Tlačítko pro smazání majitele nebo zrušení jeho pozvánky. Využívá standardní mazací logiku obrazovky.
+                IconButton(
+                  icon: Icon(Icons.delete_outline, color: Colors.red.shade700),
+                  tooltip: 'admin.team_delete'.tr(),
+                  onPressed: onDelete,
+                  style: IconButton.styleFrom(
+                    backgroundColor: Colors.red.shade50,
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
@@ -1350,10 +1564,12 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
   final _emailController = TextEditingController();
   final _weeklyHoursController = TextEditingController(text: '40');
 
-  /// Systémový přístup (sloupec role): admin = manažer, worker = pouze mobil.
+  /// Systémový přístup (sloupec role): admin = manažer, worker = pouze mobil, property_owner = majitel.
   String _systemRole = 'worker';
   /// Pracovní pozice (sloupec roles): pouze cleaner, driver, maintenance, checkin_agent.
   final Set<String> _selectedRoles = {};
+  /// Vybrané apartmány pro majitele – při role=property_owner.
+  final Set<String> _selectedApartmentIds = {};
   /// Mapa zone_id -> priorita (1 = nejraději, 2 = dojedu). Při výběru "-" se klíč odstraňuje.
   final Map<String, int> _selectedZonePreferences = {};
   bool _isSaving = false;
@@ -1381,10 +1597,21 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
 
   Future<void> _onSave() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_selectedRoles.isEmpty) {
+    if (_systemRole != 'property_owner' && _selectedRoles.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('admin.team_validation_roles_required'.tr()),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      return;
+    }
+    if (_systemRole == 'property_owner' && _selectedApartmentIds.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.team_validation_apartments_owner'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
@@ -1414,11 +1641,11 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
       final email = _emailController.text.trim();
       final firstName = _firstNameController.text.trim();
       final lastName = _lastNameController.text.trim();
-      final jobRolesList = _selectedRoles.toList();
+      final jobRolesList = _systemRole == 'property_owner' ? <String>[] : _selectedRoles.toList();
       var displayName = '$firstName $lastName'.trim();
       if (displayName.isEmpty) displayName = email;
 
-      // role = systémový přístup (admin/worker), roles = pouze pracovní pozice (bez admin).
+      // role = systémový přístup (admin/worker/property_owner), roles = pracovní pozice (u majitele prázdné).
       final profilePayload = <String, dynamic>{
         'tenant_id': tenantId,
         'email': email,
@@ -1428,13 +1655,14 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
         'status': 'pending',
         'role': _systemRole,
         'roles': jobRolesList,
-        'weekly_hours': weeklyHours,
+        'weekly_hours': _systemRole == 'property_owner' ? 0 : weeklyHours,
       };
-      if (_startDate != null) profilePayload['start_date'] = _startDate!.toIso8601String();
-      if (_endDate != null) profilePayload['end_date'] = _endDate!.toIso8601String();
-      // Ukládání preferencí oblastí – JSONB sloupec zone_preferences. Prázdná mapa = null.
-      if (_selectedZonePreferences.isNotEmpty) {
-        profilePayload['zone_preferences'] = _selectedZonePreferences;
+      if (_systemRole != 'property_owner') {
+        if (_startDate != null) profilePayload['start_date'] = _startDate!.toIso8601String();
+        if (_endDate != null) profilePayload['end_date'] = _endDate!.toIso8601String();
+        if (_selectedZonePreferences.isNotEmpty) {
+          profilePayload['zone_preferences'] = _selectedZonePreferences;
+        }
       }
       final profileRes = await SupabaseService.client
           .from('profiles')
@@ -1446,7 +1674,7 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
         throw PostgrestException(message: 'Profil nebyl vytvořen', code: '500', details: 'internal');
       }
 
-      // Poté vytvoř pozvánku (pro registrační flow – email matching). role a roles stejně jako u profilu.
+      // Poté vytvoř pozvánku (pro registrační flow – email matching).
       final invPayload = <String, dynamic>{
         'tenant_id': tenantId,
         'profile_id': profileId,
@@ -1455,11 +1683,24 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
         'last_name': lastName,
         'role': _systemRole,
         'roles': jobRolesList,
-        'weekly_hours': weeklyHours,
+        'weekly_hours': _systemRole == 'property_owner' ? 0 : weeklyHours,
       };
-      if (_startDate != null) invPayload['start_date'] = _startDate!.toIso8601String();
-      if (_endDate != null) invPayload['end_date'] = _endDate!.toIso8601String();
+      if (_systemRole != 'property_owner') {
+        if (_startDate != null) invPayload['start_date'] = _startDate!.toIso8601String();
+        if (_endDate != null) invPayload['end_date'] = _endDate!.toIso8601String();
+      }
       await SupabaseService.client.from('invitations').insert(invPayload);
+
+      // Pro majitele: přiřadit vybrané apartmány do apartment_owners.
+      if (_systemRole == 'property_owner' && _selectedApartmentIds.isNotEmpty) {
+        for (final aptId in _selectedApartmentIds) {
+          await ApartmentOwnersRepository.addOwner(
+            apartmentId: aptId,
+            ownerId: profileId,
+            tenantId: tenantId,
+          );
+        }
+      }
 
       if (!mounted) return;
       Navigator.of(context).pop();
@@ -1561,20 +1802,23 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
                         ? 'admin.team_validation_email'.tr()
                         : null,
               ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _weeklyHoursController,
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  prefixIcon: const Icon(Icons.numbers_outlined),
-                  labelText: 'admin.team_field_weekly_hours'.tr(),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
-                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
-                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Theme.of(context).colorScheme.primary)),
+              if (_systemRole != 'property_owner') ...[
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _weeklyHoursController,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.numbers_outlined),
+                    labelText: 'admin.team_field_weekly_hours'.tr(),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
+                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Theme.of(context).colorScheme.primary)),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              InkWell(
+              ],
+              if (_systemRole != 'property_owner') ...[
+                const SizedBox(height: 12),
+                InkWell(
                 onTap: () async {
                   final picked = await showDatePicker(
                     context: context,
@@ -1643,6 +1887,7 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
                     ),
                 ],
               ),
+              ],
               const SizedBox(height: 20),
               Text(
                 'admin.team_system_role_label'.tr(),
@@ -1657,7 +1902,12 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
                     child: RadioListTile<String>(
                       value: 'admin',
                       groupValue: _systemRole,
-                      onChanged: (v) => setState(() => _systemRole = v ?? 'worker'),
+                      onChanged: (v) => setState(() {
+                        _systemRole = v ?? 'worker';
+                        if (_systemRole == 'admin' || _systemRole == 'worker') {
+                          _selectedApartmentIds.clear();
+                        }
+                      }),
                       title: Text('admin.system_role_admin'.tr()),
                     ),
                   ),
@@ -1665,32 +1915,75 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
                     child: RadioListTile<String>(
                       value: 'worker',
                       groupValue: _systemRole,
-                      onChanged: (v) => setState(() => _systemRole = v ?? 'worker'),
+                      onChanged: (v) => setState(() {
+                        _systemRole = v ?? 'worker';
+                        if (_systemRole == 'admin' || _systemRole == 'worker') {
+                          _selectedApartmentIds.clear();
+                        }
+                      }),
                       title: Text('admin.system_role_worker'.tr()),
+                    ),
+                  ),
+                  Expanded(
+                    child: RadioListTile<String>(
+                      value: 'property_owner',
+                      groupValue: _systemRole,
+                      onChanged: (v) => setState(() {
+                        _systemRole = v ?? 'worker';
+                        if (_systemRole == 'property_owner') {
+                          _selectedRoles.clear();
+                        }
+                      }),
+                      title: Text('admin.team_role_owner'.tr()),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
-              Text(
-                'admin.team_job_roles_label'.tr(),
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: teamJobRoleKeys.map((key) {
-                  final selected = _selectedRoles.contains(key);
-                  return FilterChip(
-                    label: Text(_jobRoleLabel(key)),
-                    selected: selected,
-                    onSelected: (_) => _toggleRole(key),
-                  );
-                }).toList(),
-              ),
+              if (_systemRole != 'property_owner') ...[
+                const SizedBox(height: 16),
+                Text(
+                  'admin.team_job_roles_label'.tr(),
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: teamJobRoleKeys.map((key) {
+                    final selected = _selectedRoles.contains(key);
+                    return FilterChip(
+                      label: Text(_jobRoleLabel(key)),
+                      selected: selected,
+                      onSelected: (_) => _toggleRole(key),
+                    );
+                  }).toList(),
+                ),
+              ],
+              // Pokud je vybrána role majitele, skrýváme pracovněprávní pole a zobrazujeme výběr apartmánů pro hromadné přiřazení.
+              if (_systemRole == 'property_owner') ...[
+                const SizedBox(height: 16),
+                Text(
+                  'admin.select_apartments_for_owner'.tr(),
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                _ApartmentChecklistSection(
+                  selectedIds: _selectedApartmentIds,
+                  onToggle: (apartmentId, selected) {
+                    setState(() {
+                      if (selected) {
+                        _selectedApartmentIds.add(apartmentId);
+                      } else {
+                        _selectedApartmentIds.remove(apartmentId);
+                      }
+                    });
+                  },
+                ),
+              ],
             ],
     );
   }
@@ -1777,6 +2070,49 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
       default:
         return key;
     }
+  }
+}
+
+/// Checklist apartmánů pro majitele – zobrazuje se při výběru role property_owner.
+/// Načítá byty z apartmentsProvider (multi-tenant) a umožňuje hromadné zaškrtávání.
+class _ApartmentChecklistSection extends ConsumerWidget {
+  const _ApartmentChecklistSection({
+    required this.selectedIds,
+    required this.onToggle,
+  });
+
+  final Set<String> selectedIds;
+  final void Function(String apartmentId, bool selected) onToggle;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final apartmentsAsync = ref.watch(apartmentsProvider);
+    return apartmentsAsync.when(
+      data: (apartments) {
+        if (apartments.isEmpty) {
+          return Text(
+            'admin.apartments_empty'.tr(),
+            style: TextStyle(color: Colors.grey.shade600),
+          );
+        }
+        return Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: apartments.map((a) {
+            final selected = selectedIds.contains(a.id);
+            return FilterChip(
+              label: Text(a.name),
+              selected: selected,
+              onSelected: (sel) => onToggle(a.id, sel == true),
+            );
+          }).toList(),
+        );
+      },
+      loading: () =>
+          const Center(child: SizedBox(height: 40, width: 40, child: CircularProgressIndicator())),
+      error: (e, _) =>
+          Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+    );
   }
 }
 

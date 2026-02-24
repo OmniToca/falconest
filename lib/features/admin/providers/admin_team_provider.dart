@@ -197,8 +197,8 @@ class TeamMember {
 /// Pracovní pozice (sloupec roles v DB) – klíče pro Checkboxy a Task Automator. Neobsahuje systémovou roli admin.
 const List<String> teamJobRoleKeys = ['cleaner', 'driver', 'maintenance', 'checkin_agent'];
 
-/// Systémový přístup (sloupec role v DB): admin = manažer (web+mobil), worker = pouze mobil.
-const List<String> systemRoleValues = ['admin', 'worker'];
+/// Systémový přístup (sloupec role v DB): admin = manažer (web+mobil), worker = pouze mobil, property_owner = majitel (klientský portál).
+const List<String> systemRoleValues = ['admin', 'worker', 'property_owner'];
 
 /// Volitelný datum z JSON (pro start_date, end_date). Podporuje ISO i dd.MM.yyyy. Při selhání null.
 DateTime? _parseDateOptional(dynamic v) => _parseDateSafe(v);
@@ -311,8 +311,12 @@ final adminTeamProvider = FutureProvider<List<TeamMember>>((ref) async {
         final status = (map['status']?.toString() ?? 'active').toLowerCase();
         final isPending = status == 'pending';
 
-        final systemRole = (appRole == 'admin' || appRole == 'manager') ? 'admin' : 'worker';
-        List<String> jobRoles = _parseJobRolesFromJson(map);
+        final systemRole = appRole == 'property_owner'
+            ? 'property_owner'
+            : (appRole == 'admin' || appRole == 'manager')
+                ? 'admin'
+                : 'worker';
+        List<String> jobRoles = appRole == 'property_owner' ? [] : _parseJobRolesFromJson(map);
         if (jobRoles.isEmpty && appRole == 'worker') jobRoles = ['cleaner'];
 
         final rawHours = map['weekly_hours'];

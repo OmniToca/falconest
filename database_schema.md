@@ -12,8 +12,8 @@
 | zones | created_at | timestamp with time zone | YES |
 | zones | deleted_at | timestamp with time zone | YES – Soft delete; NULL = aktivní |
 | apartment_owners | id | uuid | NO |
-| apartment_owners | apartment_id | uuid | NO |
-| apartment_owners | owner_id | uuid | NO |
+| apartment_owners | apartment_id | uuid | NO (FK → apartments ON DELETE CASCADE) |
+| apartment_owners | owner_id | uuid | NO (FK → profiles ON DELETE CASCADE) – pro PostgREST embed: profiles!apartment_owners_owner_id_fkey |
 | apartment_owners | deleted_at | timestamp with time zone | YES – Soft delete; NULL = aktivní |
 | apartments | id | uuid | NO |
 | apartments | tenant_id | uuid | NO |
@@ -102,6 +102,7 @@
 | reservations | reservation_source | text | YES (default 'Other', CHECK: 'Booking', 'Airbnb', 'Direct', 'Other') – zdroj rezervace |
 | reservations | departure_time | timestamp with time zone | YES – předpokládaný čas odjezdu (pro Task Automator: úklid, transfer na letiště) |
 | reservations | internal_note | text | YES – interní poznámka manažera. Not synced to mobile app, for admin dashboard only. |
+| reservations | agency_collects_payment | boolean | YES (default false) – FEATURE: false = platbu řeší majitel, true = agentura vybere od hosta na místě |
 | staff_absences | id | uuid | NO |
 | staff_absences | profile_id | uuid | YES |
 | staff_absences | start_date | text | NO |
@@ -126,6 +127,7 @@
 | tasks | reservation_id | uuid | YES (FK → reservations ON DELETE CASCADE) – vazba na rezervaci, pro mazání při změně termínu |
 | tasks | service_id | uuid | YES (FK → tenant_services ON DELETE SET NULL) – vazba na službu; pro scheduled úkoly a ochranný štít |
 | tasks | metadata | jsonb | NO (default '{}') – flexibilní data pro UI (částka k vybrání, poznámky z rezervace, číslo letu, trackování času) |
+| tasks | created_by | uuid | YES (FK → profiles) – profil tvůrce úkolu; NULL u systémově generovaných nebo starých záznamů |
 | tenant_modules | id | uuid | NO |
 | tenant_modules | tenant_id | uuid | YES |
 | tenant_modules | module_id | uuid | YES |

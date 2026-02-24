@@ -1,0 +1,200 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/services/supabase_service.dart';
+
+/// Model majitele přiřazeného k apartmánu – pro zobrazení v UI.
+///
+/// Spojuje záznam z apartment_owners s údaji z profiles (nebo invitations).
+/// [isPending] true = majitel ještě neakceptoval pozvánku (ghost profil bez auth_id).
+class ApartmentOwnerRow {
+  const ApartmentOwnerRow({
+    required this.id,
+    required this.ownerId,
+    required this.name,
+    this.email,
+    required this.isPending,
+  });
+
+  /// apartment_owners.id (UUID záznamu propojení)
+  final String id;
+  /// profiles.id – odkaz na profil majitele
+  final String ownerId;
+  final String name;
+  final String? email;
+  /// true = čeká na registraci (invitation), false = aktivní profil
+  final bool isPending;
+}
+
+/// Provider načítající majitele přiřazené k danému apartmánu.
+///
+/// Dotaz na apartment_owners s JOIN na profiles. Soft delete: pouze
+/// záznamy s deleted_at IS NULL. Multi-tenant: filtrováno přes RLS
+/// (apartment patří tenantovi admina).
+/// BUGFIX: Explicitní hint !apartment_owners_owner_id_fkey pro PostgREST –
+/// zajistí správný JOIN při více FK vazbách a po doplnění migrace 20260223.
+final apartmentOwnersForApartmentProvider =
+    FutureProvider.family<List<ApartmentOwnerRow>, String>((ref, apartmentId) async {
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return [];
+
+  final res = await SupabaseService.client
+      .from('apartment_owners')
+      .select(
+        'id, owner_id, profiles!apartment_owners_owner_id_fkey(id, name, first_name, last_name, email, status)',
+      )
+      .eq('apartment_id', apartmentId)
+      .isFilter('deleted_at', null);
+
+  return _parseOwnerRows(res as List);
+});
+
+/// Parsuje odpověď Supabase na seznam [ApartmentOwnerRow].
+List<ApartmentOwnerRow> _parseOwnerRows(List<dynamic> raw) {
+  final result = <ApartmentOwnerRow>[];
+  for (final item in raw) {
+    final map = item as Map<String, dynamic>;
+    final id = map['id']?.toString() ?? '';
+    final ownerId = map['owner_id']?.toString() ?? '';
+    if (id.isEmpty || ownerId.isEmpty) continue;
+
+    final profilesData = map['profiles'];
+    String name = '–';
+    String? email;
+    bool isPending = true;
+    if (profilesData != null && profilesData is Map) {
+      final p = profilesData as Map<String, dynamic>;
+      final n = p['name']?.toString().trim();
+      final fn = p['first_name']?.toString().trim();
+      final ln = p['last_name']?.toString().trim();
+      if (n != null && n.isNotEmpty) {
+        name = n;
+      } else if (fn != null || ln != null) {
+        name = '$fn $ln'.trim();
+      }
+      email = p['email']?.toString().trim();
+      if (email != null && email.isEmpty) email = null;
+      isPending = (p['status']?.toString() ?? '').toLowerCase() == 'pending';
+    }
+    result.add(ApartmentOwnerRow(
+      id: id,
+      ownerId: ownerId,
+      name: name,
+      email: email,
+      isPending: isPending,
+    ));
+  }
+  return result;
+}
+
+/// Provider: seznam všech profilů s rolí property_owner v aktuálním tenantovi.
+///
+/// Používá se pro výběr "Přidat existujícího majitele". Vrací pouze aktivní
+/// profily (profiles) + pozvánky s role=property_owner. Exkluze již přiřazených
+/// k danému bytu se řeší v UI (dropdown filtruje).
+final propertyOwnersInTenantProvider = FutureProvider<List<PropertyOwnerOption>>((ref) async {
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return [];
+
+  final profilesRes = await SupabaseService.client
+      .from('profiles')
+      .select('id, name, first_name, last_name, email, status')
+      .eq('tenant_id', tenantId)
+      .eq('role', 'property_owner')
+      .isFilter('deleted_at', null);
+
+  final invitationsRes = await SupabaseService.client
+      .from('invitations')
+      .select('id, profile_id, email, first_name, last_name')
+      .eq('tenant_id', tenantId)
+      .eq('role', 'property_owner');
+
+  final result = <PropertyOwnerOption>[];
+  for (final p in (profilesRes as List)) {
+    final map = p as Map<String, dynamic>;
+    final id = map['id']?.toString() ?? '';
+    if (id.isEmpty) continue;
+    final name = _displayName(map);
+    final email = map['email']?.toString().trim();
+    final isPending = (map['status']?.toString() ?? '').toLowerCase() == 'pending';
+    result.add(PropertyOwnerOption(
+      profileId: id,
+      name: name,
+      email: email,
+      isPending: isPending,
+    ));
+  }
+  for (final inv in (invitationsRes as List)) {
+    final map = inv as Map<String, dynamic>;
+    final profileId = map['profile_id']?.toString() ?? '';
+    if (profileId.isEmpty) continue;
+    // Vynech pokud už je v profiles (duplicita)
+    if (result.any((o) => o.profileId == profileId)) continue;
+    final fn = map['first_name']?.toString().trim() ?? '';
+    final ln = map['last_name']?.toString().trim() ?? '';
+    final email = map['email']?.toString().trim();
+    final name = '$fn $ln'.trim();
+    result.add(PropertyOwnerOption(
+      profileId: profileId,
+      name: name.isNotEmpty ? name : (email ?? '–'),
+      email: email,
+      isPending: true,
+    ));
+  }
+  result.sort((a, b) => a.name.compareTo(b.name));
+  return result;
+});
+
+String _displayName(Map<String, dynamic> p) {
+  final n = p['name']?.toString().trim();
+  if (n != null && n.isNotEmpty) return n;
+  final fn = p['first_name']?.toString().trim() ?? '';
+  final ln = p['last_name']?.toString().trim() ?? '';
+  final combined = '$fn $ln'.trim();
+  if (combined.isNotEmpty) return combined;
+  final email = p['email']?.toString().trim();
+  return email ?? '–';
+}
+
+/// Volba pro dropdown "Přidat existujícího majitele".
+class PropertyOwnerOption {
+  const PropertyOwnerOption({
+    required this.profileId,
+    required this.name,
+    this.email,
+    required this.isPending,
+  });
+
+  final String profileId;
+  final String name;
+  final String? email;
+  final bool isPending;
+}
+
+/// Repozitář pro CRUD operace nad apartment_owners.
+class ApartmentOwnersRepository {
+  ApartmentOwnersRepository._();
+
+  /// Přidá propojení majitel–byt. Volá admin; RLS kontroluje tenant_id.
+  static Future<void> addOwner({
+    required String apartmentId,
+    required String ownerId,
+    required String tenantId,
+  }) async {
+    await SupabaseService.client.from('apartment_owners').insert({
+      'apartment_id': apartmentId,
+      'owner_id': ownerId,
+    });
+  }
+
+  /// Odebere propojení – soft delete (nastavení deleted_at).
+  static Future<void> removeOwner({
+    required String apartmentOwnersId,
+  }) async {
+    final deletedAt = DateTime.now().toUtc().toIso8601String();
+    await SupabaseService.client
+        .from('apartment_owners')
+        .update({'deleted_at': deletedAt})
+        .eq('id', apartmentOwnersId);
+  }
+}

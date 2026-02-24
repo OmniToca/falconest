@@ -411,7 +411,8 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
 
     try {
       // JOINy: apartments, reservations, profiles – pro kontext v detailu úkolu („Apple Vibe“).
-      // Explicitní .eq('tenant_id', tenantId) zamezí data leakage při převtělení Super Admina.
+      // BUGFIX: Explicitní určení cizího klíče pro PostgREST (zamezení ambiguity tasks–profiles).
+      // Tabulka tasks má více FK na profiles (assigned_to, created_by) – bez hintu padá 500.
       final tasksResponse = await SupabaseService.client
           .from('tasks')
           .select(
@@ -419,7 +420,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
             *,
             apartments(name),
             reservations(guest_name, start_date, end_date, guest_adults, guest_children),
-            profiles(name)
+            profiles!tasks_assigned_to_fkey(name)
             ''',
           )
           .eq('tenant_id', tenantId)

@@ -31,9 +31,8 @@ import 'package:falconest/features/super_admin/super_admin_dashboard.dart';
 import 'package:falconest/features/super_admin/tenant_detail_screen.dart';
 import 'package:falconest/features/worker/screens/worker_dashboard_screen.dart';
 import 'package:falconest/features/worker/screens/worker_task_detail_screen.dart';
-import 'package:falconest/features/owner/owner_apartments_screen.dart';
+import 'package:falconest/features/owner/owner_apartment_detail_screen.dart';
 import 'package:falconest/features/owner/owner_layout.dart';
-import 'package:falconest/features/owner/owner_reservations_screen.dart';
 import 'package:falconest/features/tasks/task_detail_screen.dart';
 import 'package:falconest/shared/widgets/placeholder_screen.dart';
 
@@ -48,6 +47,8 @@ final goRouterProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     refreshListenable: authNotifier,
     initialLocation: '/',
+    // BUGFIX: Oprava definice rout pro klientský portál (zamezení fallback redirectu).
+    debugLogDiagnostics: kDebugMode,
     redirect: (context, state) async {
       return _redirectLogic(context, state, authNotifier, pinUnlocked);
     },
@@ -170,27 +171,20 @@ final goRouterProvider = Provider<GoRouter>((ref) {
           return TaskDetailScreen(taskId: taskId);
         },
       ),
-      ShellRoute(
-        builder: (context, state, child) => OwnerLayout(child: child),
-        routes: [
-          GoRoute(
-            path: '/owner',
-            redirect: (context, state) =>
-                state.matchedLocation == '/owner' ? '/owner/apartments' : null,
-            routes: [
-              GoRoute(
-                path: 'apartments',
-                name: 'ownerApartments',
-                builder: (context, state) => const OwnerApartmentsScreen(),
-              ),
-              GoRoute(
-                path: 'reservations',
-                name: 'ownerReservations',
-                builder: (context, state) => const OwnerReservationsScreen(),
-              ),
-            ],
-          ),
-        ],
+      // REFACTOR: Přechod z ShellRoute na IndexedStack pro stabilnější navigaci v Klientském portálu.
+      GoRoute(
+        path: '/owner',
+        name: 'owner',
+        builder: (context, state) => const OwnerLayout(),
+      ),
+      // Detail apartmánu – top-level routa pro context.push, zobrazí se přes celou obrazovku.
+      GoRoute(
+        path: '/owner/apartments/:id',
+        name: 'ownerApartmentDetail',
+        builder: (context, state) {
+          final id = state.pathParameters['id'] ?? '';
+          return OwnerApartmentDetailScreen(apartmentId: id);
+        },
       ),
       GoRoute(
         path: '/home',
@@ -264,7 +258,7 @@ Future<String?> _getRedirectTargetForRole(
   }
   if (tenantId == null) return '/waiting-room';
   if (role == 'admin' || role == 'manager') return '/admin';
-  if (role == 'property_owner') return '/owner/apartments';
+  if (role == 'property_owner') return '/owner';
   // Worker a personál (cleaner, driver, maintenance) → dashboard personálu
   return '/worker';
 }

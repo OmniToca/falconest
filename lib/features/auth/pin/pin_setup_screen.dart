@@ -131,7 +131,7 @@ class _PinSetupScreenState extends ConsumerState<PinSetupScreen> {
     } else if (state.isAdminOrManager) {
       context.go('/admin');
     } else if (state.isPropertyOwner) {
-      context.go('/owner/apartments');
+      context.go('/owner');
     } else {
       context.go('/worker');
     }

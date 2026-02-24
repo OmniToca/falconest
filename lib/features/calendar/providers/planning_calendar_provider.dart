@@ -132,7 +132,8 @@ List<PlanningTask> _parseTasksFromResponse(dynamic res) {
       if (idStr.isEmpty) continue;
 
       String workerName = 'Nepřiřazeno';
-      final profile = map['profiles'];
+      // BUGFIX: PostgREST vrací profiles pod klíčem profiles!tasks_assigned_to_fkey při explicitním FK.
+      final profile = map['profiles'] ?? map['profiles!tasks_assigned_to_fkey'];
       if (profile != null) {
         final p = profile is Map
             ? profile
@@ -326,7 +327,7 @@ final planningCalendarAllTasksProvider =
     final res = await SupabaseService.client
         .from('tasks')
         .select(
-            'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, apartment_id, metadata, profiles(first_name, last_name, name), apartments(name)')
+            'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, apartment_id, metadata, profiles!tasks_assigned_to_fkey(first_name, last_name, name), apartments(name)')
         .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
         .gte('scheduled_start', start.toUtc().toIso8601String())
@@ -356,7 +357,7 @@ final planningCalendarAllTasksForMonthProvider =
     final res = await SupabaseService.client
         .from('tasks')
         .select(
-            'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, apartment_id, metadata, profiles(first_name, last_name, name), apartments(name)')
+            'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, apartment_id, metadata, profiles!tasks_assigned_to_fkey(first_name, last_name, name), apartments(name)')
         .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
         .gte('scheduled_start', start.toUtc().toIso8601String())
