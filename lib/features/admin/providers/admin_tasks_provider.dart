@@ -12,6 +12,7 @@ import 'package:falconest/features/admin/models/task_category_model.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
+import 'package:falconest/features/admin/providers/admin_tasks_repository.dart';
 import 'package:falconest/features/admin/providers/reservation_services_repository.dart';
 import 'package:falconest/features/admin/providers/task_assignment_engine.dart';
 import 'package:falconest/features/admin/providers/task_categories_provider.dart';
@@ -391,60 +392,17 @@ class _SmartTaskCandidate {
   final String guestName;
 }
 
-/// Notifier pro úkoly – načítání seznamu a generování návrhů (chytrý dispečink).
+/// Notifier pro úkoly – mutace (insert, update, generování návrhů). Data z Realtime streamu.
+///
+/// Seznam úkolů pro UI poskytuje [adminTasksStreamProvider]. Tento notifier slouží pro akce
+/// (insertTaskInAdmin, updateTaskStatus, generateSmartTasks atd.). build() vrací [], aby nedocházelo
+/// k duplicitnímu načítání – stream provider se stará o data.
 class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
   @override
   Future<List<TaskRow>> build() async {
-    // ref.watch + tenantIdForData: při změně tenanta (impersonace) se provider znovu sestaví;
-    // Super Admin = vybraná agentura, běžný uživatel = jeho tenant_id z profilu.
-    final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
-    if (tenantId == null || tenantId.isEmpty) return [];
-
-    // Jednorázové čtení (ref.read) – žádné ref.watch, abychom nevytvářeli kruhovou závislost.
-    final apartments = await ref.read(apartmentsProvider.future);
-    final team = await ref.read(adminTeamProvider.future);
-
-    final apartmentById = {for (final a in apartments) a.id: a.name};
-    final nameByProfileId = <String, String>{};
-    for (final m in team) {
-      final id = m.profileId ?? m.id;
-      if (id.isNotEmpty) nameByProfileId[id] = m.name;
-    }
-
-    try {
-      // JOINy: apartments, reservations, profiles – pro kontext v detailu úkolu („Apple Vibe“).
-      // BUGFIX: Explicitní určení cizího klíče pro PostgREST (zamezení ambiguity tasks–profiles).
-      // Tabulka tasks má více FK na profiles (assigned_to, created_by) – bez hintu padá 500.
-      final tasksResponse = await SupabaseService.client
-          .from('tasks')
-          .select(
-            '''
-            *,
-            apartments(name),
-            reservations(guest_name, start_date, end_date, guest_adults, guest_children),
-            profiles!tasks_assigned_to_fkey(name)
-            ''',
-          )
-          .eq('tenant_id', tenantId)
-          .isFilter('deleted_at', null)
-          .order('due_date', ascending: true);
-
-      final list = tasksResponse as List;
-      return list.map((e) => TaskRow.fromSupabaseRow(
-        e as Map<String, dynamic>,
-        apartmentById: apartmentById,
-        nameByProfileId: nameByProfileId,
-      )).toList();
-    } on PostgrestException catch (e) {
-      if (e.code == '42703' ||
-          (e.message.contains('column') || e.message.contains('does not exist'))) {
-        // ignore: avoid_print
-        print('--- CHYBÍ SLOUPCE V TABULCE tasks. Spusť v Supabase SQL Editor:');
-        // ignore: avoid_print
-        print(_buildAlterTableSql());
-      }
-      rethrow;
-    }
+    // Prázdný stav – data pochází z adminTasksStreamProvider (Realtime).
+    // Notifier je zachován pro mutační metody (.notifier.insertTaskInAdmin atd.).
+    return [];
   }
 
   /// Chytrý dispečink: z rezervací vygeneruje návrhy úkolů (Úklid, Transfer) a uloží je.
@@ -1406,12 +1364,54 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
   }
 }
 
-/// Provider úkolů – AsyncNotifier pro načítání a akci generování návrhů.
-/// Stav notifieru je `List<TaskRow>`; Riverpod ho automaticky vystavuje jako `AsyncValue<List<TaskRow>>`.
+/// Provider úkolů – AsyncNotifier pro mutace (insert, update, generateSmartTasks).
+/// Seznam úkolů pro zobrazení v UI poskytuje [adminTasksStreamProvider].
 final adminTasksProvider =
     AsyncNotifierProvider<AdminTasksNotifier, List<TaskRow>>(
   AdminTasksNotifier.new,
 );
+
+/// Realtime stream úkolů pro Admin – okamžitá aktualizace UI bez F5.
+///
+/// PROČ: Dispečer vidí změny (nové úkoly, přiřazení, status) hned po provedení.
+/// Supabase Realtime WebSockets se starají o push aktualizace.
+final adminTasksStreamProvider =
+    StreamProvider<List<TaskRow>>((ref) async* {
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) {
+    yield [];
+    return;
+  }
+
+  final apartments = await ref.watch(apartmentsProvider.future);
+  final team = await ref.watch(adminTeamProvider.future);
+  final apartmentById = {for (final a in apartments) a.id: a.name};
+  final nameByProfileId = <String, String>{};
+  for (final m in team) {
+    final id = m.profileId ?? m.id;
+    if (id.isNotEmpty) nameByProfileId[id] = m.name;
+  }
+
+  await for (final rawList in AdminTasksRepository.instance.watchTasksRaw(tenantId)) {
+    try {
+      final rows = rawList.map((raw) => TaskRow.fromSupabaseRow(
+        Map<String, dynamic>.from(raw),
+        apartmentById: apartmentById,
+        nameByProfileId: nameByProfileId,
+      )).toList();
+      yield rows;
+    } on PostgrestException catch (e) {
+      if (e.code == '42703' ||
+          (e.message.contains('column') || e.message.contains('does not exist'))) {
+        // ignore: avoid_print
+        print('--- CHYBÍ SLOUPCE V TABULCE tasks. Spusť v Supabase SQL Editor:');
+        // ignore: avoid_print
+        print(_buildAlterTableSql());
+      }
+      rethrow;
+    }
+  }
+});
 
 /// Bezpečný výpočet trendu v procentech: (today - yesterday) / yesterday * 100.
 /// Používá se pro srovnání Dnes vs. Včera u úkolů.
@@ -1426,7 +1426,7 @@ double _calculateTasksTrend(int today, int yesterday) {
 /// Derive provider: tasksTrend porovnávající celkový počet dnešních úkolů vůči včerejším.
 /// Srovnání Dnes vs. Včera.
 final adminTasksTrendProvider = Provider<double>((ref) {
-  final async = ref.watch(adminTasksProvider);
+  final async = ref.watch(adminTasksStreamProvider);
   final tasks = async.valueOrNull ?? [];
   final now = DateTime.now();
   final today = DateTime(now.year, now.month, now.day);

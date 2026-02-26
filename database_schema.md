@@ -212,10 +212,28 @@
 | employee_cash_transactions | tenant_id | uuid | NO (FK → tenants) |
 | employee_cash_transactions | wallet_id | uuid | NO (FK → employee_cash_wallets) |
 | employee_cash_transactions | task_id | uuid | YES (FK → tasks) – vazba na úkol (Check-in, Transfer) |
-| employee_cash_transactions | amount | numeric | NO – kladné (výběr), záporné (odevzdání) |
-| employee_cash_transactions | transaction_type | text | NO – 'COLLECTED_FROM_GUEST' nebo 'HANDED_TO_AGENCY' |
+| employee_cash_transactions | amount | numeric | NO – kladné (výběr), záporné (odevzdání, firemní výdaj) |
+| employee_cash_transactions | transaction_type | text | NO – 'COLLECTED_FROM_GUEST', 'HANDED_TO_AGENCY', 'COMPANY_EXPENSE' |
+| employee_cash_transactions | note | text | YES – poznámka k firemnímu výdaji (např. „Materiál na úklid“) |
+| employee_cash_transactions | receipt_image_url | text | YES – URL fotky účtenky (Supabase Storage) |
 | employee_cash_transactions | created_by | uuid | NO (FK → profiles) |
 | employee_cash_transactions | created_at | timestamp with time zone | YES (default now()) |
+| notifications | id | uuid | NO |
+| notifications | tenant_id | uuid | NO (FK → tenants) |
+| notifications | profile_id | uuid | NO (FK → profiles) – komu je notifikace určena |
+| notifications | title | text | NO |
+| notifications | message | text | NO |
+| notifications | type | text | YES – např. 'alert', 'system', 'task' |
+| notifications | is_read | boolean | NO (default false) |
+| notifications | created_at | timestamp with time zone | YES (default now()) |
+
+---
+
+### Tabulka notifications – Realtime notifikace pro uživatele
+
+Tabulka **notifications** slouží pro zobrazení oznámení v Top Baru (zvoneček). Každá notifikace je určena konkrétnímu uživateli (`profile_id`) a agentuře (`tenant_id`).
+
+**RLS:** Uživatel vidí a může upravovat (např. označit jako přečtené) pouze notifikace, kde `tenant_id` odpovídá jeho agentuře a `profile_id` odpovídá jeho profilu. Super Admin má plný přístup. Tabulka musí být přidána do Supabase Realtime publikace (Dashboard → Database → Replication), aby stream v aplikaci fungoval.
 
 ---
 
@@ -232,7 +250,8 @@ Modul **Finance** je hlavní modul (zdarma) obsahující **Zaměstnaneckou pokla
 
 **employee_cash_transactions** – Účetní kniha výběrů:
 - Append-only záznamy transakcí.
-- **transaction_type**: `COLLECTED_FROM_GUEST` (výběr od hosta při Check-in/Transfer), `HANDED_TO_AGENCY` (odevzdání agentuře).
+- **transaction_type**: `COLLECTED_FROM_GUEST` (výběr od hosta při Check-in/Transfer), `HANDED_TO_AGENCY` (odevzdání agentuře), `COMPANY_EXPENSE` (firemní výdaj z hotovosti).
+- **note**, **receipt_image_url** – volitelné u firemních výdajů; poznámka a URL fotky účtenky.
 - **amount**: kladné = výběr (zvyšuje balance), záporné = odevzdání (snižuje balance).
 - **task_id** – volitelná vazba na úkol (Check-in, Transfer) pro audit.
 
@@ -315,3 +334,22 @@ Služby jsou definovány na třech úrovních: **Katalog agentury** → **Ceník
 - **Plátce služby (kdo platí):** Na úrovni bytu se nastaví výchozí `apartment_services.payer_type` (majitel vs. host). U konkrétní rezervace lze přepsat v `reservation_services.payer_type`; pokud je NULL, použije se hodnota z bytu.
 
 **Poznámka k rezervacím:** Textové poznámky ke konkrétním službám (co klient chce u transferu, u úklidu atd.) se ukládají výhradně do **reservation_services.custom_note**. Do tabulky **reservations** se nepřidávají žádná další textová pole pro služby; rozšíření rezervace jsou sloupce **guest_adults**, **guest_children** (počty hostů) a **arrival_time** (předpokládaný čas příjezdu).
+
+---
+
+## Storage Buckets
+
+Supabase Storage používá systémovou tabulku `storage.objects`. RLS politiky se vytváří nad touto tabulkou pro jednotlivé buckety.
+
+### Bucket falconest_media
+
+| Vlastnost | Hodnota |
+|-----------|---------|
+| **Typ** | Public |
+| **Účel** | Ukládání fotek z aplikace – účtenky k firemním výdajům, budoucí hlášení škod |
+| **Struktura cest** | `tenant_id/modul/soubor.jpg` (např. `uuid/expenses/uuid.jpg`) |
+
+**RLS politiky (storage.objects):**
+
+- **INSERT** – povolen pouze pro `authenticated` uživatele; podmínka `bucket_id = 'falconest_media'`. Pouze přihlášení pracovníci či dispečeři mohou nahrávat soubory.
+- **SELECT** – povoleno pro čtení s podmínkou `bucket_id = 'falconest_media'`. Public bucket umožňuje přímé URL (`getPublicUrl`), politika SELECT pokrývá dotazy přes Storage API.

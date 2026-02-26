@@ -3,11 +3,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/presentation/widgets/app_card.dart';
 import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
 import 'package:falconest/features/admin/finance_billing_screen.dart';
 import 'package:falconest/features/admin/premium_upsell_dialog.dart';
 import 'package:falconest/features/admin/providers/finance_cash_provider.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
+import 'package:falconest/features/admin/widgets/wallet_detail_modal.dart';
 
 /// Administrační obrazovka Zaměstnanecké pokladny – přehled dluhů zaměstnanců
 /// a možnost potvrdit převzetí hotovosti v kanceláři (nulování kapsy).
@@ -20,7 +22,6 @@ class FinanceDashboardScreen extends ConsumerWidget {
     final hasExport = isModuleActive(ref, 'finance_export');
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
       body: CustomScrollView(
         slivers: [
           SliverToBoxAdapter(
@@ -126,6 +127,13 @@ class FinanceDashboardScreen extends ConsumerWidget {
                     final row = sorted[index];
                     return _WalletCard(
                       row: row,
+                      onTap: () {
+                        WalletDetailModal.show(
+                          context,
+                          walletId: row.id,
+                          workerName: row.workerName,
+                        );
+                      },
                       onReceiveCash: () => _showReceiveCashDialog(context, ref, row),
                     );
                   },
@@ -293,10 +301,11 @@ class _FailedCashAlertCard extends StatelessWidget {
         ? DateFormat.yMd(context.locale.toString()).format(row.completedAt!)
         : '—';
 
-    return Card(
-      margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-      color: Colors.white,
-      child: ListTile(
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      child: AppCard(
+        padding: EdgeInsets.zero,
+        child: ListTile(
         title: Text(
           'admin.finance.alert_task_info'.tr(
             namedArgs: {
@@ -315,23 +324,26 @@ class _FailedCashAlertCard extends StatelessWidget {
         ),
         trailing: FilledButton(
           onPressed: onResolve,
-          style: FilledButton.styleFrom(backgroundColor: Colors.orange.shade700),
           child: Text('admin.finance.btn_resolve'.tr()),
         ),
         isThreeLine: true,
+      ),
       ),
     );
   }
 }
 
-/// Karta zaměstnance – zobrazuje jméno, zůstatek a tlačítko Převzít hotovost.
+/// Karta zaměstnance – zobrazuje jméno a zůstatek. Kliknutím otevře detail s historií.
+/// Tlačítko „Převzít hotovost“ je přesunuto do detailu (Modal Bottom Sheet).
 class _WalletCard extends StatelessWidget {
   const _WalletCard({
     required this.row,
+    required this.onTap,
     required this.onReceiveCash,
   });
 
   final EmployeeCashWalletRow row;
+  final VoidCallback onTap;
   final VoidCallback onReceiveCash;
 
   @override
@@ -343,42 +355,40 @@ class _WalletCard extends StatelessWidget {
       decimalDigits: 2,
     ).format(row.balance);
 
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
-      color: hasDebt ? Colors.red.shade50 : Colors.white,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    row.workerName,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: hasDebt ? Colors.red.shade900 : null,
-                        ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    formatted,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.bold,
-                          color: hasDebt ? Colors.red.shade800 : Colors.green.shade800,
-                        ),
-                  ),
-                ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: AppCard(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      row.workerName,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: hasDebt ? Colors.red.shade900 : null,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      formatted,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: hasDebt ? Colors.red.shade800 : Colors.green.shade800,
+                          ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            if (hasDebt)
-              FilledButton.icon(
-                onPressed: onReceiveCash,
-                icon: const Icon(Icons.handshake, size: 20),
-                label: Text('admin.finance.receive_btn'.tr()),
-              ),
-          ],
+              Icon(Icons.chevron_right, color: Colors.grey.shade600),
+            ],
+          ),
         ),
       ),
     );

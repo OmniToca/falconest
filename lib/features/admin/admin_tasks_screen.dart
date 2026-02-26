@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/presentation/widgets/app_card.dart';
 import 'package:falconest/core/presentation/widgets/modern_admin_panel.dart';
 import 'package:falconest/features/admin/admin_layout.dart';
 import 'package:falconest/features/admin/admin_reservations_screen.dart';
@@ -240,10 +241,9 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final tasksAsync = ref.watch(adminTasksProvider);
+    final tasksAsync = ref.watch(adminTasksStreamProvider);
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
       body: tasksAsync.when(
         data: (tasks) {
           final filtered = _computeFiltered(tasks);
@@ -380,7 +380,6 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
             child: Text('common.cancel'.tr()),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
             onPressed: () => _doDelete(ctx, ref, task.id),
             child: Text('admin.task_delete'.tr()),
           ),
@@ -506,9 +505,6 @@ class _TopActionBar extends StatelessWidget {
             onPressed: onAdd,
             icon: const Icon(Icons.add, size: 20),
             label: Text('admin.task_new'.tr()),
-            style: FilledButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-            ),
           ),
         ],
       ),
@@ -548,8 +544,6 @@ class _GenerateButton extends StatelessWidget {
             : '${'admin.tasks_generate'.tr()} (max 50)'),
         style: ElevatedButton.styleFrom(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-          foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
         ),
       );
     }
@@ -559,8 +553,6 @@ class _GenerateButton extends StatelessWidget {
       label: Text('admin.tasks_generate'.tr()),
       style: ElevatedButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-        foregroundColor: muted,
       ),
     );
   }
@@ -725,8 +717,6 @@ class _RecalculateStaffButton extends StatelessWidget {
       label: Text('${'admin.tasks_recalculate_staff'.tr()} ${'admin.tasks_batch_limit'.tr()}'),
       style: ElevatedButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-        foregroundColor: muted,
       ),
     );
   }
@@ -802,8 +792,6 @@ class _TasksFilterBar extends StatelessWidget {
                 : const Icon(Icons.done_all, size: 20),
             label: Text('admin.tasks_approve_all_pending'.tr()),
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green.shade700,
-              foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             ),
           ),
@@ -1165,26 +1153,16 @@ class _TaskCard extends StatelessWidget {
     final dueStr =
         '${task.dueDate.day.toString().padLeft(2, '0')}.${task.dueDate.month.toString().padLeft(2, '0')} '
         '${task.dueDate.hour.toString().padLeft(2, '0')}:${task.dueDate.minute.toString().padLeft(2, '0')}';
-    final isAlert = _isTaskTypeAlert(task.taskType);
-    final cardColor = TaskVisuals.getBackgroundColor(task.taskType, categoriesByCode: categoriesByCode.isNotEmpty ? categoriesByCode : null);
-    final borderColor = isAlert ? Colors.red.shade400 : Colors.grey.shade300;
     final typeIcon = TaskVisuals.getIcon(task.taskType, categoriesByCode: categoriesByCode.isNotEmpty ? categoriesByCode : null);
+    // Dynamické pastelové pozadí podle typu úkolu – kritické pro UX dispečinku (odpovídá horním filtrům).
+    final cardColor = TaskVisuals.getBackgroundColor(task.taskType, categoriesByCode: categoriesByCode.isNotEmpty ? categoriesByCode : null);
 
     // Celá karta je klikatelná (Apple Vibe) – otevře detail/editaci úkolu, bez 3-tečkového menu.
-    return Card(
-      elevation: 0,
-      color: cardColor,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: borderColor, width: isAlert ? 2 : 1),
-      ),
-      margin: EdgeInsets.zero,
-      child: InkWell(
-        onTap: () => onEdit(task),
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          child: Row(
+    return AppCard(
+      backgroundColor: cardColor,
+      onTap: () => onEdit(task),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
@@ -1310,8 +1288,6 @@ class _TaskCard extends StatelessWidget {
               ),
             ],
           ),
-        ),
-      ),
     );
   }
 }

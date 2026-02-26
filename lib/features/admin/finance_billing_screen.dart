@@ -60,7 +60,6 @@ class _FinanceBillingScreenState extends ConsumerState<FinanceBillingScreen> {
     final reportAsync = ref.watch(billingReportProvider(param));
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
       appBar: AppBar(
         title: Text('admin.finance.billing_title'.tr()),
         leading: IconButton(

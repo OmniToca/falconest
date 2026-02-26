@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:falconest/core/audit/enterprise_audit_payload.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/presentation/widgets/app_card.dart';
 import 'package:falconest/core/presentation/widgets/modern_admin_panel.dart';
 import 'package:falconest/core/services/audit_log_service.dart';
 import 'package:falconest/core/services/currency_service.dart';
@@ -56,7 +57,7 @@ Widget _buildStatusBadge(String? status) {
   final (bgColor, textColor) = _statusChipColors(s);
   final label = _statusKeys.containsKey(s) ? (_statusKeys[s]!).tr() : s;
   return Container(
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
     decoration: BoxDecoration(
       color: bgColor,
       borderRadius: BorderRadius.circular(12),
@@ -167,7 +168,6 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
     final apartmentsAsync = ref.watch(apartmentsProvider);
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
       body: apartmentsAsync.when(
         data: (apartments) {
           final filtered = _computeFiltered(apartments);
@@ -263,7 +263,6 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
             child: Text('common.cancel'.tr()),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
             onPressed: () => _doDelete(ctx, ref, [apartment]),
             child: Text('admin.apartments_delete'.tr()),
           ),
@@ -474,9 +473,6 @@ class _TopActionBar extends StatelessWidget {
             onPressed: onAdd,
             icon: const Icon(Icons.add, size: 20),
             label: Text('admin.fab_add_apartment'.tr()),
-            style: FilledButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-            ),
           ),
         ],
       ),
@@ -506,18 +502,10 @@ class _ApartmentsCardList extends StatelessWidget {
             constraints.maxWidth - (horizontalPadding * 2);
         const double spacing = 16.0;
 
-        // 2. Logika sloupců a šířky karet
-        double cardWidth;
-        if (constraints.maxWidth > 1200) {
-          // 3 sloupce na velkém monitoru (2 mezery)
-          cardWidth = (availableWidth - (spacing * 2)) / 3;
-        } else if (constraints.maxWidth > 750) {
-          // 2 sloupce na notebooku/tabletu (1 mezera)
-          cardWidth = (availableWidth - spacing) / 2;
-        } else {
-          // 1 sloupec na mobilu
-          cardWidth = availableWidth;
-        }
+        // 2. Logika sloupců – shodná s Personálem: 2 karty vedle sebe na široké obrazovce.
+        final bool isWide = constraints.maxWidth > 800;
+        final double cardWidth =
+            isWide ? (availableWidth - spacing) / 2 : availableWidth;
 
         // Responzivní mřížka využívající 95 % šířky obrazovky bez zbytečných prázdných pruhů.
         return SingleChildScrollView(
@@ -578,128 +566,57 @@ class _ApartmentCard extends ConsumerWidget {
     final reservationsAsync = ref.watch(adminReservationsProvider);
     final status = ref.watch(apartmentStatusProvider(apartment.id));
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: () => onEdit(apartment),
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.grey.shade200),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.05),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
-              ),
-            ],
+    return AppCard(
+      onTap: () => onEdit(apartment),
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 1. Avatar – kruhový jako u _MemberCard
+          CircleAvatar(
+            radius: 28,
+            backgroundColor: Colors.purple.shade100,
+            child: Icon(Icons.apartment, size: 28, color: Colors.purple.shade800),
           ),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
+          const SizedBox(width: 16),
+          // 2. Střední sloupec – hlavička, metadata, progress bar, poznámky
+          Expanded(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Levá část – barevný čtverec s ikonou apartmánu (jako avatar u Personálu)
-                    Container(
-                      width: 56,
-                      height: 56,
-                      decoration: BoxDecoration(
-                        color: Colors.purple.shade50,
-                        borderRadius: BorderRadius.circular(12),
+                Text(
+                  apartment.name,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 18,
                       ),
-                      child: Icon(
-                        Icons.apartment,
-                        size: 32,
-                        color: Colors.purple.shade700,
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    // Střední část – název a kompaktní podrobnosti (ikona + text)
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            apartment.name,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 18,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          _InfoRow(
-                            icon: Icons.location_on_outlined,
-                            text: addr.isEmpty ? '–' : addr,
-                          ),
-                          _InfoRow(
-                            icon: Icons.vpn_key_outlined,
-                            text: keyboxLabel,
-                          ),
-                          _InfoRow(
-                            icon: Icons.timer_outlined,
-                            text: cleaningLabel,
-                          ),
-                          // Výjimky v časech – odlišný check-in/out než standard 15:00 / 10:00
-                          if ((apartment.checkInTime ?? '15:00') != '15:00' ||
-                              (apartment.checkOutTime ?? '10:00') != '10:00') ...[
-                            const SizedBox(height: 4),
-                            Row(
-                              children: [
-                                Icon(
-                                  Icons.access_time_filled,
-                                  size: 14,
-                                  color: Colors.orange.shade800,
-                                ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  'admin.apartments_time_exception'.tr(
-                                    namedArgs: {
-                                      'checkIn': apartment.checkInTime ?? '15:00',
-                                      'checkOut': apartment.checkOutTime ?? '10:00',
-                                    },
-                                  ),
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.orange.shade800,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                    // Pravý horní roh – pilulka statusu, pod ní ikona koše
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _buildStatusBadge(status),
-                        const SizedBox(height: 8),
-                        IconButton(
-                          onPressed: () => onDelete(apartment),
-                          icon: Icon(
-                            Icons.delete_outline,
-                            color: Colors.red.shade700,
-                          ),
-                          tooltip: 'admin.apartments_delete'.tr(),
-                          style: IconButton.styleFrom(
-                            backgroundColor: Colors.red.shade50,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
                 ),
-                // Spodní část – Progress bar obsazenosti (jako kapacita u Personálu)
+                const SizedBox(height: 4),
+                _InfoRow(
+                  icon: Icons.location_on_outlined,
+                  text: addr.isEmpty ? '–' : addr,
+                ),
+                const SizedBox(height: 6),
+                _InfoRow(
+                  icon: Icons.vpn_key_outlined,
+                  text: keyboxLabel,
+                ),
+                const SizedBox(height: 6),
+                _InfoRow(
+                  icon: Icons.timer_outlined,
+                  text: cleaningLabel,
+                ),
+                const SizedBox(height: 6),
+                _InfoRow(
+                  icon: Icons.schedule_outlined,
+                  text: 'admin.apartments_times_in_out'.tr(
+                    namedArgs: {
+                      'checkIn': apartment.checkInTime ?? '15:00',
+                      'checkOut': apartment.checkOutTime ?? '10:00',
+                    },
+                  ),
+                ),
+                const SizedBox(height: 10),
                 reservationsAsync.when(
                   data: (reservations) {
                     final now = DateTime.now();
@@ -709,125 +626,138 @@ class _ApartmentCard extends ConsumerWidget {
                       now,
                     );
                     final ratio = total > 0 ? (occupied / total).clamp(0.0, 1.0) : 0.0;
-                    // Barva: < 0.3 červená (málo hostů), < 0.7 oranžová, >= 0.7 zelená (super byznys)
+                    // Jemné barvy: < 0.3 červená, < 0.7 oranžová, >= 0.7 zelená
                     final barColor = ratio < 0.3
-                        ? Colors.red.shade400
+                        ? Colors.red.shade300
                         : ratio < 0.7
-                            ? Colors.orange.shade400
+                            ? Colors.orange.shade300
                             : Colors.green.shade400;
-
-                    return Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                'admin.apartments_occupancy_this_month'.tr(),
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  color: Colors.grey.shade700,
-                                ),
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'admin.apartments_occupancy_this_month'.tr(),
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey.shade700,
                               ),
-                              Text(
-                                'admin.apartments_occupancy_days'.tr(
-                                  namedArgs: {
-                                    'occupied': '$occupied',
-                                    'total': '$total',
-                                  },
-                                ),
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  color: Colors.grey.shade800,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Container(
-                            height: 6,
-                            decoration: BoxDecoration(
-                              color: Colors.grey.shade200,
-                              borderRadius: BorderRadius.circular(4),
                             ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(4),
-                              child: LayoutBuilder(
-                                builder: (_, constraints) {
-                                  final w = constraints.maxWidth * ratio;
-                                  return Stack(
-                                    children: [
-                                      if (w > 0)
-                                        Container(
-                                          width: w,
-                                          decoration: BoxDecoration(
-                                            color: barColor,
-                                          ),
-                                        ),
-                                    ],
-                                  );
+                            Text(
+                              'admin.apartments_occupancy_days'.tr(
+                                namedArgs: {
+                                  'occupied': '$occupied',
+                                  'total': '$total',
                                 },
                               ),
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey.shade800,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Container(
+                          height: 6,
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade200,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: LayoutBuilder(
+                              builder: (_, constraints) {
+                                final w = constraints.maxWidth * ratio;
+                                return Stack(
+                                  children: [
+                                    if (w > 0)
+                                      Container(
+                                        width: w,
+                                        decoration: BoxDecoration(
+                                          color: barColor,
+                                        ),
+                                      ),
+                                  ],
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                  loading: () => const SizedBox(
+                    height: 6,
+                    child: LinearProgressIndicator(),
+                  ),
+                  error: (e, st) => const SizedBox.shrink(),
+                ),
+                if (apartment.ownerNotes != null &&
+                    apartment.ownerNotes!.trim().isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.warning_amber_rounded,
+                            size: 18,
+                            color: Colors.orange.shade700,
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              apartment.ownerNotes!.trim(),
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.orange.shade800,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
                         ],
                       ),
-                    );
-                  },
-                  loading: () => const Padding(
-                    padding: EdgeInsets.only(top: 12),
-                    child: SizedBox(
-                      height: 6,
-                      child: LinearProgressIndicator(),
-                    ),
-                  ),
-                  error: (e, st) => const SizedBox.shrink(),
-                ),
-                // Kritické poznámky majitele musí být pro dispečera okamžitě viditelné.
-                if (apartment.ownerNotes != null &&
-                    apartment.ownerNotes!.trim().isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.amber.shade50,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Icon(
-                          Icons.warning_amber_rounded,
-                          size: 18,
-                          color: Colors.amber.shade800,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            apartment.ownerNotes!.trim(),
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontStyle: FontStyle.italic,
-                              color: Colors.amber.shade900,
-                            ),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
                     ),
                   ),
                 ],
               ],
             ),
           ),
-        ),
+          // 3. Pravý sloupec – status pilulka a tlačítko smazání
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildStatusBadge(status),
+              const SizedBox(height: 8),
+              IconButton(
+                onPressed: () => onDelete(apartment),
+                icon: Icon(
+                  Icons.delete_outline,
+                  color: Colors.red.shade700,
+                ),
+                tooltip: 'admin.apartments_delete'.tr(),
+                style: IconButton.styleFrom(
+                  backgroundColor: Colors.red.shade50,
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -2144,7 +2074,6 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
               child: Text('common.cancel'.tr()),
             ),
             FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
               onPressed: () => Navigator.pop(ctx, true),
               child: Text('admin.owners_remove'.tr()),
             ),

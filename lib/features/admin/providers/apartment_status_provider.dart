@@ -85,7 +85,7 @@ String getApartmentStatusForToday(
 final apartmentStatusProvider =
     Provider.family<String, String>((ref, apartmentId) {
   final reservations = ref.watch(adminReservationsProvider);
-  final tasks = ref.watch(adminTasksProvider);
+  final tasks = ref.watch(adminTasksStreamProvider);
 
   return reservations.when(
     data: (resList) {

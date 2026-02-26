@@ -7,6 +7,7 @@ import 'package:isar/isar.dart';
 import 'package:falconest/core/database/isar_service.dart';
 import 'package:falconest/core/database/models/pending_mutation_local.dart';
 import 'package:falconest/core/offline/offline_cash_collection_processor.dart';
+import 'package:falconest/core/offline/offline_company_expense_processor.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
 /// Mobilní implementace MutationQueueService – zapisuje do Isar, odesílá při processQueue.
@@ -73,6 +74,9 @@ class MutationQueueService {
         switch (m.actionType.toUpperCase()) {
           case 'OFFLINE_CASH_COLLECTION':
             await processOfflineCashCollection(payload);
+            break;
+          case 'OFFLINE_COMPANY_EXPENSE':
+            await processOfflineCompanyExpense(payload);
             break;
           case 'INSERT':
             await SupabaseService.client.from(m.tableName).insert(payload);

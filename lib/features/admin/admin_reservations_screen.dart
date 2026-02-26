@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/audit/enterprise_audit_payload.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/presentation/widgets/app_card.dart';
 import 'package:falconest/core/services/audit_log_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/admin_reservation_forms.dart';
@@ -111,7 +112,6 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
     final reservationsAsync = ref.watch(adminReservationsProvider);
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
       body: reservationsAsync.when(
         data: (reservations) {
           final filtered = _computeFiltered(reservations);
@@ -275,7 +275,6 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
             child: Text('admin.reservations_cancel'.tr()),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
             onPressed: () => _doDelete(ctx, ref, reservation),
             child: Text('admin.reservations_delete'.tr()),
           ),
@@ -443,9 +442,6 @@ class _TopActionBar extends StatelessWidget {
             onPressed: onAdd,
             icon: const Icon(Icons.add, size: 20),
             label: Text('admin.fab_new_reservation'.tr()),
-            style: FilledButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-            ),
           ),
         ],
       ),
@@ -1275,14 +1271,7 @@ class _KanbanReservationCard extends StatelessWidget {
         ),
         childWhenDragging: Opacity(
           opacity: 0.5,
-          child: Card(
-            elevation: 0,
-            color: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: BorderSide(color: Colors.grey.shade300),
-            ),
-            margin: EdgeInsets.zero,
+          child: AppCard(
             child: _KanbanCardContent(
               reservation: reservation,
               showDelete: true,
@@ -1290,22 +1279,12 @@ class _KanbanReservationCard extends StatelessWidget {
             ),
           ),
         ),
-        child: Card(
-          elevation: 0,
-          color: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-            side: BorderSide(color: Colors.grey.shade300),
-          ),
-          margin: EdgeInsets.zero,
-          child: InkWell(
-            onTap: () => onEdit(reservation),
-            borderRadius: BorderRadius.circular(12),
-            child: _KanbanCardContent(
-              reservation: reservation,
-              showDelete: true,
-              onDelete: () => onDelete(reservation),
-            ),
+        child: AppCard(
+          onTap: () => onEdit(reservation),
+          child: _KanbanCardContent(
+            reservation: reservation,
+            showDelete: true,
+            onDelete: () => onDelete(reservation),
           ),
         ),
       ),
@@ -1540,17 +1519,10 @@ class _ReservationCard extends StatelessWidget {
         ? 'admin.reservations_nights'.tr(namedArgs: {'count': nights.toString()})
         : null;
 
-    return Card(
-      elevation: 1,
-      shadowColor: Colors.black12,
-      margin: EdgeInsets.zero,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      child: InkWell(
-        onTap: () => onEdit(reservation),
-        borderRadius: BorderRadius.circular(10),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Row(
+    return AppCard(
+      onTap: () => onEdit(reservation),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Expanded(
@@ -1646,8 +1618,6 @@ class _ReservationCard extends StatelessWidget {
               ),
             ],
           ),
-        ),
-      ),
     );
   }
 }

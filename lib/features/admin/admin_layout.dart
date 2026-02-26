@@ -4,7 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/models/notification_model.dart';
+import 'package:falconest/core/providers/notification_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/features/settings/providers/profile_provider.dart';
 import 'package:falconest/features/admin/admin_apartments_screen.dart';
 import 'package:falconest/features/admin/admin_dashboard_screen.dart';
 import 'package:falconest/features/admin/admin_reservations_screen.dart';
@@ -64,6 +67,9 @@ class AdminLayout extends StatefulWidget {
 class _AdminLayoutState extends State<AdminLayout> {
   int _selectedIndex = adminTabIndexDashboard;
 
+  /// Stav kolapsu levého menu – true = zobrazeno, false = skryto (široký layout).
+  bool _isSidebarOpen = true;
+
   /// Tělo obsahu – IndexedStack drží všechny obrazovky, přepíná podle výběru.
   /// Zachovává stav při přepnutí záložky (scroll, formuláře).
   static final List<Widget> _screens = [
@@ -119,6 +125,8 @@ class _AdminLayoutState extends State<AdminLayout> {
               final isWide = constraints.maxWidth >= _breakpointWidth;
               final body = isWide
                   ? _WideLayout(
+                      isSidebarOpen: _isSidebarOpen,
+                      onSidebarToggle: () => setState(() => _isSidebarOpen = !_isSidebarOpen),
                       selectedIndex: _selectedIndex,
                       onIndexChanged: (i) => setState(() => _selectedIndex = i),
                       body: IndexedStack(
@@ -233,6 +241,342 @@ class _ImpersonationBanner extends StatelessWidget {
   }
 }
 
+/// Zvoneček s Badge – poslouchá Realtime stream nepřečtených notifikací.
+///
+/// PROČ: Zde posloucháme Realtime stream ze Supabase. Jakmile uklízečka v terénu
+/// vygeneruje alert, UI se okamžitě překreslí díky Riverpod streamu.
+class _NotificationsBell extends ConsumerWidget {
+  const _NotificationsBell();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final unreadAsync = ref.watch(unreadNotificationsProvider);
+    final notifications = unreadAsync.valueOrNull ?? [];
+    final count = notifications.length;
+
+    Widget icon = Icon(Icons.notifications_none_outlined);
+    if (count > 0) {
+      icon = Badge(
+        label: Text(
+          count > 99 ? '99+' : count.toString(),
+          style: const TextStyle(fontSize: 10),
+        ),
+        child: icon,
+      );
+    }
+
+    return IconButton(
+      icon: icon,
+      onPressed: () => _NotificationsPanelDialog.show(context),
+      tooltip: 'admin.topbar_notifications'.tr(),
+    );
+  }
+}
+
+/// Dialog s panelem nepřečtených notifikací – Realtime aktualizace při markAsRead.
+///
+/// Po kliknutí na položku se zavolá markAsRead(id), stream se aktualizuje a položka vizuálně zmizí.
+class _NotificationsPanelDialog extends ConsumerWidget {
+  const _NotificationsPanelDialog();
+
+  static void show(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (context) => const _NotificationsPanelDialog(),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final unreadAsync = ref.watch(unreadNotificationsProvider);
+    final notifications = unreadAsync.valueOrNull ?? [];
+    final repository = ref.read(notificationRepositoryProvider);
+
+    return AlertDialog(
+      title: Text('admin.notifications_title'.tr()),
+      content: SizedBox(
+        width: 340,
+        child: unreadAsync.isLoading
+            ? const Center(child: Padding(
+                padding: EdgeInsets.all(24),
+                child: CircularProgressIndicator(),
+              ))
+            : notifications.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 24),
+                    child: Text(
+                      'admin.notifications_empty'.tr(),
+                      style: TextStyle(color: Colors.grey.shade600),
+                      textAlign: TextAlign.center,
+                    ),
+                  )
+                : ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 400),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: notifications.length,
+                      itemBuilder: (context, index) {
+                        final n = notifications[index];
+                        return _NotificationTile(
+                          notification: n,
+                          onTap: () async {
+                            await repository.markAsRead(n.id);
+                          },
+                        );
+                      },
+                    ),
+                  ),
+      ),
+    );
+  }
+}
+
+/// Jedna položka v seznamu notifikací – title (tučně), message (šedě), čas.
+class _NotificationTile extends StatelessWidget {
+  const _NotificationTile({
+    required this.notification,
+    required this.onTap,
+  });
+
+  final NotificationModel notification;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final timeStr = notification.createdAt != null
+        ? DateFormat('d.M. HH:mm').format(notification.createdAt!.toLocal())
+        : '—';
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Text(
+                      notification.title,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    timeStr,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.grey.shade600,
+                          fontSize: 11,
+                        ),
+                  ),
+                ],
+              ),
+              if (notification.message.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  notification.message,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.grey.shade600,
+                        fontSize: 13,
+                      ),
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Globální Top Bar (header) – hamburger pro sidebar, ikony kalendář/notifikace, profil s PopupMenu.
+class _AdminTopBar extends ConsumerWidget {
+  const _AdminTopBar({required this.onMenuTap});
+
+  final VoidCallback onMenuTap;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final auth = ref.watch(authNotifierProvider);
+    final profileAsync = ref.watch(currentUserProfileProvider);
+    final profile = profileAsync.valueOrNull;
+    final role = auth.state.role;
+    final isImpersonating = auth.state.isImpersonating;
+
+    final displayName = (profile?.name ?? '').trim().isNotEmpty
+        ? profile!.name
+        : (profile?.email ?? '').split('@').first;
+    final initials = _initials(displayName, profile?.email ?? '');
+
+    final roleLabel = _roleLabel(context, role);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        bottom: false,
+        child: Row(
+          children: [
+            IconButton(
+              icon: const Icon(Icons.menu),
+              onPressed: onMenuTap,
+              tooltip: 'admin.topbar_menu'.tr(),
+            ),
+            const Spacer(),
+            IconButton(
+              icon: const Icon(Icons.calendar_today_outlined),
+              onPressed: () {
+                AdminTabScope.of(context)?.call(adminTabIndexPlanningCalendar);
+              },
+              tooltip: 'admin.topbar_calendar'.tr(),
+            ),
+            _NotificationsBell(),
+            const SizedBox(width: 8),
+            PopupMenuButton<String>(
+              offset: const Offset(0, 48),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                      child: Text(
+                        initials,
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Theme.of(context).colorScheme.onPrimaryContainer,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          displayName.isNotEmpty ? displayName : '—',
+                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                        ),
+                        Text(
+                          roleLabel,
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: Colors.grey.shade600,
+                              ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(width: 4),
+                    Icon(Icons.arrow_drop_down, color: Colors.grey.shade600),
+                  ],
+                ),
+              ),
+              itemBuilder: (context) => [
+                PopupMenuItem<String>(
+                  value: 'settings',
+                  child: Row(
+                    children: [
+                      Icon(Icons.settings, size: 20, color: Colors.grey.shade700),
+                      const SizedBox(width: 12),
+                      Text('settings.menu_settings'.tr()),
+                    ],
+                  ),
+                ),
+                PopupMenuItem<String>(
+                  value: isImpersonating ? 'back' : 'logout',
+                  child: Row(
+                    children: [
+                      Icon(
+                        isImpersonating ? Icons.arrow_back : Icons.logout,
+                        size: 20,
+                        color: isImpersonating
+                            ? Colors.orange.shade700
+                            : Colors.red.shade700,
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        isImpersonating
+                            ? 'admin.back_to_command_center'.tr()
+                            : 'admin.menu_logout'.tr(),
+                        style: TextStyle(
+                          color: isImpersonating
+                              ? Colors.orange.shade700
+                              : Colors.red.shade700,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              onSelected: (value) async {
+                if (value == 'settings') {
+                  SettingsModal.show(context);
+                } else if (value == 'back') {
+                  await auth.stopImpersonating();
+                  if (context.mounted) context.go('/super-admin');
+                } else if (value == 'logout') {
+                  await SupabaseService.client.auth.signOut();
+                  if (context.mounted) context.go('/');
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _initials(String name, String email) {
+    if (name.isNotEmpty) {
+      final parts = name.trim().split(RegExp(r'\s+'));
+      if (parts.length >= 2) {
+        final a = parts.first.isNotEmpty ? parts.first[0] : '';
+        final b = parts.last.isNotEmpty ? parts.last[0] : '';
+        return '${a.toUpperCase()}${b.toUpperCase()}';
+      }
+      return name.substring(0, 1).toUpperCase();
+    }
+    if (email.isNotEmpty) {
+      return email.substring(0, 1).toUpperCase();
+    }
+    return '?';
+  }
+
+  String _roleLabel(BuildContext context, String? role) {
+    if (role == null || role.isEmpty) return 'settings.profile_tenant_none'.tr();
+    final key = 'settings.profile_role_${role.toLowerCase()}';
+    final translated = key.tr();
+    return translated != key ? translated : role;
+  }
+}
+
 /// Pruh s oznámením systému (Megafon) – modré pozadí, bílý text, ikona campaign.
 class _SystemAnnouncementBanner extends StatelessWidget {
   const _SystemAnnouncementBanner({required this.message});
@@ -266,29 +610,44 @@ class _SystemAnnouncementBanner extends StatelessWidget {
   }
 }
 
-/// Layout pro široké obrazovky – stálý Sidebar + IndexedStack s obsahem.
-class _WideLayout extends StatelessWidget {
+/// Layout pro široké obrazovky – Sidebar (skrývání) + Top Bar + IndexedStack s obsahem.
+class _WideLayout extends ConsumerWidget {
   const _WideLayout({
+    required this.isSidebarOpen,
+    required this.onSidebarToggle,
     required this.selectedIndex,
     required this.onIndexChanged,
     required this.body,
   });
 
+  final bool isSidebarOpen;
+  final VoidCallback onSidebarToggle;
   final int selectedIndex;
   final ValueChanged<int> onIndexChanged;
   final Widget body;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
       body: Row(
         children: [
-          _AdminSidebar(
-            isDrawer: false,
-            selectedIndex: selectedIndex,
-            onIndexChanged: onIndexChanged,
+          if (isSidebarOpen)
+            _AdminSidebar(
+              isDrawer: false,
+              selectedIndex: selectedIndex,
+              onIndexChanged: onIndexChanged,
+            ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _AdminTopBar(
+                  onMenuTap: onSidebarToggle,
+                ),
+                Expanded(child: body),
+              ],
+            ),
           ),
-          Expanded(child: body),
         ],
       ),
     );
@@ -321,6 +680,11 @@ class _NarrowLayout extends ConsumerWidget {
         ),
         actions: [
           IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'settings.menu_settings'.tr(),
+            onPressed: () => SettingsModal.show(context),
+          ),
+          IconButton(
             icon: Icon(isImpersonating ? Icons.arrow_back : Icons.logout),
             tooltip: isImpersonating
                 ? 'admin.back_to_command_center'.tr()
@@ -338,6 +702,7 @@ class _NarrowLayout extends ConsumerWidget {
         ],
       ),
       drawer: Drawer(
+        backgroundColor: Theme.of(context).colorScheme.primary,
         child: _AdminSidebar(
           isDrawer: true,
           selectedIndex: selectedIndex,
@@ -379,27 +744,55 @@ class _AdminSidebar extends ConsumerWidget {
       return true;
     }).toList();
 
+    final tenantName = ref.watch(currentTenantNameProvider).valueOrNull ?? '';
+    final headerTitle = tenantName.trim().isNotEmpty ? tenantName : 'admin.title'.tr();
+    final primaryColor = Theme.of(context).colorScheme.primary;
+
     return SafeArea(
-      child: SizedBox(
+      child: Container(
         width: 240,
+        color: primaryColor,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (!isDrawer)
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Text(
-                  'admin.title'.tr(),
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
+            // Hlavička s brandem agentury – název tenantů, pod ním "Powered by FalcoNest"
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    headerTitle,
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'admin.sidebar_powered_by'.tr(),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.white.withValues(alpha: 0.6),
+                    ),
+                  ),
+                ],
               ),
-            const Divider(height: 1),
+            ),
+            const Divider(color: Colors.white24, height: 32),
             if (modulesAsync.isLoading)
-              const Padding(
-                padding: EdgeInsets.all(24),
-                child: Center(child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))),
+              Padding(
+                padding: const EdgeInsets.all(24),
+                child: Center(
+                  child: SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white70,
+                    ),
+                  ),
+                ),
               )
             else
               ...visibleModules.map((module) {
@@ -442,18 +835,6 @@ class _AdminSidebar extends ConsumerWidget {
                 );
               }),
             const Spacer(),
-            const Divider(height: 1),
-            ListTile(
-              leading: Icon(Icons.settings, size: 22),
-              title: Text('settings.menu_settings'.tr()),
-              onTap: () {
-                if (isDrawer && Scaffold.maybeOf(context)?.isDrawerOpen == true) {
-                  Navigator.of(context).pop();
-                }
-                SettingsModal.show(context);
-              },
-            ),
-            const _LogoutTile(),
           ],
         ),
       ),
@@ -467,7 +848,7 @@ class _AdminSidebar extends ConsumerWidget {
 }
 
 /// Jedna položka menu modulu – aktivní (klikatelná), „ghost“ (jen pro admina), nebo zamčená (šedá + 🔒).
-/// [isGhost]: true = tenant modul nemá, ale super admin ho vidí – vizuální odlišení (oranžová/šedá + badge + tooltip).
+/// Tmavý sidebar: světlé texty/ikony (white70/white), aktivní položka má bílý text + jemné pozadí.
 class _ModuleNavItem extends StatelessWidget {
   const _ModuleNavItem({
     required this.module,
@@ -494,12 +875,15 @@ class _ModuleNavItem extends StatelessWidget {
     final tabIndex = ModuleIconMapper.getTabIndex(module.key);
     final selected = isActive && tabIndex != null && tabIndex == selectedIndex;
     final icon = ModuleIconMapper.getIcon(module.key);
-    final primary = Theme.of(context).colorScheme.primary;
-    final muted = Colors.grey.shade600;
-    final ghostColor = Colors.orange.shade700;
+    // Tmavý sidebar – světlé barvy pro čitelnost
+    const normalColor = Colors.white70;
+    const selectedColor = Colors.white;
+    final ghostColor = Colors.orange.shade300;
+    const lockedColor = Colors.white38;
 
     if (isActive) {
-      final titleColor = isGhost ? ghostColor : (selected ? primary : null);
+      final textColor = isGhost ? ghostColor : (selected ? selectedColor : normalColor);
+      final iconColor = isGhost ? ghostColor : (selected ? selectedColor : normalColor);
       final titleWidget = Row(
         children: [
           Expanded(
@@ -507,7 +891,7 @@ class _ModuleNavItem extends StatelessWidget {
               label,
               style: TextStyle(
                 fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-                color: titleColor ?? Theme.of(context).colorScheme.onSurface,
+                color: textColor,
                 fontSize: 15,
               ),
               overflow: TextOverflow.ellipsis,
@@ -521,83 +905,52 @@ class _ModuleNavItem extends StatelessWidget {
         ],
       );
       final tile = ListTile(
-        leading: Icon(icon, color: selected ? primary : (isGhost ? ghostColor : null), size: 22),
+        leading: Icon(icon, color: iconColor, size: 22),
         title: titleWidget,
         onTap: onTapActive,
       );
-      return isGhost
+      final wrapped = isGhost
           ? Tooltip(
               message: 'admin.module_ghost_tooltip'.tr(),
               child: tile,
             )
           : tile;
-    }
-
-    return ListTile(
-      leading: Icon(icon, color: muted, size: 22),
-      title: Row(
-        children: [
-          Expanded(
-            child: Text(
-              label,
-              style: TextStyle(color: muted, fontSize: 15),
+      // Aktivní položka: jemné pozadí + zaoblené rohy pro výraznou vizuální odezvu
+      if (selected && !isGhost) {
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(8),
             ),
+            child: wrapped,
           ),
-          Icon(Icons.lock_outline, size: 16, color: muted),
-        ],
-      ),
-      onTap: onTapLocked,
-    );
-  }
-}
-
-/// Tlačítko Odhlásit se, nebo „Zpět do Velína“ při režimu převtělení.
-class _LogoutTile extends ConsumerWidget {
-  const _LogoutTile();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final auth = ref.watch(authNotifierProvider);
-    final isImpersonating = auth.state.isImpersonating;
-
-    if (isImpersonating) {
-      return ListTile(
-        leading: Icon(Icons.arrow_back, color: Colors.orange.shade700, size: 22),
-        title: Text(
-          'admin.back_to_command_center'.tr(),
-          style: TextStyle(
-            fontSize: 15,
-            color: Colors.orange.shade700,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        onTap: () async {
-          if (Scaffold.of(context).isDrawerOpen) {
-            Navigator.of(context).pop();
-          }
-          await auth.stopImpersonating();
-          if (context.mounted) context.go('/super-admin');
-        },
+        );
+      }
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        child: wrapped,
       );
     }
 
-    return ListTile(
-      leading: Icon(Icons.logout, color: Colors.red.shade400, size: 22),
-      title: Text(
-        'admin.menu_logout'.tr(),
-        style: TextStyle(
-          fontSize: 15,
-          color: Colors.red.shade400,
-          fontWeight: FontWeight.w600,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      child: ListTile(
+        leading: Icon(icon, color: lockedColor, size: 22),
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                style: const TextStyle(color: lockedColor, fontSize: 15),
+              ),
+            ),
+            Icon(Icons.lock_outline, size: 16, color: lockedColor),
+          ],
         ),
+        onTap: onTapLocked,
       ),
-      onTap: () async {
-        if (Scaffold.of(context).isDrawerOpen) {
-          Navigator.of(context).pop();
-        }
-        await SupabaseService.client.auth.signOut();
-        if (context.mounted) context.go('/');
-      },
     );
   }
 }

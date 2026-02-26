@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 
 import 'package:falconest/core/offline/mutation_queue_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
@@ -87,6 +87,15 @@ class CashWalletRepository {
           .from('employee_cash_wallets')
           .update({'balance': newBalance, 'updated_at': DateTime.now().toUtc().toIso8601String()})
           .eq('id', walletId);
+
+      // PROČ: Informujeme dispečink o pohybu hotovosti. Zabaleno v try-catch,
+      // aby případný výpadek notifikací neshodil finanční transakci.
+      await _sendAdminNotification(
+        tenantId: tenantId,
+        profileId: profileId,
+        title: 'Nová hotovost',
+        message: 'Pracovník právě zaznamenal příjem ${amount.toStringAsFixed(2)} EUR.',
+      );
     } catch (e) {
       if (!kIsWeb && MutationQueueService.isNetworkError(e)) {
         // PROČ: Peníze se nesmí ztratit. Pokud jsme offline, uložíme výběr do fronty
@@ -99,6 +108,98 @@ class CashWalletRepository {
             'profile_id': profileId,
             'task_id': taskId,
             'amount': amount,
+          },
+        );
+        return;
+      }
+      rethrow;
+    }
+  }
+
+  /// Zaznamená firemní výdaj z hotovosti u zaměstnance (např. nákup materiálu).
+  ///
+  /// Provede: (a) nalezení peněženky pro (tenantId, profileId), (b) vložení transakce
+  /// COMPANY_EXPENSE se zápornou částkou, (c) snížení balance.
+  /// Při síťové chybě (offline) uloží do MutationQueueService a vrací bez výjimky.
+  ///
+  /// [profileId] – profiles.id zaměstnance, který výdaj provedl (utrácí z vlastní kapsy).
+  /// [amount] – kladná částka výdaje (do DB se ukládá jako záporná).
+  /// [note] – povinná poznámka (např. „Materiál na úklid“).
+  /// [receiptImageUrl] – volitelná URL fotky účtenky.
+  Future<void> recordCompanyExpense({
+    required String tenantId,
+    required String profileId,
+    required double amount,
+    required String note,
+    String? receiptImageUrl,
+  }) async {
+    if (amount <= 0) return;
+    final noteTrimmed = note.trim();
+    if (noteTrimmed.isEmpty) return;
+
+    try {
+      final client = SupabaseService.client;
+
+      // (a) Nalezení peněženky – u firemního výdaje musí existovat (utrácíme z kapsy)
+      final existing = await client
+          .from('employee_cash_wallets')
+          .select('id, balance')
+          .eq('tenant_id', tenantId)
+          .eq('profile_id', profileId)
+          .maybeSingle();
+
+      if (existing == null) return; // Bez peněženky nelze utrácet
+
+      final walletId = existing['id'] as String;
+      final currentBalance = _toDouble(existing['balance']) ?? 0;
+      if (currentBalance < amount) return; // Nedostatečný zůstatek
+
+      // PROČ: Částka výdaje musí být záporná, protože snižuje hotovost,
+      // kterou má pracovník u sebe. V účetní knize záporné = odliv peněz.
+      final negativeAmount = -amount;
+
+      // (b) Vložení transakce COMPANY_EXPENSE do účetní knihy
+      await client.from('employee_cash_transactions').insert({
+        'tenant_id': tenantId,
+        'wallet_id': walletId,
+        'task_id': null,
+        'amount': negativeAmount,
+        'transaction_type': 'COMPANY_EXPENSE',
+        'note': noteTrimmed,
+        if (receiptImageUrl != null && receiptImageUrl.trim().isNotEmpty)
+          'receipt_image_url': receiptImageUrl.trim(),
+        'created_by': profileId,
+      });
+
+      // (c) Snížení balance v peněžence
+      final newBalance = currentBalance - amount;
+      await client
+          .from('employee_cash_wallets')
+          .update({'balance': newBalance, 'updated_at': DateTime.now().toUtc().toIso8601String()})
+          .eq('id', walletId);
+
+      // PROČ: Informujeme dispečink o pohybu hotovosti. Zabaleno v try-catch,
+      // aby případný výpadek notifikací neshodil finanční transakci.
+      await _sendAdminNotification(
+        tenantId: tenantId,
+        profileId: profileId,
+        title: 'Nový firemní výdaj',
+        message: 'Pracovník zadal výdaj ${amount.toStringAsFixed(2)} EUR. Poznámka: $noteTrimmed',
+      );
+    } catch (e) {
+      if (!kIsWeb && MutationQueueService.isNetworkError(e)) {
+        // PROČ: Firemní výdaj se nesmí ztratit. Pokud jsme offline, uložíme do fronty
+        // a Sync Engine po návratu sítě provede celý flow.
+        await MutationQueueService.instance.enqueueMutation(
+          table: 'employee_cash_transactions',
+          action: 'OFFLINE_COMPANY_EXPENSE',
+          payload: {
+            'tenant_id': tenantId,
+            'profile_id': profileId,
+            'amount': amount,
+            'note': noteTrimmed,
+            if (receiptImageUrl != null && receiptImageUrl.trim().isNotEmpty)
+              'receipt_image_url': receiptImageUrl.trim(),
           },
         );
         return;
@@ -180,9 +281,131 @@ class CashWalletRepository {
     return rows;
   }
 
+  /// Realtime stream peněženek zaměstnanců pro daného tenanta.
+  ///
+  /// PROČ: Realtime stream pro okamžitou synchronizaci stavu peněženky mezi terénem
+  /// a dispečinkem (Supabase WebSockets). Výběr hotovosti uklízečkou se v administraci
+  /// projeví bez nutnosti F5.
+  ///
+  /// OMEZENÍ: Stream vrací surové řádky bez JOIN na profiles – obohacení o jméno
+  /// provede provider (nameByProfileId z adminTeamProvider).
+  Stream<List<Map<String, dynamic>>> watchWalletsRaw(String tenantId) {
+    if (tenantId.isEmpty) return Stream.value([]);
+
+    return SupabaseService.client
+        .from('employee_cash_wallets')
+        .stream(primaryKey: ['id'])
+        .inFilter('tenant_id', [tenantId])
+        .map((List<Map<String, dynamic>> rows) {
+          rows.sort((a, b) {
+            final aBal = _toDouble(a['balance']) ?? 0;
+            final bBal = _toDouble(b['balance']) ?? 0;
+            if (bBal > 0 && aBal <= 0) return 1;
+            if (aBal > 0 && bBal <= 0) return -1;
+            return (bBal - aBal).sign.toInt();
+          });
+          return rows;
+        });
+  }
+
+  /// Realtime stream transakcí (výběry, odevzdání) pro daného tenanta.
+  ///
+  /// PROČ: Realtime stream pro okamžitou synchronizaci stavu peněženky mezi terénem
+  /// a dispečinkem (Supabase WebSockets). Pro historii transakcí v budoucím UI.
+  Stream<List<Map<String, dynamic>>> watchTransactionsRaw(String tenantId) {
+    if (tenantId.isEmpty) return Stream.value([]);
+
+    return SupabaseService.client
+        .from('employee_cash_transactions')
+        .stream(primaryKey: ['id'])
+        .inFilter('tenant_id', [tenantId])
+        .map((List<Map<String, dynamic>> rows) {
+          rows.sort((a, b) {
+            final aT = a['created_at']?.toString() ?? '';
+            final bT = b['created_at']?.toString() ?? '';
+            return bT.compareTo(aT);
+          });
+          return rows;
+        });
+  }
+
+  /// Realtime stream transakcí pro konkrétní peněženku zaměstnance.
+  ///
+  /// PROČ: Detail peněženky v Admin UI – historie výběrů, odevzdání a firemních výdajů.
+  /// Nové transakce z terénu se zobrazí okamžitě bez refreshe.
+  /// Filtrujeme podle wallet_id v map – stream API podporuje jen jeden inFilter.
+  Stream<List<Map<String, dynamic>>> watchTransactionsRawForWallet(
+    String tenantId,
+    String walletId,
+  ) {
+    if (tenantId.isEmpty || walletId.isEmpty) return Stream.value([]);
+
+    return SupabaseService.client
+        .from('employee_cash_transactions')
+        .stream(primaryKey: ['id'])
+        .inFilter('tenant_id', [tenantId])
+        .map((List<Map<String, dynamic>> rows) {
+          final filtered =
+              rows.where((r) => (r['wallet_id']?.toString() ?? '') == walletId).toList();
+          filtered.sort((a, b) {
+            final aT = a['created_at']?.toString() ?? '';
+            final bT = b['created_at']?.toString() ?? '';
+            return bT.compareTo(aT);
+          });
+          return filtered;
+        });
+  }
+
   double? _toDouble(dynamic v) {
     if (v == null) return null;
     if (v is num) return v.toDouble();
     return double.tryParse(v.toString());
+  }
+
+  /// Odešle notifikaci všem adminům/manažerům dané agentury.
+  ///
+  /// PROČ: Informujeme dispečink o pohybu hotovosti (výběr od hosta, firemní výdaj).
+  /// Zabaleno v try-catch – selhání notifikací nikdy nesmí zabránit uložení peněz.
+  Future<void> _sendAdminNotification({
+    required String tenantId,
+    required String profileId,
+    required String title,
+    required String message,
+  }) async {
+    try {
+      final client = SupabaseService.client;
+      // Načtení IDs všech adminů a manažerů agentury (dispečerů s přístupem do administrace)
+      final adminsRes = await client
+          .from('profiles')
+          .select('id')
+          .eq('tenant_id', tenantId)
+          .inFilter('role', ['admin', 'manager'])
+          .isFilter('deleted_at', null);
+
+      final admins = List<dynamic>.from(adminsRes as List);
+      if (admins.isEmpty) return;
+
+      final payloads = <Map<String, dynamic>>[];
+      for (final a in admins) {
+        final m = Map<String, dynamic>.from(a as Map);
+        final adminId = (m['id'] as String?)?.trim();
+        if (adminId == null || adminId.isEmpty) continue;
+        payloads.add({
+          'tenant_id': tenantId,
+          'profile_id': adminId,
+          'title': title,
+          'message': message,
+          'type': 'finance',
+        });
+      }
+      if (payloads.isEmpty) return;
+
+      await client.from('notifications').insert(payloads);
+    } catch (e) {
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('CashWalletRepository: Nepodařilo se odeslat notifikaci adminům: $e');
+      }
+    }
   }
 }

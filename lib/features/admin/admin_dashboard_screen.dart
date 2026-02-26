@@ -3,6 +3,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/presentation/widgets/app_card.dart';
 import 'package:falconest/features/admin/admin_layout.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
@@ -20,7 +21,7 @@ class AdminDashboardScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final tasksAsync = ref.watch(adminTasksProvider);
+    final tasksAsync = ref.watch(adminTasksStreamProvider);
     final reservationsAsync = ref.watch(adminReservationsProvider);
     final apartmentsAsync = ref.watch(apartmentsProvider);
     final teamAsync = ref.watch(adminTeamProvider);
@@ -32,7 +33,6 @@ class AdminDashboardScreen extends ConsumerWidget {
         apartmentsAsync.isLoading ||
         teamAsync.isLoading) {
       return const Scaffold(
-        backgroundColor: Color(0xFFF5F5F5),
         body: Center(child: CircularProgressIndicator()),
       );
     }
@@ -49,7 +49,6 @@ class AdminDashboardScreen extends ConsumerWidget {
                   ? apartmentsAsync.error.toString()
                   : teamAsync.error.toString();
       return Scaffold(
-        backgroundColor: const Color(0xFFF5F5F5),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
@@ -127,7 +126,6 @@ class AdminDashboardScreen extends ConsumerWidget {
     }
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
       body: LayoutBuilder(
         builder: (context, constraints) {
           final double horizontalPadding = constraints.maxWidth * 0.025;
@@ -382,19 +380,8 @@ class _KpiCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return AppCard(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
       child: Stack(
         clipBehavior: Clip.none,
         children: [

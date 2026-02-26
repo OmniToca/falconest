@@ -1840,7 +1840,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
   @override
   Widget build(BuildContext context) {
     final apartmentsAsync = ref.watch(apartmentsProvider);
-    final tasksAsync = ref.watch(adminTasksProvider);
+    final tasksAsync = ref.watch(adminTasksStreamProvider);
 
     return ModernAdminPanel(
       title: 'admin.reservations_edit'.tr(),

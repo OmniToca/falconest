@@ -1,15 +1,199 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/models/cash_transaction_ui_model.dart';
 import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 
-/// Načte seznam peněženek zaměstnanců (Zaměstnanecká pokladna) pro aktuální tenanta.
-final employeeCashWalletsProvider = FutureProvider<List<EmployeeCashWalletRow>>((ref) async {
+/// Realtime stream peněženek zaměstnanců (Zaměstnanecká pokladna) pro aktuální tenanta.
+///
+/// PROČ: Výběr hotovosti uklízečkou v terénu se v administraci projeví okamžitě bez F5.
+/// Supabase WebSockets zajišťují push aktualizaci stavu balance.
+final employeeCashWalletsProvider =
+    StreamProvider<List<EmployeeCashWalletRow>>((ref) async* {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
-  if (tenantId == null || tenantId.isEmpty) return [];
-  return CashWalletRepository.instance.fetchWalletsForTenant(tenantId);
+  if (tenantId == null || tenantId.isEmpty) {
+    yield [];
+    return;
+  }
+
+  final team = await ref.watch(adminTeamProvider.future);
+  final nameByProfileId = <String, String>{};
+  for (final m in team) {
+    final pid = m.profileId ?? m.id;
+    if (pid.isNotEmpty) nameByProfileId[pid] = m.name;
+  }
+
+  await for (final rawList
+      in CashWalletRepository.instance.watchWalletsRaw(tenantId)) {
+    final rows = rawList.map((raw) {
+      final id = (raw['id'] as String?)?.trim() ?? '';
+      final profileId = (raw['profile_id'] as String?)?.trim() ?? '';
+      final balance = _toDouble(raw['balance']) ?? 0;
+      final workerName = nameByProfileId[profileId] ?? '—';
+      return EmployeeCashWalletRow(
+        id: id,
+        profileId: profileId,
+        balance: balance,
+        workerName: workerName,
+      );
+    }).toList();
+    yield rows;
+  }
 });
+
+double? _toDouble(dynamic v) {
+  if (v == null) return null;
+  if (v is num) return v.toDouble();
+  return double.tryParse(v.toString());
+}
+
+/// Peněženka aktuálně přihlášeného pracovníka (Worker UI).
+///
+/// BEZPEČNOST: Filtrujeme striktně podle profile_id přihlášeného uživatele.
+/// Pracovník nikdy nevidí peněženky ostatních.
+final myCashWalletProvider =
+    StreamProvider<EmployeeCashWalletRow?>((ref) async* {
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  final profileId = ref.watch(authNotifierProvider).state.profileId;
+  if (tenantId == null || tenantId.isEmpty || profileId == null || profileId.isEmpty) {
+    yield null;
+    return;
+  }
+
+  await for (final rawList
+      in CashWalletRepository.instance.watchWalletsRaw(tenantId)) {
+    final match = rawList.cast<Map<String, dynamic>>().where((raw) {
+      final pid = (raw['profile_id'] as String?)?.trim() ?? '';
+      return pid == profileId;
+    }).toList();
+    if (match.isEmpty) {
+      yield null;
+      continue;
+    }
+    final raw = match.first;
+    yield EmployeeCashWalletRow(
+      id: (raw['id'] as String?)?.trim() ?? '',
+      profileId: (raw['profile_id'] as String?)?.trim() ?? '',
+      balance: _toDouble(raw['balance']) ?? 0,
+      workerName: '', // Worker vidí vlastní peněženku – jméno není potřeba
+    );
+  }
+});
+
+/// Transakce aktuálně přihlášeného pracovníka (Worker UI) – obohacené o kontext z úkolů.
+///
+/// BEZPEČNOST: Pouze transakce vlastní peněženky (wallet_id z myCashWalletProvider).
+/// Seřazeno od nejnovějších. Načítá apartmentName a guestName z tasks pro COLLECTED_FROM_GUEST.
+final myCashTransactionsProvider =
+    StreamProvider<List<CashTransactionUIModel>>((ref) async* {
+  final walletAsync = ref.watch(myCashWalletProvider);
+  final wallet = walletAsync.valueOrNull;
+  if (wallet == null || wallet.id.isEmpty) {
+    yield [];
+    return;
+  }
+
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) {
+    yield [];
+    return;
+  }
+
+  await for (final rows
+      in CashWalletRepository.instance.watchTransactionsRawForWallet(
+    tenantId,
+    wallet.id,
+  )) {
+    yield await _enrichTransactions(tenantId, rows);
+  }
+});
+
+/// Realtime stream transakcí pro konkrétní peněženku zaměstnance – obohacené o kontext z úkolů.
+///
+/// PROČ: Detail peněženky v Admin UI – historie výběrů, odevzdání, firemních výdajů.
+/// Nové transakce z terénu se zobrazí okamžitě bez refreshe.
+/// Načítá apartmentName a guestName z tasks pro COLLECTED_FROM_GUEST.
+final walletTransactionsProvider =
+    StreamProvider.family<List<CashTransactionUIModel>, String>((ref, walletId) async* {
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty || walletId.isEmpty) {
+    yield [];
+    return;
+  }
+
+  await for (final rows
+      in CashWalletRepository.instance.watchTransactionsRawForWallet(
+    tenantId,
+    walletId,
+  )) {
+    yield await _enrichTransactions(tenantId, rows);
+  }
+});
+
+/// Obohací syrové transakce o kontext z úkolů (apartmán, host).
+///
+/// PROČ: Supabase stream neumožňuje join v realtime. Po obdržení transakcí
+/// načteme tasks s apartments(name) a reservations(guest_name) jedním dotazem.
+Future<List<CashTransactionUIModel>> _enrichTransactions(
+  String tenantId,
+  List<Map<String, dynamic>> rows,
+) async {
+  final taskIds = rows
+      .map((r) => (r['task_id'] as String?)?.trim())
+      .whereType<String>()
+      .where((id) => id.isNotEmpty)
+      .toSet()
+      .toList();
+
+  final taskContext = <String, ({String? apartmentName, String? guestName})>{};
+
+  if (taskIds.isNotEmpty) {
+    try {
+      final res = await SupabaseService.client
+          .from('tasks')
+          .select('id, apartments(name), reservations(guest_name)')
+          .eq('tenant_id', tenantId)
+          .inFilter('id', taskIds)
+          .isFilter('deleted_at', null);
+
+      for (final t in res as List) {
+        final m = Map<String, dynamic>.from(t);
+        final id = (m['id'] as String?)?.trim();
+        if (id == null || id.isEmpty) continue;
+
+        String? apartmentName;
+        String? guestName;
+
+        final apt = m['apartments'];
+        if (apt != null && apt is Map) {
+          apartmentName = (apt['name'] as String?)?.trim();
+          if (apartmentName?.isEmpty == true) apartmentName = null;
+        }
+        final resData = m['reservations'];
+        if (resData != null && resData is Map) {
+          guestName = (resData['guest_name'] as String?)?.trim();
+          if (guestName?.isEmpty == true) guestName = null;
+        }
+
+        taskContext[id] = (apartmentName: apartmentName, guestName: guestName);
+      }
+    } catch (_) {
+      // BACKWARD COMPATIBILITY: Selhání enrichementu nesmí rozbít UI – vrátíme transakce bez kontextu.
+    }
+  }
+
+  return rows.map((r) {
+    final taskId = (r['task_id'] as String?)?.trim();
+    final ctx = taskId != null ? taskContext[taskId] : null;
+    return CashTransactionUIModel(
+      raw: Map<String, dynamic>.from(r),
+      apartmentName: ctx?.apartmentName,
+      guestName: ctx?.guestName,
+    );
+  }).toList();
+}
 
 /// Řádek úkolu s nevybranou hotovostí – pro sekci alertů v Zaměstnanecké pokladně.
 class FailedCashCollectionRow {

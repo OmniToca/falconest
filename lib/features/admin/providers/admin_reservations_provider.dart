@@ -2,7 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
-import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/features/admin/providers/admin_reservations_repository.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 
 /// Životní cyklus rezervace – hodnoty sloupce status v DB (výchozí 'new').
@@ -288,87 +288,43 @@ bool _isReservationOnDay(DateTime? dt, DateTime day) {
   return dt.year == day.year && dt.month == day.month && dt.day == day.day;
 }
 
-/// Provider načítající rezervace pro Admin – pouze byty aktuálního tenanta.
+/// Provider načítající rezervace pro Admin – Realtime stream.
 ///
+/// PROČ: Dispečer vidí nové rezervace a změny okamžitě bez F5 (Supabase WebSockets).
 /// Rezervace nemají tenant_id; filtrujeme přes apartment_id IN (byty tohoto tenanta).
 /// tenantIdForData = běžný uživatel jeho tenant, Super Admin vybraná agentura.
 final adminReservationsProvider =
-    FutureProvider<List<ReservationRow>>((ref) async {
+    StreamProvider<List<ReservationRow>>((ref) async* {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
-  if (tenantId == null || tenantId.isEmpty) return [];
+  if (tenantId == null || tenantId.isEmpty) {
+    yield [];
+    return;
+  }
 
   final apartments = await ref.watch(apartmentsProvider.future);
   final apartmentIds = apartments.map((a) => a.id).where((id) => id.isNotEmpty).toList();
-  if (apartmentIds.isEmpty) return [];
+  if (apartmentIds.isEmpty) {
+    yield [];
+    return;
+  }
 
-  try {
-    /// Načtení rezervací – včetně arrival_time, departure_time pro generátor úkolů.
-    /// Žádný fallback na zjednodušený dotaz – chybějící sloupce musí vyvolat chybu.
-    final list = await SupabaseService.client
-        .from('reservations')
-        .select(
-          'id, apartment_id, guest_name, guest_phone, reservation_source, needs_transfer, status, '
-          'start_date, end_date, guest_adults, guest_children, arrival_time, departure_time, internal_note',
-        )
-        .inFilter('apartment_id', apartmentIds)
-        .isFilter('deleted_at', null)
-        .order('start_date', ascending: true) as List;
-    var rows = list
-        .map((e) => ReservationRow.fromJson(e as Map<String, dynamic>))
-        .toList();
+  final nameMap = {for (final a in apartments) a.id: a.name};
 
-    /// Fallback: pokud join nevrátil apartment name, načteme apartments zvlášť
-    final apartmentIdsFromRows =
-        rows.map((r) => r.apartmentId).where((id) => id.isNotEmpty).toSet();
-    if (apartmentIdsFromRows.isNotEmpty) {
-      final anyMissingName = rows.any((r) =>
-          (r.apartmentName == null || r.apartmentName!.isEmpty) &&
-          r.apartmentId.isNotEmpty);
-      if (anyMissingName) {
-        final apartments = await ref.read(apartmentsProvider.future);
-        final nameMap = {for (final a in apartments) a.id: a.name};
-        rows = rows.map((r) {
-          if (r.apartmentName == null || r.apartmentName!.isEmpty) {
-            final name = nameMap[r.apartmentId];
-            return ReservationRow(
-              id: r.id,
-              apartmentId: r.apartmentId,
-              guestName: r.guestName,
-              guestPhone: r.guestPhone,
-              reservationSource: r.reservationSource,
-              checkIn: r.checkIn,
-              checkOut: r.checkOut,
-              needsTransfer: r.needsTransfer,
-              status: r.status,
-              apartmentName: name,
-              deletedAt: r.deletedAt,
-              guestAdults: r.guestAdults,
-              guestChildren: r.guestChildren,
-              arrivalTime: r.arrivalTime,
-              departureTime: r.departureTime,
-              internalNote: r.internalNote,
-            );
-          }
-          return r;
-        }).toList();
-      }
-    }
-
-    return rows;
-  } on PostgrestException catch (e) {
-    // ignore: avoid_print
-    print('--- CHYBA NAČÍTÁNÍ REZERVACÍ: $e');
-    if (e.code == '42703' || e.message.contains('column')) {
+  await for (final rawList in AdminReservationsRepository.instance.watchReservationsRaw(apartmentIds)) {
+    try {
+      final rows = rawList.map((raw) {
+        final enriched = Map<String, dynamic>.from(raw);
+        if (enriched['apartments'] == null && nameMap[raw['apartment_id']?.toString()] != null) {
+          enriched['apartments'] = {'name': nameMap[raw['apartment_id']?.toString()]};
+        }
+        return ReservationRow.fromJson(enriched);
+      }).toList();
+      yield rows;
+    } on PostgrestException catch (e) {
       // ignore: avoid_print
-      print('>>> Chybí sloupce v tabulce reservations (potřeba arrival_time, departure_time). Spusť migrace.');
+      print('--- CHYBA STREAMU REZERVACÍ: $e');
+      rethrow;
     }
-    rethrow;
-  } catch (e, st) {
-    // ignore: avoid_print
-    print('--- CHYBA NAČÍTÁNÍ REZERVACÍ: $e');
-    // ignore: avoid_print
-    print(st);
-    rethrow;
   }
 });
 

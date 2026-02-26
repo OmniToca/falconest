@@ -276,6 +276,41 @@ class _WeeklySummaryTile extends ConsumerWidget {
   }
 }
 
+/// Dialog pro výběr jazyka přes easy_localization – cs, en, es.
+/// Uloží výběr do profiles přes AuthNotifier a přepne locale; easy_localization překreslí UI.
+void _showLanguageDialog(BuildContext context, WidgetRef ref) {
+  Future<void> selectAndClose(String code) async {
+    await ref.read(authNotifierProvider.notifier).updateLanguageCode(code);
+    if (context.mounted) {
+      context.setLocale(Locale(code));
+    }
+    if (context.mounted) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  showDialog<void>(
+    context: context,
+    builder: (ctx) => SimpleDialog(
+      title: Text('worker.drawer_language_select'.tr()),
+      children: [
+        SimpleDialogOption(
+          onPressed: () => selectAndClose('cs'),
+          child: const Text('Čeština'),
+        ),
+        SimpleDialogOption(
+          onPressed: () => selectAndClose('en'),
+          child: const Text('English'),
+        ),
+        SimpleDialogOption(
+          onPressed: () => selectAndClose('es'),
+          child: const Text('Español'),
+        ),
+      ],
+    ),
+  );
+}
+
 /// Drawer v Worker flow – vizitka uživatele, přehled týdne, Moje nepřítomnost, PIN, odhlášení.
 class _WorkerDrawer extends ConsumerWidget {
   const _WorkerDrawer({required this.hasPin});
@@ -294,8 +329,11 @@ class _WorkerDrawer extends ConsumerWidget {
       child: SafeArea(
         child: Column(
           children: [
-            // Sjednocená hlavička podle vzoru – vizitka přihlášeného uživatele.
-            UserAccountsDrawerHeader(
+            // Sjednocená hlavička – vizitka uživatele + přepínač jazyka v pravém horním rohu.
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                UserAccountsDrawerHeader(
               currentAccountPicture: CircleAvatar(
                 backgroundColor: _primaryBlue.withValues(alpha: 0.2),
                 child: Icon(Icons.person, color: _primaryBlue),
@@ -321,6 +359,18 @@ class _WorkerDrawer extends ConsumerWidget {
                 error: (_, __) => const SizedBox.shrink(),
               ),
               decoration: BoxDecoration(color: _primaryBlue.withValues(alpha: 0.08)),
+                ),
+                // Přepínač jazyka – dialog pro výběr cs/en/es přes easy_localization.
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: IconButton(
+                    icon: Icon(Icons.language, color: _primaryBlue, size: 24),
+                    tooltip: 'worker.drawer_language_select'.tr(),
+                    onPressed: () => _showLanguageDialog(context, ref),
+                  ),
+                ),
+              ],
             ),
             // Role – zobrazení primární role (admin/worker).
             Padding(
@@ -336,6 +386,15 @@ class _WorkerDrawer extends ConsumerWidget {
             // Přehled týdne – neklikatelná informační karta (úkoly + odhadované hodiny).
             _WeeklySummaryTile(),
             const Divider(),
+            // Peněženka – firemní výdaje, evidence hotovosti.
+            ListTile(
+              leading: const Icon(Icons.account_balance_wallet_outlined),
+              title: Text('worker.menu_wallet'.tr()),
+              onTap: () {
+                Navigator.of(context).pop();
+                context.push('/worker/wallet');
+              },
+            ),
             // Moje nepřítomnost – přehled a žádosti o dovolenou/nemoc.
             ListTile(
               leading: const Icon(Icons.event_busy),

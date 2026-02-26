@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/offline/network_sync_watcher.dart';
 import 'package:falconest/core/router/app_router.dart';
+import 'package:falconest/core/theme/app_theme.dart';
 
 /// Hlavní aplikační widget FalcoNest.
 ///
@@ -22,10 +23,7 @@ class FalcoNestApp extends ConsumerWidget {
     return NetworkSyncWatcher(
       child: MaterialApp.router(
         title: 'app.title'.tr(),
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-          useMaterial3: true,
-        ),
+        theme: AppTheme.lightTheme,
         localizationsDelegates: context.localizationDelegates,
         supportedLocales: context.supportedLocales,
         locale: context.locale,

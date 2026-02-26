@@ -31,6 +31,7 @@ import 'package:falconest/features/super_admin/super_admin_dashboard.dart';
 import 'package:falconest/features/super_admin/tenant_detail_screen.dart';
 import 'package:falconest/features/worker/screens/worker_absences_screen.dart';
 import 'package:falconest/features/worker/screens/worker_dashboard_screen.dart';
+import 'package:falconest/features/worker/screens/worker_wallet_screen.dart';
 import 'package:falconest/features/worker/screens/worker_task_detail_screen.dart';
 import 'package:falconest/features/owner/owner_apartment_detail_screen.dart';
 import 'package:falconest/features/owner/owner_layout.dart';
@@ -157,6 +158,11 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             path: 'absences',
             name: 'workerAbsences',
             builder: (context, state) => const WorkerAbsencesScreen(),
+          ),
+          GoRoute(
+            path: 'wallet',
+            name: 'workerWallet',
+            builder: (context, state) => const WorkerWalletScreen(),
           ),
           GoRoute(
             path: 'task/:id',

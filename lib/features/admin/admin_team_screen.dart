@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:falconest/core/audit/enterprise_audit_payload.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/presentation/widgets/app_card.dart';
 import 'package:falconest/core/presentation/widgets/modern_admin_panel.dart';
 import 'package:falconest/core/services/audit_log_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
@@ -120,7 +121,6 @@ class _AdminTeamScreenState extends ConsumerState<AdminTeamScreen> {
     final teamAsync = ref.watch(adminTeamProvider);
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
       body: teamAsync.when(
         data: (members) {
           final filtered = _computeFiltered(members);
@@ -495,7 +495,6 @@ class _DeleteConfirmDialogState extends ConsumerState<_DeleteConfirmDialog> {
           child: Text('common.cancel'.tr()),
         ),
         FilledButton(
-          style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
           onPressed: _isDeleting ? null : _doDelete,
           child: _isDeleting
               ? const SizedBox(
@@ -559,10 +558,6 @@ class _TeamTopActionBar extends StatelessWidget {
             onPressed: onAdd,
             icon: const Icon(Icons.add, size: 20),
             label: Text('admin.fab_add_member'.tr()),
-            style: FilledButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              backgroundColor: Colors.purple,
-            ),
           ),
         ],
       ),
@@ -626,27 +621,10 @@ class _MemberCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: () => onEdit(member),
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.grey.shade200),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.05),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
+    return AppCard(
+      onTap: () => onEdit(member),
+      padding: const EdgeInsets.all(16),
+      child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 CircleAvatar(
@@ -811,9 +789,6 @@ class _MemberCard extends ConsumerWidget {
                 ),
               ],
             ),
-          ),
-        ),
-      ),
     );
   }
 }
@@ -846,23 +821,9 @@ class _OwnerCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.teal.shade100),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.04),
-              blurRadius: 6,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        padding: const EdgeInsets.all(16),
-        child: Row(
+    return AppCard(
+      padding: const EdgeInsets.all(16),
+      child: Row(
           children: [
             CircleAvatar(
               radius: 24,
@@ -940,7 +901,6 @@ class _OwnerCard extends StatelessWidget {
             ),
           ],
         ),
-      ),
     );
   }
 }
@@ -1196,7 +1156,7 @@ class _MemberCardExtra extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final tasksAsync = ref.watch(adminTasksProvider);
+    final tasksAsync = ref.watch(adminTasksStreamProvider);
     final absencesAsync = ref.watch(staffAbsencesProvider);
     final apartments = ref.watch(apartmentsProvider).valueOrNull ?? [];
     final services = ref.watch(tenantServicesProvider).valueOrNull ?? [];

@@ -14,7 +14,6 @@ class AdminZonesScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
       appBar: AppBar(
         title: Text('admin.zones_title'.tr()),
         leading: IconButton(
