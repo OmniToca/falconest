@@ -3,15 +3,18 @@ import 'package:falconest/features/admin/models/reservation_service_model.dart';
 
 /// Načte všechny záznamy reservation_services pro dané rezervace (např. pro generátor úkolů).
 /// Vrací mapu reservation_id -> seznam řádků.
+/// [tenantId] – Přidáno filtrování podle tenant_id z důvodu defense-in-depth (V1_RELEASE_AUDIT).
 Future<Map<String, List<ReservationServiceRow>>> fetchByReservationIds(
   List<String> reservationIds,
+  String tenantId,
 ) async {
-  if (reservationIds.isEmpty) return {};
+  if (reservationIds.isEmpty || tenantId.trim().isEmpty) return {};
   final ids = reservationIds.where((id) => id.isNotEmpty).toSet().toList();
   if (ids.isEmpty) return {};
   final res = await SupabaseService.client
       .from('reservation_services')
       .select()
+      .eq('tenant_id', tenantId)
       .inFilter('reservation_id', ids);
   final list = (res as List).cast<Map<String, dynamic>>();
   final result = <String, List<ReservationServiceRow>>{};
@@ -24,11 +27,16 @@ Future<Map<String, List<ReservationServiceRow>>> fetchByReservationIds(
 }
 
 /// Načte všechny záznamy reservation_services pro danou rezervaci (pro předvyplnění Tabu 2 v dialogu).
-Future<List<ReservationServiceRow>> fetchByReservationId(String reservationId) async {
-  if (reservationId.isEmpty) return [];
+/// [tenantId] – Přidáno filtrování podle tenant_id z důvodu defense-in-depth (V1_RELEASE_AUDIT).
+Future<List<ReservationServiceRow>> fetchByReservationId(
+  String reservationId,
+  String tenantId,
+) async {
+  if (reservationId.isEmpty || tenantId.trim().isEmpty) return [];
   final res = await SupabaseService.client
       .from('reservation_services')
       .select()
+      .eq('tenant_id', tenantId)
       .eq('reservation_id', reservationId);
   final list = res as List;
   return list

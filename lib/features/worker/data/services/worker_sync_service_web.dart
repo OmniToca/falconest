@@ -16,6 +16,11 @@ class WorkerSyncService {
     void Function(String)? onSyncError,
   }) async {}
 
+  static Future<void> pushPendingReservationUpdates(
+    String tenantId, {
+    void Function(String)? onSyncError,
+  }) async {}
+
   /// Na webu vždy 0 – není Isar.
   static Future<int> getPendingSyncCount(String tenantId) async => 0;
 }

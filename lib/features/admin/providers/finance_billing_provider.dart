@@ -108,8 +108,8 @@ final billingReportProvider =
     /// Ochrana před voláním fetchByReservationIds s prázdným seznamem – Postgrest .inFilter vyvolá výjimku.
     if (reservationIds.isEmpty) return [];
 
-    /// b) Načtení reservation_services pro všechny rezervace.
-    final servicesByRes = await fetchByReservationIds(reservationIds);
+    /// b) Načtení reservation_services pro všechny rezervace (tenant_id pro defense-in-depth).
+    final servicesByRes = await fetchByReservationIds(reservationIds, tenantId);
 
     final rows = <BillingReportRow>[];
 

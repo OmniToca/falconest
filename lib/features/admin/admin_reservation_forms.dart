@@ -1074,8 +1074,20 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
 
   /// Načtení služeb rezervace (Override Pattern Tier 3): načte záznamy z reservation_services
   /// pro tuto rezervaci a sloučí je s nabídkou apartment_services vybraného bytu do _servicesState pro předvyplnění Tabu 2.
+  /// tenant_id: Admin použije tenantIdForData, Owner získá z apartmánu (V1_RELEASE_AUDIT).
   Future<void> _loadServicesState(List<ApartmentServiceOption> options) async {
-    final rows = await fetchByReservationId(widget.reservation.id);
+    var tenantId = widget.ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) {
+      // Owner flow: tenant_id z apartmánu rezervace.
+      final aptRes = await SupabaseService.client
+          .from('apartments')
+          .select('tenant_id')
+          .eq('id', widget.reservation.apartmentId)
+          .maybeSingle();
+      tenantId = aptRes?['tenant_id']?.toString();
+    }
+    if (tenantId == null || tenantId.isEmpty) return;
+    final rows = await fetchByReservationId(widget.reservation.id, tenantId);
     final byApartmentServiceId = {for (final row in rows) row.apartmentServiceId: row};
     if (!mounted) return;
     setState(() {

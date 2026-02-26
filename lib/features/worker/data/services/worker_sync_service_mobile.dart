@@ -69,11 +69,12 @@ class WorkerSyncService {
         apartmentsData = apartmentsData is List ? List<dynamic>.from(apartmentsData) : [];
       }
 
+      // PROČ: Stahujeme guest_name a guest_phone pro zobrazení check-in agentům a řidičům (kontakt v terénu).
       List<dynamic> reservationsData = [];
       if (reservationIds.isNotEmpty) {
         reservationsData = await SupabaseService.client
             .from('reservations')
-            .select('id, tenant_id, status')
+            .select('id, tenant_id, status, guest_name, guest_phone')
             .inFilter('id', reservationIds.toList())
             .isFilter('deleted_at', null);
         reservationsData = reservationsData is List ? List<dynamic>.from(reservationsData) : [];

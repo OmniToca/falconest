@@ -3,7 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/widgets/task_header_widget.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
+import 'package:falconest/features/worker/widgets/issue_reporter_dialog.dart';
 
 const _primaryBlue = Color(0xFF1565C0);
 
@@ -36,6 +39,22 @@ class DefaultTaskScreen extends ConsumerWidget {
             foregroundColor: Colors.black87,
             elevation: 0,
             iconTheme: const IconThemeData(color: Colors.black87),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.report_problem_outlined),
+                onPressed: () {
+                  final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+                  if (tenantId == null || tenantId.isEmpty) return;
+                  showDialog(
+                    context: context,
+                    builder: (ctx) => IssueReporterDialog(
+                      tenantId: tenantId,
+                      apartmentId: detail.apartmentId,
+                    ),
+                  );
+                },
+              ),
+            ],
           ),
           body: Padding(
             padding: const EdgeInsets.all(16),
@@ -47,9 +66,10 @@ class DefaultTaskScreen extends ConsumerWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Text(
-                          detail.title.isNotEmpty ? detail.title : detail.apartmentName ?? '—',
-                          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87),
+                        // Sjednocená hlavička podle vzoru Check-in/Check-out (nadpis + clock/time řádek).
+                        TaskHeaderWidget(
+                          title: detail.title.isNotEmpty ? detail.title : detail.apartmentName ?? '—',
+                          scheduledStart: detail.scheduledStart,
                         ),
                         const SizedBox(height: 16),
                         Text(
@@ -107,6 +127,24 @@ class DefaultTaskScreen extends ConsumerWidget {
         width: double.infinity,
         child: FilledButton(
           onPressed: () async {
+            final ok = await showDialog<bool>(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                title: Text('worker.confirm_finish_title'.tr()),
+                content: Text('worker.confirm_finish_message'.tr()),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(false),
+                    child: Text('common.cancel'.tr()),
+                  ),
+                  FilledButton(
+                    onPressed: () => Navigator.of(ctx).pop(true),
+                    child: Text('common.ok'.tr()),
+                  ),
+                ],
+              ),
+            );
+            if (ok != true || !context.mounted) return;
             await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
                   taskId,
                   'completed',
@@ -127,6 +165,24 @@ class DefaultTaskScreen extends ConsumerWidget {
       width: double.infinity,
       child: FilledButton(
         onPressed: () async {
+          final ok = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: Text('worker.confirm_start_title'.tr()),
+              content: Text('worker.confirm_start_message'.tr()),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: Text('common.cancel'.tr()),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: Text('common.ok'.tr()),
+                ),
+              ],
+            ),
+          );
+          if (ok != true) return;
           await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
                 taskId,
                 'in_progress',

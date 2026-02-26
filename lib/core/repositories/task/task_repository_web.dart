@@ -96,13 +96,14 @@ class TaskRepositoryWeb implements ITaskRepository {
     try {
       final res = await SupabaseService.client
           .from('tasks')
-          .select('id, title, description, task_type, scheduled_start, status, apartment_id, photo_url, metadata, started_at, completed_at')
+          .select('id, title, description, task_type, scheduled_start, status, apartment_id, reservation_id, photo_url, metadata, started_at, completed_at')
           .eq('tenant_id', tenantId)
           .eq('id', taskId)
           .maybeSingle();
       if (res == null) return null;
       final map = Map<String, dynamic>.from(res as Map);
       final aptId = map['apartment_id']?.toString().trim();
+      final resId = map['reservation_id']?.toString().trim();
       String? aptName;
       String? aptAddress;
       String? keybox;
@@ -119,6 +120,22 @@ class TaskRepositoryWeb implements ITaskRepository {
           aptAddress = (a['address'] as String?)?.trim();
           keybox = (a['keybox'] as String?)?.trim();
           ownerNotes = (a['owner_notes'] as String?)?.trim();
+        }
+      }
+      String? guestName;
+      String? guestPhone;
+      if (resId != null && resId.isNotEmpty) {
+        final resRes = await SupabaseService.client
+            .from('reservations')
+            .select('guest_name, guest_phone')
+            .eq('id', resId)
+            .maybeSingle();
+        if (resRes != null && resRes is Map) {
+          final r = Map<String, dynamic>.from(resRes);
+          guestName = (r['guest_name'] as String?)?.trim();
+          guestPhone = (r['guest_phone'] as String?)?.trim();
+          if (guestName != null && guestName!.isEmpty) guestName = null;
+          if (guestPhone != null && guestPhone!.isEmpty) guestPhone = null;
         }
       }
       final rawStart = map['scheduled_start'];
@@ -148,6 +165,8 @@ class TaskRepositoryWeb implements ITaskRepository {
         apartmentAddress: aptAddress,
         keybox: keybox?.isEmpty ?? true ? null : keybox,
         ownerNotes: ownerNotes?.isEmpty ?? true ? null : ownerNotes,
+        guestName: guestName,
+        guestPhone: guestPhone,
         photoUrl: (map['photo_url'] as String?)?.trim().isEmpty ?? true ? null : (map['photo_url'] as String?)?.trim(),
         metadata: metadata,
         startedAt: _parseOptDateTime(map['started_at']),

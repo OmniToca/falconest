@@ -4,8 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/services/currency_service.dart';
+import 'package:falconest/core/widgets/task_header_widget.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
+import 'package:falconest/features/worker/widgets/task_countdown_timer.dart';
 import 'package:falconest/features/worker/utils/cash_collection_dialog.dart';
+import 'package:falconest/features/worker/widgets/issue_reporter_dialog.dart';
 
 const _primaryBlue = Color(0xFF1565C0);
 
@@ -38,6 +43,22 @@ class CheckinTaskScreen extends ConsumerWidget {
             foregroundColor: Colors.black87,
             elevation: 0,
             iconTheme: const IconThemeData(color: Colors.black87),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.report_problem_outlined),
+                onPressed: () {
+                  final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+                  if (tenantId == null || tenantId.isEmpty) return;
+                  showDialog(
+                    context: context,
+                    builder: (ctx) => IssueReporterDialog(
+                      tenantId: tenantId,
+                      apartmentId: detail.apartmentId,
+                    ),
+                  );
+                },
+              ),
+            ],
           ),
           body: Padding(
             padding: const EdgeInsets.all(16),
@@ -49,20 +70,30 @@ class CheckinTaskScreen extends ConsumerWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Text(
-                          _mainHeading(detail),
-                          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87),
+                        TaskHeaderWidget(
+                          title: _mainHeading(detail),
+                          scheduledStart: detail.scheduledStart,
                         ),
-                        const SizedBox(height: 12),
-                        _buildScheduledTime(detail.scheduledStart),
                         const SizedBox(height: 16),
                         _buildAddressWithNavigate(context, detail.apartmentAddress),
+                        const SizedBox(height: 16),
+                        // PROČ: Živý odpočet času při aktivním check-inu – agent vidí zbývající čas či zpoždění.
+                        TaskCountdownTimer(
+                          startedAt: detail.startedAt,
+                          completedAt: detail.completedAt,
+                          estimatedMinutes: parseTaskEstimateMinutes(
+                            detail.description,
+                            detail.metadata,
+                          ),
+                        ),
+                        // PROČ: Kód schránky a kontakt na hosta – check-in agent řeší zpoždění a předání klíčů.
+                        ..._buildKeyboxAndGuestContact(context, detail),
                         const SizedBox(height: 16),
                         Text(
                           detail.description.isNotEmpty ? detail.description : '—',
                           style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
                         ),
-                        ..._buildCheckinMetadata(context, detail.metadata ?? {}),
+                        ..._buildCheckinMetadata(context, ref, detail.metadata ?? {}),
                       ],
                     ),
                   ),
@@ -118,7 +149,26 @@ class CheckinTaskScreen extends ConsumerWidget {
                 if (context.mounted) context.pop();
               },
             );
+            // Když Cash dialog nebyl zobrazen – potvrzovací dialog zabrání překlikům.
             if (result == null) {
+              final ok = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: Text('worker.confirm_finish_title'.tr()),
+                  content: Text('worker.confirm_finish_message'.tr()),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.of(ctx).pop(false),
+                      child: Text('common.cancel'.tr()),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.of(ctx).pop(true),
+                      child: Text('common.ok'.tr()),
+                    ),
+                  ],
+                ),
+              );
+              if (ok != true || !context.mounted) return;
               await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
                     taskId,
                     'completed',
@@ -136,10 +186,29 @@ class CheckinTaskScreen extends ConsumerWidget {
         ),
       );
     }
+    // PROČ: Potvrzovací dialog zabrání překlikům v kapse při zahájení.
     return SizedBox(
       width: double.infinity,
       child: FilledButton(
         onPressed: () async {
+          final ok = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: Text('worker.confirm_start_title'.tr()),
+              content: Text('worker.confirm_start_message'.tr()),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: Text('common.cancel'.tr()),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: Text('common.ok'.tr()),
+                ),
+              ],
+            ),
+          );
+          if (ok != true) return;
           await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
                 taskId,
                 'in_progress',
@@ -156,6 +225,123 @@ class CheckinTaskScreen extends ConsumerWidget {
     );
   }
 
+  /// Kód schránky, jméno a telefon hosta – check-in agent musí řešit zpoždění.
+  List<Widget> _buildKeyboxAndGuestContact(BuildContext context, dynamic detail) {
+    final widgets = <Widget>[];
+    final keybox = detail.keybox?.trim();
+    final guestName = detail.guestName?.trim();
+    final guestPhone = detail.guestPhone?.trim();
+    if (keybox != null && keybox.isNotEmpty) {
+      widgets.add(_buildKeyboxCard(keybox));
+      widgets.add(const SizedBox(height: 12));
+    }
+    if (guestName != null && guestName.isNotEmpty || guestPhone != null && guestPhone.isNotEmpty) {
+      widgets.add(_buildGuestContactCard(context, guestName, guestPhone));
+    }
+    return widgets;
+  }
+
+  Widget _buildKeyboxCard(String keybox) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.orange.shade200),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.key, size: 24, color: Colors.orange.shade700),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'worker.label_keybox'.tr(),
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade700),
+                ),
+                const SizedBox(height: 4),
+                Text(keybox, style: TextStyle(fontSize: 14, color: Colors.grey.shade800)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildGuestContactCard(BuildContext context, String? guestName, String? guestPhone) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.orange.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (guestName != null && guestName.isNotEmpty) ...[
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.person, size: 24, color: Colors.orange.shade700),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        'worker.label_guest_name'.tr(),
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade700),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(guestName, style: TextStyle(fontSize: 14, color: Colors.grey.shade800)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (guestPhone != null && guestPhone.isNotEmpty) ...[
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.phone, size: 24, color: Colors.orange.shade700),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        'worker.label_guest_phone'.tr(),
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade700),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(guestPhone, style: TextStyle(fontSize: 14, color: Colors.grey.shade800)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            FilledButton.tonalIcon(
+              onPressed: () {
+                final tel = guestPhone.replaceAll(RegExp(r'[\s\-\(\)]'), '');
+                launchUrl(Uri.parse('tel:$tel'), mode: LaunchMode.externalApplication);
+              },
+              icon: const Icon(Icons.phone, size: 20),
+              label: Text('worker.guest_call'.tr()),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   static String _appBarTitle(dynamic detail) {
     final raw = detail.title.isNotEmpty ? detail.title : (detail.apartmentName ?? '—');
     return raw.split(':').first.trim();
@@ -164,21 +350,6 @@ class CheckinTaskScreen extends ConsumerWidget {
   static String _mainHeading(dynamic detail) {
     final raw = detail.title.isNotEmpty ? detail.title : (detail.apartmentName ?? '—');
     return raw.contains(':') ? raw.split(':').sublist(1).join(':').trim() : raw;
-  }
-
-  Widget _buildScheduledTime(DateTime? scheduledStart) {
-    if (scheduledStart == null) return const SizedBox.shrink();
-    final formatted = DateFormat('dd.MM.yyyy HH:mm').format(scheduledStart);
-    return Row(
-      children: [
-        Icon(Icons.access_time, size: 22, color: Colors.grey.shade700),
-        const SizedBox(width: 10),
-        Text(
-          formatted,
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.grey.shade800),
-        ),
-      ],
-    );
   }
 
   Widget _buildAddressWithNavigate(BuildContext context, String? address) {
@@ -212,7 +383,8 @@ class CheckinTaskScreen extends ConsumerWidget {
   }
 
   /// Vykreslení metadat pro Check-in: custom_note (instrukce k předání klíčů), banner na peníze, rozpad platby.
-  List<Widget> _buildCheckinMetadata(BuildContext context, Map<String, dynamic> meta) {
+  /// [ref] – pro preferredCurrency a CurrencyService (V1_RELEASE_AUDIT: dynamické měny místo hardcoded €).
+  List<Widget> _buildCheckinMetadata(BuildContext context, WidgetRef ref, Map<String, dynamic> meta) {
     final widgets = <Widget>[];
 
     // Poznámka (instrukce k předání klíčů).
@@ -231,7 +403,7 @@ class CheckinTaskScreen extends ConsumerWidget {
     if (amount != null && amount > 0) {
       widgets.addAll([
         const SizedBox(height: 16),
-        _buildAmountBanner(context, amount),
+        _buildAmountBanner(context, ref, amount),
       ]);
     }
 
@@ -240,7 +412,7 @@ class CheckinTaskScreen extends ConsumerWidget {
     if (breakdown is Map && breakdown.isNotEmpty) {
       widgets.addAll([
         const SizedBox(height: 12),
-        _buildBreakdownCard(breakdown),
+        _buildBreakdownCard(ref, breakdown),
       ]);
     }
 
@@ -278,8 +450,13 @@ class CheckinTaskScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildAmountBanner(BuildContext context, num amount) {
-    final formatted = NumberFormat.currency(locale: context.locale.toString(), symbol: '€', decimalDigits: 2).format(amount);
+  /// V1_RELEASE_AUDIT: Místo hardcoded € používá preferredCurrency a CurrencyService.
+  Widget _buildAmountBanner(BuildContext context, WidgetRef ref, num amount) {
+    final currencies = ref.watch(currenciesProvider).valueOrNull ?? [];
+    final preferredCurrency = ref.watch(authNotifierProvider).state.preferredCurrency ?? 'EUR';
+    final formatted = currencies.isNotEmpty
+        ? CurrencyService.formatPrice(amount.toDouble(), preferredCurrency, currencies)
+        : NumberFormat.currency(locale: context.locale.toString(), symbol: '€', decimalDigits: 2).format(amount);
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -303,20 +480,26 @@ class CheckinTaskScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildBreakdownCard(Map<dynamic, dynamic> map) {
+  /// V1_RELEASE_AUDIT: Částky formátovány podle preferredCurrency místo hardcoded €.
+  Widget _buildBreakdownCard(WidgetRef ref, Map<dynamic, dynamic> map) {
+    final currencies = ref.watch(currenciesProvider).valueOrNull ?? [];
+    final preferredCurrency = ref.watch(authNotifierProvider).state.preferredCurrency ?? 'EUR';
     final parts = <Widget>[];
     for (final e in map.entries) {
       final key = e.key.toString().toLowerCase().replaceAll('-', '_');
       final label = _translateTaskTypeKey(key);
       final v = e.value;
-      final val = (v is num) ? v.toStringAsFixed(2) : (v?.toString() ?? '');
+      final amountEur = (v is num) ? v.toDouble() : (double.tryParse(v?.toString() ?? '0') ?? 0);
+      final formatted = currencies.isNotEmpty
+          ? CurrencyService.formatPrice(amountEur, preferredCurrency, currencies)
+          : '${amountEur.toStringAsFixed(2)} €';
       parts.add(Padding(
         padding: const EdgeInsets.only(bottom: 4),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text(label, style: TextStyle(fontSize: 15, color: Colors.grey.shade700)),
-            Text('$val €', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Colors.grey.shade800)),
+            Text(formatted, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Colors.grey.shade800)),
           ],
         ),
       ));

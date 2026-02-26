@@ -17,34 +17,44 @@ const ReservationLocalSchema = CollectionSchema(
   name: r'ReservationLocal',
   id: 4215116564478627792,
   properties: {
-    r'lastUpdated': PropertySchema(
+    r'guestName': PropertySchema(
       id: 0,
+      name: r'guestName',
+      type: IsarType.string,
+    ),
+    r'guestPhone': PropertySchema(
+      id: 1,
+      name: r'guestPhone',
+      type: IsarType.string,
+    ),
+    r'lastUpdated': PropertySchema(
+      id: 2,
       name: r'lastUpdated',
       type: IsarType.dateTime,
     ),
     r'localUpdatedAt': PropertySchema(
-      id: 1,
+      id: 3,
       name: r'localUpdatedAt',
       type: IsarType.dateTime,
     ),
     r'status': PropertySchema(
-      id: 2,
+      id: 4,
       name: r'status',
       type: IsarType.string,
     ),
     r'supabaseId': PropertySchema(
-      id: 3,
+      id: 5,
       name: r'supabaseId',
       type: IsarType.string,
     ),
     r'syncStatus': PropertySchema(
-      id: 4,
+      id: 6,
       name: r'syncStatus',
       type: IsarType.byte,
       enumMap: _ReservationLocalsyncStatusEnumValueMap,
     ),
     r'tenantId': PropertySchema(
-      id: 5,
+      id: 7,
       name: r'tenantId',
       type: IsarType.string,
     )
@@ -69,6 +79,18 @@ int _reservationLocalEstimateSize(
   Map<Type, List<int>> allOffsets,
 ) {
   var bytesCount = offsets.last;
+  {
+    final value = object.guestName;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
+    final value = object.guestPhone;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.status.length * 3;
   {
     final value = object.supabaseId;
@@ -86,12 +108,14 @@ void _reservationLocalSerialize(
   List<int> offsets,
   Map<Type, List<int>> allOffsets,
 ) {
-  writer.writeDateTime(offsets[0], object.lastUpdated);
-  writer.writeDateTime(offsets[1], object.localUpdatedAt);
-  writer.writeString(offsets[2], object.status);
-  writer.writeString(offsets[3], object.supabaseId);
-  writer.writeByte(offsets[4], object.syncStatus.index);
-  writer.writeString(offsets[5], object.tenantId);
+  writer.writeString(offsets[0], object.guestName);
+  writer.writeString(offsets[1], object.guestPhone);
+  writer.writeDateTime(offsets[2], object.lastUpdated);
+  writer.writeDateTime(offsets[3], object.localUpdatedAt);
+  writer.writeString(offsets[4], object.status);
+  writer.writeString(offsets[5], object.supabaseId);
+  writer.writeByte(offsets[6], object.syncStatus.index);
+  writer.writeString(offsets[7], object.tenantId);
 }
 
 ReservationLocal _reservationLocalDeserialize(
@@ -101,15 +125,17 @@ ReservationLocal _reservationLocalDeserialize(
   Map<Type, List<int>> allOffsets,
 ) {
   final object = ReservationLocal();
+  object.guestName = reader.readStringOrNull(offsets[0]);
+  object.guestPhone = reader.readStringOrNull(offsets[1]);
   object.id = id;
-  object.lastUpdated = reader.readDateTime(offsets[0]);
-  object.localUpdatedAt = reader.readDateTime(offsets[1]);
-  object.status = reader.readString(offsets[2]);
-  object.supabaseId = reader.readStringOrNull(offsets[3]);
+  object.lastUpdated = reader.readDateTime(offsets[2]);
+  object.localUpdatedAt = reader.readDateTime(offsets[3]);
+  object.status = reader.readString(offsets[4]);
+  object.supabaseId = reader.readStringOrNull(offsets[5]);
   object.syncStatus = _ReservationLocalsyncStatusValueEnumMap[
-          reader.readByteOrNull(offsets[4])] ??
+          reader.readByteOrNull(offsets[6])] ??
       SyncStatus.synced;
-  object.tenantId = reader.readString(offsets[5]);
+  object.tenantId = reader.readString(offsets[7]);
   return object;
 }
 
@@ -121,18 +147,22 @@ P _reservationLocalDeserializeProp<P>(
 ) {
   switch (propertyId) {
     case 0:
-      return (reader.readDateTime(offset)) as P;
-    case 1:
-      return (reader.readDateTime(offset)) as P;
-    case 2:
-      return (reader.readString(offset)) as P;
-    case 3:
       return (reader.readStringOrNull(offset)) as P;
+    case 1:
+      return (reader.readStringOrNull(offset)) as P;
+    case 2:
+      return (reader.readDateTime(offset)) as P;
+    case 3:
+      return (reader.readDateTime(offset)) as P;
     case 4:
+      return (reader.readString(offset)) as P;
+    case 5:
+      return (reader.readStringOrNull(offset)) as P;
+    case 6:
       return (_ReservationLocalsyncStatusValueEnumMap[
               reader.readByteOrNull(offset)] ??
           SyncStatus.synced) as P;
-    case 5:
+    case 7:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -242,6 +272,314 @@ extension ReservationLocalQueryWhere
 
 extension ReservationLocalQueryFilter
     on QueryBuilder<ReservationLocal, ReservationLocal, QFilterCondition> {
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestNameIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'guestName',
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestNameIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'guestName',
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestNameEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'guestName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestNameGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'guestName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestNameLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'guestName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestNameBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'guestName',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestNameStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'guestName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestNameEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'guestName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestNameContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'guestName',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestNameMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'guestName',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestNameIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'guestName',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestNameIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'guestName',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestPhoneIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'guestPhone',
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestPhoneIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'guestPhone',
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestPhoneEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'guestPhone',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestPhoneGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'guestPhone',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestPhoneLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'guestPhone',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestPhoneBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'guestPhone',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestPhoneStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'guestPhone',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestPhoneEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'guestPhone',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestPhoneContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'guestPhone',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestPhoneMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'guestPhone',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestPhoneIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'guestPhone',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      guestPhoneIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'guestPhone',
+        value: '',
+      ));
+    });
+  }
+
   QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
       idEqualTo(Id value) {
     return QueryBuilder.apply(this, (query) {
@@ -902,6 +1240,34 @@ extension ReservationLocalQueryLinks
 extension ReservationLocalQuerySortBy
     on QueryBuilder<ReservationLocal, ReservationLocal, QSortBy> {
   QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
+      sortByGuestName() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'guestName', Sort.asc);
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
+      sortByGuestNameDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'guestName', Sort.desc);
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
+      sortByGuestPhone() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'guestPhone', Sort.asc);
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
+      sortByGuestPhoneDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'guestPhone', Sort.desc);
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
       sortByLastUpdated() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'lastUpdated', Sort.asc);
@@ -988,6 +1354,34 @@ extension ReservationLocalQuerySortBy
 
 extension ReservationLocalQuerySortThenBy
     on QueryBuilder<ReservationLocal, ReservationLocal, QSortThenBy> {
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
+      thenByGuestName() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'guestName', Sort.asc);
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
+      thenByGuestNameDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'guestName', Sort.desc);
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
+      thenByGuestPhone() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'guestPhone', Sort.asc);
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
+      thenByGuestPhoneDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'guestPhone', Sort.desc);
+    });
+  }
+
   QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy> thenById() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'id', Sort.asc);
@@ -1089,6 +1483,20 @@ extension ReservationLocalQuerySortThenBy
 extension ReservationLocalQueryWhereDistinct
     on QueryBuilder<ReservationLocal, ReservationLocal, QDistinct> {
   QueryBuilder<ReservationLocal, ReservationLocal, QDistinct>
+      distinctByGuestName({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'guestName', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QDistinct>
+      distinctByGuestPhone({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'guestPhone', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QDistinct>
       distinctByLastUpdated() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'lastUpdated');
@@ -1136,6 +1544,20 @@ extension ReservationLocalQueryProperty
   QueryBuilder<ReservationLocal, int, QQueryOperations> idProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'id');
+    });
+  }
+
+  QueryBuilder<ReservationLocal, String?, QQueryOperations>
+      guestNameProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'guestName');
+    });
+  }
+
+  QueryBuilder<ReservationLocal, String?, QQueryOperations>
+      guestPhoneProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'guestPhone');
     });
   }
 

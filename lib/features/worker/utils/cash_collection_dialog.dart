@@ -10,91 +10,187 @@ import 'package:falconest/features/worker/providers/worker_detail_provider.dart'
 /// Zobrazí potvrzovací dialog pro výběr hotovosti při dokončení úkolu.
 ///
 /// Pokud [detail.metadata] obsahuje amount_to_collect > 0, zobrazí dialog.
+/// Parametr [forceShowForExtraOnly] umožňuje zobrazit dialog i s plánovanou částkou 0
+/// (např. pro úklid – uklízečka může zadat jen extra hotovost).
+///
 /// Návratová hodnota:
-/// - null = dialog nebyl zobrazen (žádná částka), volající provede běžné dokončení,
+/// - null = dialog nebyl zobrazen (žádná částka a ne forceShow), volající provede běžné dokončení,
 /// - true = úkol byl dokončen (ANO nebo NEVYBRAL), volající může zavřít obrazovku,
 /// - false = uživatel zrušil, úkol zůstává nedokončený.
 ///
-/// Pokud zaměstnanec potvrdí převzetí, peníze se mu přičtou do jeho dlužné peněženky.
+/// Při potvrzení převzetí se sečte plánovaná částka + zadaná extra částka.
 Future<bool?> maybeShowCashCollectionDialog(
   BuildContext context,
   WidgetRef ref,
   dynamic detail, {
   required String taskId,
   required VoidCallback onCompleted,
+  bool forceShowForExtraOnly = false,
+  bool completeTaskOnConfirm = true,
 }) async {
   final meta = detail?.metadata;
-  if (meta == null || meta is! Map) return null;
+  if (meta == null || meta is! Map) {
+    if (!forceShowForExtraOnly) return null;
+  }
 
-  final amountRaw = meta['amount_to_collect'];
-  final amount = (amountRaw is num)
+  final amountRaw = meta?['amount_to_collect'];
+  final plannedAmount = (amountRaw is num)
       ? amountRaw.toDouble()
-      : (amountRaw != null ? double.tryParse(amountRaw.toString()) : null);
-  if (amount == null || amount <= 0) return null;
+      : (amountRaw != null ? double.tryParse(amountRaw.toString()) : null) ?? 0;
+
+  if (plannedAmount <= 0 && !forceShowForExtraOnly) return null;
 
   final formatted = NumberFormat.currency(
     locale: context.locale.toString(),
     symbol: '€',
     decimalDigits: 2,
-  ).format(amount);
+  ).format(plannedAmount);
 
   return showDialog<bool>(
     context: context,
     barrierDismissible: false,
-    builder: (ctx) => AlertDialog(
+    builder: (ctx) => _CashCollectionDialogContent(
+      plannedAmount: plannedAmount,
+      formattedPlanned: formatted,
+      forceShowForExtraOnly: forceShowForExtraOnly,
+      taskId: taskId,
+      ref: ref,
+      onCompleted: onCompleted,
+      completeTaskOnConfirm: completeTaskOnConfirm,
+    ),
+  );
+}
+
+/// Vnitřní StatefulWidget pro dialog s polem Extra částka.
+class _CashCollectionDialogContent extends StatefulWidget {
+  const _CashCollectionDialogContent({
+    required this.plannedAmount,
+    required this.formattedPlanned,
+    required this.forceShowForExtraOnly,
+    required this.taskId,
+    required this.ref,
+    required this.onCompleted,
+    this.completeTaskOnConfirm = true,
+  });
+
+  final double plannedAmount;
+  final String formattedPlanned;
+  final bool forceShowForExtraOnly;
+  final String taskId;
+  final WidgetRef ref;
+  final VoidCallback onCompleted;
+  final bool completeTaskOnConfirm;
+
+  @override
+  State<_CashCollectionDialogContent> createState() => _CashCollectionDialogContentState();
+}
+
+class _CashCollectionDialogContentState extends State<_CashCollectionDialogContent> {
+  final _extraController = TextEditingController();
+
+  @override
+  void dispose() {
+    _extraController.dispose();
+    super.dispose();
+  }
+
+  double? _parseExtra() {
+    final t = _extraController.text.trim();
+    if (t.isEmpty) return 0;
+    return double.tryParse(t.replaceAll(',', '.'));
+  }
+
+  Future<void> _onYes() async {
+    final extra = _parseExtra() ?? 0;
+    final total = widget.plannedAmount + extra;
+    if (total <= 0) return;
+
+    final tenantId = widget.ref.read(authNotifierProvider).tenantIdForData;
+    final profileId = widget.ref.read(authNotifierProvider).state.profileId;
+    if (tenantId == null || tenantId.isEmpty || profileId == null || profileId.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('worker.cash_collection_error'.tr(namedArgs: {'error': 'Missing tenant or profile'})),
+          ),
+        );
+      }
+      return;
+    }
+
+    try {
+      await CashWalletRepository.instance.recordCashCollection(
+        taskId: widget.taskId,
+        amount: total,
+        tenantId: tenantId,
+        profileId: profileId,
+      );
+      if (widget.completeTaskOnConfirm) {
+        await widget.ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
+              widget.taskId,
+              'completed',
+              completedAt: DateTime.now().toUtc(),
+            );
+      }
+      if (mounted) Navigator.of(context).pop(true);
+      widget.onCompleted();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('worker.cash_collection_confirmed'.tr())),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('worker.cash_collection_error'.tr(namedArgs: {'error': e.toString()})),
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isExtraOnly = widget.forceShowForExtraOnly && widget.plannedAmount <= 0;
+    final contentText = isExtraOnly
+        ? 'worker.cash_collection_extra_only'.tr()
+        : 'worker.cash_collection_planned_extra'.tr(namedArgs: {'amount': widget.formattedPlanned});
+
+    return AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       title: Text('worker.cash_collection_confirm_title'.tr()),
-      content: Text(
-        'worker.cash_collection_confirm_message'.tr(namedArgs: {'amount': formatted}),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(contentText),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _extraController,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(
+              labelText: 'worker.cash_collection_extra_label'.tr(),
+              hintText: '0',
+              border: const OutlineInputBorder(),
+            ),
+          ),
+        ],
       ),
       contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
       actionsPadding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
       actionsOverflowAlignment: OverflowBarAlignment.center,
       actions: [
-        // Tlačítka vertikálně pro mobilní přehlednost.
         Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 1. Hlavní akce – ANO
             FilledButton(
               onPressed: () async {
-                final tenantId = ref.read(authNotifierProvider).tenantIdForData;
-                final profileId = ref.read(authNotifierProvider).state.profileId;
-                if (tenantId == null || tenantId.isEmpty || profileId == null || profileId.isEmpty) {
-                  if (ctx.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('worker.cash_collection_error'.tr(namedArgs: {'error': 'Missing tenant or profile'}))),
-                    );
-                  }
-                  return;
-                }
-                try {
-                  await CashWalletRepository.instance.recordCashCollection(
-                    taskId: taskId,
-                    amount: amount,
-                    tenantId: tenantId,
-                    profileId: profileId,
-                  );
-                  await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
-                        taskId,
-                        'completed',
-                        completedAt: DateTime.now().toUtc(),
-                      );
-                  if (ctx.mounted) Navigator.of(ctx).pop(true);
-                  onCompleted();
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('worker.cash_collection_confirmed'.tr())),
-                    );
-                  }
-                } catch (e) {
-                  if (ctx.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('worker.cash_collection_error'.tr(namedArgs: {'error': e.toString()}))),
-                    );
-                  }
-                }
+                final extra = _parseExtra() ?? 0;
+                final total = widget.plannedAmount + extra;
+                if (total <= 0) return;
+                await _onYes();
               },
               style: FilledButton.styleFrom(
                 backgroundColor: Colors.green.shade700,
@@ -104,18 +200,19 @@ Future<bool?> maybeShowCashCollectionDialog(
               child: Text('worker.cash_collection_btn_yes'.tr()),
             ),
             const SizedBox(height: 10),
-            // 2. Alternativa – NE (nestandardní situace)
             OutlinedButton(
               onPressed: () async {
-                await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
-                      taskId,
-                      'completed',
-                      completedAt: DateTime.now().toUtc(),
-                      metadataOverlay: {'cash_collection_failed': true},
-                    );
-                if (ctx.mounted) Navigator.of(ctx).pop(true);
-                onCompleted();
-                if (context.mounted) {
+                if (widget.completeTaskOnConfirm) {
+                  await widget.ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
+                        widget.taskId,
+                        'completed',
+                        completedAt: DateTime.now().toUtc(),
+                        metadataOverlay: {'cash_collection_failed': true},
+                      );
+                }
+                if (mounted) Navigator.of(context).pop(true);
+                widget.onCompleted();
+                if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(content: Text('worker.cash_collection_not_collected'.tr())),
                   );
@@ -129,9 +226,8 @@ Future<bool?> maybeShowCashCollectionDialog(
               child: Text('worker.cash_collection_btn_no'.tr()),
             ),
             const SizedBox(height: 10),
-            // 3. Zrušit
             TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
+              onPressed: () => Navigator.of(context).pop(false),
               style: TextButton.styleFrom(
                 foregroundColor: Colors.grey.shade700,
                 padding: const EdgeInsets.symmetric(vertical: 14),
@@ -141,6 +237,6 @@ Future<bool?> maybeShowCashCollectionDialog(
           ],
         ),
       ],
-    ),
-  );
+    );
+  }
 }

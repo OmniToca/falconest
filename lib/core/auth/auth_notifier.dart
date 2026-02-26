@@ -4,6 +4,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'package:falconest/core/auth/profile_cache_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
 /// Stav přihlášeného uživatele (efektivní „profile model“) – role a tenant_id z profiles.
@@ -297,6 +298,8 @@ class AuthNotifier extends ChangeNotifier {
       _isProfileLoading = false;
       _selectedTenantId = null;
       _state = const AppAuthState(isImpersonating: false, isTenantActive: null, paidUntil: null, preferredCurrency: null);
+      // OFFLINE-FIRST: Při odhlášení vymazat cachovaný profil – nesmí zůstat data předchozího uživatele.
+      ProfileCacheService.clear();
       notifyListeners();
     }
   }
@@ -495,6 +498,22 @@ class AuthNotifier extends ChangeNotifier {
         languageCode: languageCodeStr,
         preferredCurrency: preferredCurrencyStr,
       );
+
+      // OFFLINE-FIRST: Uložit profil do lokální cache. Při příštím startu bez sítě
+      // (letadlo, sklep, horší signál) AuthNotifier načte z cache místo chybové obrazovky.
+      await ProfileCacheService.save(
+        CachedProfile(
+          authId: user.id,
+          role: role,
+          profileId: profileIdStr,
+          tenantId: tenantIdStr,
+          languageCode: languageCodeStr,
+          preferredCurrency: preferredCurrencyStr,
+          isTenantActive: isTenantActive,
+          paidUntil: paidUntil,
+          cachedAt: DateTime.now().toUtc(),
+        ),
+      );
     } catch (e, st) {
       if (kDebugMode) {
         // ignore: avoid_print
@@ -512,10 +531,43 @@ class AuthNotifier extends ChangeNotifier {
         print('DEBUG: Stack trace: $st');
       }
 
-      // NEODHLASOVAT! Uživatel zůstane přihlášen, zobrazíme chybu.
-      // Odhlášení pouze při explicitním kliknutí na Odhlásit se.
-      _profileLoadError = 'login.error_profile_load'.tr();
-      _state = AppAuthState(user: user, role: null, tenantId: null, profileId: null, isImpersonating: false, isTenantActive: null, paidUntil: null, languageCode: null, preferredCurrency: null);
+      // OFFLINE-FIRST ZÁCHRANNÁ SÍŤ: Při síťové chybě (letadlo, sklep, timeout) zkusit
+      // načíst poslední známý profil z lokální cache. Uživatel se dostane do aplikace
+      // s cachovanými daty místo chybové obrazovky "Chyba načtení profilu".
+      final cached = await ProfileCacheService.load(user.id);
+      if (cached != null && cached.authId == user.id) {
+        if (kDebugMode) {
+          // ignore: avoid_print
+          print('DEBUG: Using cached profile for offline fallback. role=${cached.role} tenant_id=${cached.tenantId}');
+        }
+        _profileLoadError = null;
+        _state = AppAuthState(
+          user: user,
+          role: cached.role,
+          tenantId: cached.tenantId,
+          profileId: cached.profileId,
+          isImpersonating: false,
+          isTenantActive: cached.isTenantActive,
+          paidUntil: cached.paidUntil,
+          languageCode: cached.languageCode,
+          preferredCurrency: cached.preferredCurrency,
+        );
+      } else {
+        // Cache prázdná nebo neplatná – zobrazit chybu jako dosud.
+        // NEODHLASOVAT! Uživatel zůstane přihlášen, odhlášení pouze při explicitním kliknutí.
+        _profileLoadError = 'login.error_profile_load'.tr();
+        _state = AppAuthState(
+          user: user,
+          role: null,
+          tenantId: null,
+          profileId: null,
+          isImpersonating: false,
+          isTenantActive: null,
+          paidUntil: null,
+          languageCode: null,
+          preferredCurrency: null,
+        );
+      }
     } finally {
       _isProfileLoading = false;
       notifyListeners();

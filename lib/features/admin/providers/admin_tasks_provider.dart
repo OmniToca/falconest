@@ -4,6 +4,8 @@ import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/offline/mutation_queue_service.dart';
+import 'package:falconest/core/offline/network_error_helper.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/models/reservation_service_model.dart';
 import 'package:falconest/features/admin/models/task_category_model.dart';
@@ -530,7 +532,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
     const int _maxReservationsPerRun = 500;
     final reservationsLimited = reservations.take(_maxReservationsPerRun).toList();
     final reservationIds = reservationsLimited.map((r) => r.id).where((id) => id.isNotEmpty).toList();
-    final reservationServicesByRes = await fetchByReservationIds(reservationIds);
+    final reservationServicesByRes = await fetchByReservationIds(reservationIds, tenantId);
 
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
@@ -759,9 +761,56 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
     }
 
     if (toInsert.isEmpty) return 0;
-
-    await SupabaseService.client.from('tasks').insert(toInsert);
-    return toInsert.length;
+    try {
+      await SupabaseService.client.from('tasks').insert(toInsert);
+      return toInsert.length;
+    } catch (e) {
+      // PROČ: Pokud selže odeslání na server kvůli chybějícímu internetu,
+      // zachráníme data do lokální fronty. NetworkSyncWatcher je později odešle.
+      if (isNetworkError(e)) {
+        final mutationQueue = ref.read(mutationQueueServiceProvider);
+        for (final payload in toInsert) {
+          await mutationQueue.enqueueMutation(
+            table: 'tasks',
+            action: 'INSERT',
+            payload: Map<String, dynamic>.from(payload),
+          );
+        }
+        // PROČ: Optimistic UI. I když jsme offline a data šla do fronty, musíme je uživateli hned
+        // zobrazit na obrazovce (přidat do lokálního stavu), aby si nemyslel, že se ztratila.
+        final current = state.valueOrNull ?? [];
+        final apartmentNameById = {for (final a in apartments) a.id: a.name};
+        final nameByProfileId = {for (final m in team) m.dropdownId: m.name};
+        final baseMs = DateTime.now().millisecondsSinceEpoch;
+        final newRows = <TaskRow>[];
+        for (var i = 0; i < toInsert.length; i++) {
+          final p = toInsert[i];
+          final tempId = 'offline_${baseMs}_$i';
+          final aptId = (p['apartment_id'] as String?) ?? '';
+          final assignedTo = p['assigned_to'] as String?;
+          final map = <String, dynamic>{
+            'id': tempId,
+            'apartment_id': aptId,
+            'assigned_to': assignedTo,
+            'title': p['title'],
+            'description': p['description'],
+            'status': p['status'],
+            'task_type': p['task_type'],
+            'due_date': p['due_date'],
+            'scheduled_start': p['scheduled_start'],
+            'apartment_name': apartmentNameById[aptId],
+            'assigned_to_name': assignedTo != null ? nameByProfileId[assignedTo] : null,
+            'reservation_id': p['reservation_id'],
+            'service_id': p['service_id'],
+            'metadata': p['metadata'] ?? {},
+          };
+          newRows.add(TaskRow.fromJson(map));
+        }
+        state = AsyncValue.data([...current, ...newRows]);
+        return toInsert.length;
+      }
+      rethrow;
+    }
   }
 
   /// Generuje pravidelné (scheduled) úkoly pro apartmány – nezávisle na rezervacích.
@@ -924,8 +973,55 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
     }
 
     if (toInsert.isEmpty) return 0;
-    await SupabaseService.client.from('tasks').insert(toInsert);
-    return toInsert.length;
+    try {
+      await SupabaseService.client.from('tasks').insert(toInsert);
+      return toInsert.length;
+    } catch (e) {
+      // PROČ: Síťová chyba – zachránit do fronty. NetworkSyncWatcher odešle po obnovení sítě.
+      if (isNetworkError(e)) {
+        final mutationQueue = ref.read(mutationQueueServiceProvider);
+        for (final payload in toInsert) {
+          await mutationQueue.enqueueMutation(
+            table: 'tasks',
+            action: 'INSERT',
+            payload: Map<String, dynamic>.from(payload),
+          );
+        }
+        // PROČ: Optimistic UI. I když jsme offline a data šla do fronty, musíme je uživateli hned
+        // zobrazit na obrazovce (přidat do lokálního stavu), aby si nemyslel, že se ztratila.
+        final current = state.valueOrNull ?? [];
+        final apartmentNameById = {for (final a in apartments) a.id: a.name};
+        final nameByProfileId = {for (final m in team) m.dropdownId: m.name};
+        final baseMs = DateTime.now().millisecondsSinceEpoch;
+        final newRows = <TaskRow>[];
+        for (var i = 0; i < toInsert.length; i++) {
+          final p = toInsert[i];
+          final tempId = 'offline_${baseMs}_$i';
+          final aptId = (p['apartment_id'] as String?) ?? '';
+          final assignedTo = p['assigned_to'] as String?;
+          final map = <String, dynamic>{
+            'id': tempId,
+            'apartment_id': aptId,
+            'assigned_to': assignedTo,
+            'title': p['title'],
+            'description': p['description'],
+            'status': p['status'],
+            'task_type': p['task_type'],
+            'due_date': p['due_date'],
+            'scheduled_start': p['scheduled_start'],
+            'apartment_name': apartmentNameById[aptId],
+            'assigned_to_name': assignedTo != null ? nameByProfileId[assignedTo] : null,
+            'reservation_id': p['reservation_id'],
+            'service_id': p['service_id'],
+            'metadata': p['metadata'] ?? {},
+          };
+          newRows.add(TaskRow.fromJson(map));
+        }
+        state = AsyncValue.data([...current, ...newRows]);
+        return toInsert.length;
+      }
+      rethrow;
+    }
   }
 
   /// Aktualizuje stav úkolu v Supabase (pro Kanban drag & drop).
@@ -934,11 +1030,154 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
   Future<void> updateTaskStatus(String taskId, String newStatus) async {
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     if (tenantId == null || tenantId.isEmpty) return;
-    await SupabaseService.client
-        .from('tasks')
-        .update({'status': newStatus})
-        .eq('id', taskId)
-        .eq('tenant_id', tenantId);
+    try {
+      await SupabaseService.client
+          .from('tasks')
+          .update({'status': newStatus})
+          .eq('id', taskId)
+          .eq('tenant_id', tenantId);
+    } catch (e) {
+      // PROČ: Offline – uložit do fronty. NetworkSyncWatcher odešle při návratu sítě.
+      if (isNetworkError(e)) {
+        await ref.read(mutationQueueServiceProvider).enqueueMutation(
+              table: 'tasks',
+              action: 'UPDATE',
+              payload: {'status': newStatus, 'tenant_id': tenantId},
+              recordId: taskId,
+            );
+        // PROČ: Optimistic UI. I když jsme offline a data šla do fronty, musíme je uživateli hned
+        // zobrazit na obrazovce (aktualizovat lokální stav), aby si nemyslel, že se změna ztratila.
+        final current = state.valueOrNull;
+        if (current != null) {
+          final idx = current.indexWhere((t) => t.id == taskId);
+          if (idx >= 0) {
+            final updated = current[idx].copyWith(status: newStatus);
+            state = AsyncValue.data([
+              ...current.sublist(0, idx),
+              updated,
+              ...current.sublist(idx + 1),
+            ]);
+          }
+        }
+      } else {
+        rethrow;
+      }
+    }
+  }
+
+  /// Vloží nový úkol do Supabase. Veškerá logika (insert → catch → enqueue → optimistic state) v jednom místě.
+  /// UI jen volá tuto metodu a čeká na výsledek. [payload] musí obsahovat tenant_id, apartment_id, title,
+  /// description, status, task_type, due_date, scheduled_start; volitelně assigned_to, metadata.
+  /// Vrací true při úspěchu (online i offline), při chybě vyhodí výjimku.
+  Future<void> insertTaskInAdmin(Map<String, dynamic> payload) async {
+    final p = Map<String, dynamic>.from(payload);
+    if (p['metadata'] == null) p['metadata'] = {};
+    try {
+      await SupabaseService.client.from('tasks').insert(p);
+      return;
+    } catch (e) {
+      if (isNetworkError(e)) {
+        await ref.read(mutationQueueServiceProvider).enqueueMutation(
+          table: 'tasks',
+          action: 'INSERT',
+          payload: p,
+        );
+        // PROČ: Optimistic UI. I když jsme offline a data šla do fronty, musíme je uživateli hned
+        // zobrazit na obrazovce (přidat do lokálního stavu), aby si nemyslel, že se ztratila.
+        final apartments = ref.read(apartmentsProvider).valueOrNull ?? [];
+        final team = ref.read(adminTeamProvider).valueOrNull ?? [];
+        final apartmentNameById = {for (final a in apartments) a.id: a.name};
+        final nameByProfileId = {for (final m in team) m.dropdownId: m.name};
+        final tempId = 'offline_${DateTime.now().millisecondsSinceEpoch}';
+        final aptId = (p['apartment_id'] as String?) ?? '';
+        final assignedTo = p['assigned_to'] as String?;
+        final map = <String, dynamic>{
+          'id': tempId,
+          'apartment_id': aptId,
+          'assigned_to': assignedTo,
+          'title': p['title'],
+          'description': p['description'],
+          'status': p['status'],
+          'task_type': p['task_type'],
+          'due_date': p['due_date'],
+          'scheduled_start': p['scheduled_start'],
+          'apartment_name': apartmentNameById[aptId],
+          'assigned_to_name': assignedTo != null ? nameByProfileId[assignedTo] : null,
+          'metadata': p['metadata'] ?? {},
+        };
+        final newRow = TaskRow.fromJson(map);
+        final current = state.valueOrNull ?? [];
+        state = AsyncValue.data([...current, newRow]);
+        return;
+      }
+      rethrow;
+    }
+  }
+
+  /// Aktualizuje existující úkol v Supabase. Veškerá logika (update → catch → enqueue → optimistic state) v jednom místě.
+  /// [taskId] – ID úkolu, [updateFields] – mapuje sloupce na nové hodnoty (apartment_id, assigned_to, title, atd.).
+  /// Uloží se tenant_id do payloadu pro frontu. Vrací při úspěchu (online i offline), při chybě vyhodí.
+  Future<void> updateTaskInAdmin(String taskId, Map<String, dynamic> updateFields) async {
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) {
+      throw StateError('Chybí tenant_id');
+    }
+    final payload = Map<String, dynamic>.from(updateFields)..['tenant_id'] = tenantId;
+    try {
+      await SupabaseService.client
+          .from('tasks')
+          .update(updateFields)
+          .eq('id', taskId)
+          .eq('tenant_id', tenantId);
+      return;
+    } catch (e) {
+      if (isNetworkError(e)) {
+        await ref.read(mutationQueueServiceProvider).enqueueMutation(
+          table: 'tasks',
+          action: 'UPDATE',
+          payload: payload,
+          recordId: taskId,
+        );
+        // PROČ: Optimistic UI. I když jsme offline a data šla do fronty, musíme je uživateli hned
+        // zobrazit na obrazovce (aktualizovat lokální stav), aby si nemyslel, že se změna ztratila.
+        final current = state.valueOrNull;
+        if (current != null) {
+          final idx = current.indexWhere((t) => t.id == taskId);
+          if (idx >= 0) {
+            final old = current[idx];
+            final newAptId = (payload['apartment_id'] as String?) ?? old.apartmentId;
+            final newAssignedTo = payload['assigned_to'] as String?;
+            final apartments = ref.read(apartmentsProvider).valueOrNull ?? [];
+            final team = ref.read(adminTeamProvider).valueOrNull ?? [];
+            final apartmentNameById = {for (final a in apartments) a.id: a.name};
+            final nameByProfileId = {for (final m in team) m.dropdownId: m.name};
+            final parsedDue = TaskRow._parseOptionalDateTime(payload['due_date']) ??
+                TaskRow._parseOptionalDateTime(payload['scheduled_start']);
+            final parsedSched = TaskRow._parseOptionalDateTime(payload['scheduled_start']) ??
+                TaskRow._parseOptionalDateTime(payload['due_date']);
+            final updated = old.copyWith(
+              apartmentId: newAptId,
+              assignedTo: newAssignedTo,
+              title: (payload['title'] as String?) ?? old.title,
+              description: (payload['description'] as String?) ?? old.description,
+              status: (payload['status'] as String?) ?? old.status,
+              taskType: (payload['task_type'] as String?) ?? old.taskType,
+              dueDate: parsedDue ?? old.dueDate,
+              scheduledStart: parsedSched ?? old.scheduledStart ?? old.dueDate,
+              apartmentName: apartmentNameById[newAptId] ?? old.apartmentName,
+              assignedToName: newAssignedTo != null ? nameByProfileId[newAssignedTo] : null,
+            );
+            state = AsyncValue.data([
+              ...current.sublist(0, idx),
+              updated,
+              ...current.sublist(idx + 1),
+            ]);
+          }
+        }
+        return;
+      }
+      rethrow;
+    }
   }
 
   /// Hromadně schválí všechny úkoly se stavem pending – změní je na assigned.

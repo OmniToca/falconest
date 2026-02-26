@@ -85,6 +85,20 @@ class TaskRepositoryMobile implements ITaskRepository {
           .supabaseIdEqualTo(task.apartmentSupabaseId)
           .findFirstSync();
     }
+    // PROČ: Načtení guest_name a guest_phone z rezervace pro check-in/transfer (kontakt na hosta v terénu).
+    String? guestName;
+    String? guestPhone;
+    if (task.reservationSupabaseId != null && task.reservationSupabaseId!.trim().isNotEmpty) {
+      final res = isar.reservationLocals
+          .filter()
+          .tenantIdEqualTo(tenantId)
+          .supabaseIdEqualTo(task.reservationSupabaseId!)
+          .findFirstSync();
+      if (res != null) {
+        guestName = res.guestName?.trim().isEmpty == true ? null : res.guestName?.trim();
+        guestPhone = res.guestPhone?.trim().isEmpty == true ? null : res.guestPhone?.trim();
+      }
+    }
     return WorkerTaskDetail(
       id: task.supabaseId ?? taskId,
       title: task.title.trim(),
@@ -97,6 +111,8 @@ class TaskRepositoryMobile implements ITaskRepository {
       apartmentAddress: apt != null && (apt.address?.trim().isEmpty ?? true) == false ? apt.address!.trim() : null,
       keybox: apt != null && (apt.keybox?.trim().isEmpty ?? true) == false ? apt.keybox!.trim() : null,
       ownerNotes: apt != null && (apt.ownerNotes?.trim().isEmpty ?? true) == false ? apt.ownerNotes!.trim() : null,
+      guestName: guestName,
+      guestPhone: guestPhone,
       photoUrl: (task.photoUrl?.trim().isEmpty ?? true) ? null : task.photoUrl,
       metadata: _parseMetadata(task.metadataJson),
       startedAt: task.startedAt,

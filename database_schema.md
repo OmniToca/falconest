@@ -112,7 +112,7 @@
 | staff_absences | tenant_id | uuid | YES |
 | tasks | id | uuid | NO |
 | tasks | tenant_id | uuid | NO |
-| tasks | apartment_id | uuid | NO |
+| tasks | apartment_id | uuid | YES (NULL = úkol na úrovni agentury, např. alert z nepřítomnosti) |
 | tasks | assigned_user_id | uuid | YES |
 | tasks | scheduled_start | timestamp with time zone | NO |
 | tasks | status | text | NO |

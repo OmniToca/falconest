@@ -5,9 +5,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/auth/pin_storage.dart';
 import 'package:falconest/core/providers/connectivity_provider.dart';
+import 'package:falconest/core/widgets/sync_status_icon.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/features/settings/providers/profile_provider.dart';
+import 'package:falconest/features/worker/providers/weekly_stats_provider.dart';
 import 'package:falconest/features/worker/providers/worker_dashboard_provider.dart';
 import 'package:falconest/features/worker/providers/worker_sync_state_provider.dart';
 
@@ -73,6 +77,7 @@ class _WorkerDashboardScreenState extends ConsumerState<WorkerDashboardScreen> {
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
+          const SyncStatusIcon(),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: () => _refresh(),
@@ -198,34 +203,148 @@ class _WorkerDashboardScreenState extends ConsumerState<WorkerDashboardScreen> {
   }
 }
 
-class _WorkerDrawer extends StatelessWidget {
+/// Neklikatelná karta přehledu týdne – X úkolů • Y h.
+class _WeeklySummaryTile extends ConsumerWidget {
+  const _WeeklySummaryTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final statsAsync = ref.watch(weeklyStatsProvider);
+
+    return statsAsync.when(
+      data: (stats) {
+        final tasksText = 'worker.weekly_tasks_count'.tr(namedArgs: {'count': '${stats.totalTasks}'});
+        final hoursText = 'worker.weekly_hours_format'.tr(namedArgs: {'hours': _formatHours(stats.totalHours)});
+        return Container(
+          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: _primaryBlue.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: _primaryBlue.withValues(alpha: 0.2)),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.insert_chart_outlined, color: _primaryBlue, size: 24),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'worker.weekly_this_week'.tr(),
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '$tasksText • $hoursText',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+      loading: () => const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            Icon(Icons.insert_chart_outlined, color: Colors.grey),
+            SizedBox(width: 12),
+            Expanded(child: LinearProgressIndicator()),
+          ],
+        ),
+      ),
+      error: (_, __) => const SizedBox.shrink(),
+    );
+  }
+
+  /// Formátování hodin – 18.5 nebo 18 podle des. míst.
+  static String _formatHours(double h) {
+    if (h == h.truncateToDouble()) return h.toInt().toString();
+    return h.toStringAsFixed(1);
+  }
+}
+
+/// Drawer v Worker flow – vizitka uživatele, přehled týdne, Moje nepřítomnost, PIN, odhlášení.
+class _WorkerDrawer extends ConsumerWidget {
   const _WorkerDrawer({required this.hasPin});
 
   final bool hasPin;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final profileAsync = ref.watch(currentUserProfileProvider);
+    final auth = ref.watch(authNotifierProvider);
+    final roleLabel = (auth.role == 'admin' || auth.role == 'manager')
+        ? 'worker.drawer_role_admin'.tr()
+        : 'worker.drawer_role_worker'.tr();
+
     return Drawer(
       child: SafeArea(
         child: Column(
           children: [
+            // Sjednocená hlavička podle vzoru – vizitka přihlášeného uživatele.
+            UserAccountsDrawerHeader(
+              currentAccountPicture: CircleAvatar(
+                backgroundColor: _primaryBlue.withValues(alpha: 0.2),
+                child: Icon(Icons.person, color: _primaryBlue),
+              ),
+              accountName: profileAsync.when(
+                data: (p) => Text(
+                  p.name.isNotEmpty ? p.name : 'worker.drawer_my_profile'.tr(),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                    color: Colors.black87,
+                  ),
+                ),
+                loading: () => Text('worker.drawer_my_profile'.tr(), style: const TextStyle(fontWeight: FontWeight.bold)),
+                error: (_, __) => Text('worker.drawer_my_profile'.tr(), style: const TextStyle(fontWeight: FontWeight.bold)),
+              ),
+              accountEmail: profileAsync.when(
+                data: (p) => Text(
+                  p.email,
+                  style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+                ),
+                loading: () => const SizedBox.shrink(),
+                error: (_, __) => const SizedBox.shrink(),
+              ),
+              decoration: BoxDecoration(color: _primaryBlue.withValues(alpha: 0.08)),
+            ),
+            // Role – zobrazení primární role (admin/worker).
             Padding(
-              padding: const EdgeInsets.all(24),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Row(
                 children: [
-                  Icon(Icons.person, color: _primaryBlue),
-                  const SizedBox(width: 12),
-                  Text(
-                    'worker.my_work'.tr(),
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.bold,
-                          color: _primaryBlue,
-                        ),
-                  ),
+                  Icon(Icons.badge_outlined, size: 18, color: Colors.grey.shade600),
+                  const SizedBox(width: 8),
+                  Text(roleLabel, style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
                 ],
               ),
             ),
+            // Přehled týdne – neklikatelná informační karta (úkoly + odhadované hodiny).
+            _WeeklySummaryTile(),
             const Divider(),
+            // Moje nepřítomnost – přehled a žádosti o dovolenou/nemoc.
+            ListTile(
+              leading: const Icon(Icons.event_busy),
+              title: Text('worker.drawer_my_absences'.tr()),
+              onTap: () {
+                Navigator.of(context).pop();
+                context.push('/worker/absences');
+              },
+            ),
             if (hasPin && !kIsWeb)
               ListTile(
                 leading: const Icon(Icons.lock_outline),

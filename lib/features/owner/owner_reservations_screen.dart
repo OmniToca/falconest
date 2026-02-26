@@ -667,12 +667,21 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
   }
 
   /// Načte stav služeb z existující rezervace a sloučí s options (pro editaci).
+  /// tenant_id z apartmánu – majitel nemá tenantIdForData, proto fetchneme z bytu (V1_RELEASE_AUDIT).
   Future<void> _initServicesStateFromExisting(
     List<ApartmentServiceOption> options,
     String reservationId,
+    String apartmentId,
   ) async {
     if (_servicesLoadedForEdit) return;
-    final existingServices = await fetchByReservationId(reservationId);
+    final aptRes = await SupabaseService.client
+        .from('apartments')
+        .select('tenant_id')
+        .eq('id', apartmentId)
+        .maybeSingle();
+    final tenantId = aptRes?['tenant_id']?.toString();
+    if (tenantId == null || tenantId.isEmpty) return;
+    final existingServices = await fetchByReservationId(reservationId, tenantId);
     final byApartmentServiceId = {for (final s in existingServices) s.apartmentServiceId: s};
     if (!mounted) return;
     setState(() {
@@ -967,7 +976,7 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
                       WidgetsBinding.instance.addPostFrameCallback((_) async {
                         if (!mounted) return;
                         if (existing != null) {
-                          await _initServicesStateFromExisting(options, existing.id);
+                          await _initServicesStateFromExisting(options, existing.id, existing.apartmentId);
                         } else {
                           _initServicesState(options);
                         }

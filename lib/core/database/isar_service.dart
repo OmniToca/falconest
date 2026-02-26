@@ -4,6 +4,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'models/apartment_local.dart';
 import 'models/pending_audit_action.dart';
+import 'models/pending_mutation_local.dart';
 import 'models/reservation_local.dart';
 import 'models/task_local.dart';
 
@@ -38,7 +39,13 @@ class IsarService {
     final dir = await getApplicationDocumentsDirectory();
 
     _instance = await Isar.open(
-      [ApartmentLocalSchema, TaskLocalSchema, ReservationLocalSchema, PendingAuditActionSchema],
+      [
+        ApartmentLocalSchema,
+        TaskLocalSchema,
+        ReservationLocalSchema,
+        PendingAuditActionSchema,
+        PendingMutationLocalSchema,
+      ],
       directory: dir.path,
       name: 'falconest',
     );

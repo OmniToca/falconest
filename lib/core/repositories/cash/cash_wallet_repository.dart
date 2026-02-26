@@ -1,3 +1,6 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
+
+import 'package:falconest/core/offline/mutation_queue_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
 /// Řádek peněženky zaměstnance – pro seznam v admin UI.
@@ -26,7 +29,11 @@ class CashWalletRepository {
   ///
   /// Provede: (a) nalezení nebo vytvoření peněženky pro (tenantId, profileId),
   /// (b) vložení transakce COLLECTED_FROM_GUEST, (c) zvýšení balance.
-  /// Při selhání (např. offline) vyhodí výjimku – volající UI nesmí dokončit úkol.
+  /// Při síťové chybě (offline) uloží do MutationQueueService a vrací bez výjimky –
+  /// Sync Engine po návratu sítě provede celý flow.
+  ///
+  /// PROČ: Peníze se nesmí ztratit. Pokud jsme offline, uložíme výběr do fronty
+  /// a o procesování peněženky se postará Sync Engine.
   ///
   /// [profileId] – profiles.id aktuálně přihlášeného zaměstnance (převzal hotovost).
   Future<void> recordCashCollection({
@@ -37,48 +44,67 @@ class CashWalletRepository {
   }) async {
     if (amount <= 0) return;
 
-    final client = SupabaseService.client;
+    try {
+      final client = SupabaseService.client;
 
-    // (a) Nalezení nebo vytvoření peněženky pro (tenant_id, profile_id)
-    final existing = await client
-        .from('employee_cash_wallets')
-        .select('id, balance')
-        .eq('tenant_id', tenantId)
-        .eq('profile_id', profileId)
-        .maybeSingle();
+      // (a) Nalezení nebo vytvoření peněženky pro (tenant_id, profile_id)
+      final existing = await client
+          .from('employee_cash_wallets')
+          .select('id, balance')
+          .eq('tenant_id', tenantId)
+          .eq('profile_id', profileId)
+          .maybeSingle();
 
-    String walletId;
-    double currentBalance;
+      String walletId;
+      double currentBalance;
 
-    if (existing == null) {
-      final insertRes = await client.from('employee_cash_wallets').insert({
+      if (existing == null) {
+        final insertRes = await client.from('employee_cash_wallets').insert({
+          'tenant_id': tenantId,
+          'profile_id': profileId,
+          'balance': 0,
+        }).select('id').single();
+        walletId = insertRes['id'] as String;
+        currentBalance = 0;
+      } else {
+        walletId = existing['id'] as String;
+        currentBalance = (_toDouble(existing['balance']) ?? 0);
+      }
+
+      // (b) Vložení transakce do účetní knihy
+      await client.from('employee_cash_transactions').insert({
         'tenant_id': tenantId,
-        'profile_id': profileId,
-        'balance': 0,
-      }).select('id').single();
-      walletId = insertRes['id'] as String;
-      currentBalance = 0;
-    } else {
-      walletId = existing['id'] as String;
-      currentBalance = (_toDouble(existing['balance']) ?? 0);
+        'wallet_id': walletId,
+        'task_id': taskId,
+        'amount': amount,
+        'transaction_type': 'COLLECTED_FROM_GUEST',
+        'created_by': profileId,
+      });
+
+      // (c) Zvýšení balance v peněžence
+      final newBalance = currentBalance + amount;
+      await client
+          .from('employee_cash_wallets')
+          .update({'balance': newBalance, 'updated_at': DateTime.now().toUtc().toIso8601String()})
+          .eq('id', walletId);
+    } catch (e) {
+      if (!kIsWeb && MutationQueueService.isNetworkError(e)) {
+        // PROČ: Peníze se nesmí ztratit. Pokud jsme offline, uložíme výběr do fronty
+        // a o procesování peněženky se postará Sync Engine.
+        await MutationQueueService.instance.enqueueMutation(
+          table: 'employee_cash_transactions',
+          action: 'OFFLINE_CASH_COLLECTION',
+          payload: {
+            'tenant_id': tenantId,
+            'profile_id': profileId,
+            'task_id': taskId,
+            'amount': amount,
+          },
+        );
+        return;
+      }
+      rethrow;
     }
-
-    // (b) Vložení transakce do účetní knihy
-    await client.from('employee_cash_transactions').insert({
-      'tenant_id': tenantId,
-      'wallet_id': walletId,
-      'task_id': taskId,
-      'amount': amount,
-      'transaction_type': 'COLLECTED_FROM_GUEST',
-      'created_by': profileId,
-    });
-
-    // (c) Zvýšení balance v peněžence
-    final newBalance = currentBalance + amount;
-    await client
-        .from('employee_cash_wallets')
-        .update({'balance': newBalance, 'updated_at': DateTime.now().toUtc().toIso8601String()})
-        .eq('id', walletId);
   }
 
   /// Vynulování kapsy zaměstnance po odevzdání hotovosti na centrále.

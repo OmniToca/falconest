@@ -30,6 +30,7 @@ class WorkerTask {
 }
 
 /// Detail úkolu pro Worker Task Detail Screen (keybox, ownerNotes, photoUrl, metadata, časová razítka).
+/// [guestName] a [guestPhone] – z propojené rezervace pro check-in/transfer (kontakt na hosta).
 class WorkerTaskDetail {
   const WorkerTaskDetail({
     required this.id,
@@ -43,6 +44,8 @@ class WorkerTaskDetail {
     this.apartmentAddress,
     this.keybox,
     this.ownerNotes,
+    this.guestName,
+    this.guestPhone,
     this.photoUrl,
     this.metadata,
     this.startedAt,
@@ -60,6 +63,10 @@ class WorkerTaskDetail {
   final String? apartmentAddress;
   final String? keybox;
   final String? ownerNotes;
+  /// Jméno hosta z propojené rezervace (Check-in, Transfer).
+  final String? guestName;
+  /// Telefon hosta z propojené rezervace – pro tel: link.
+  final String? guestPhone;
   final String? photoUrl;
   /// JSONB metadata z tasks (amount_to_collect, custom_note, expected_audit_total, collection_breakdown).
   final Map<String, dynamic>? metadata;

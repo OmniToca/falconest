@@ -1,3 +1,4 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -400,8 +401,13 @@ final planningCalendarDataProvider =
 
   final conflictIds = detectConflicts(tasks);
 
+  // V1_RELEASE_AUDIT: Hardcoded 'NEPŘIŘAZENO' nahrazeno i18n klíčem planning_calendar.unassigned_row.
   final resources = <CalendarResource>[
-    const CalendarResource(id: kUnassignedResourceId, displayName: 'NEPŘIŘAZENO', avatarLetter: '?'),
+    CalendarResource(
+      id: kUnassignedResourceId,
+      displayName: 'planning_calendar.unassigned_row'.tr(),
+      avatarLetter: '?',
+    ),
     ...members.asMap().entries.map((e) {
       final m = e.value;
       final name = m.name.isNotEmpty ? m.name : (m.email ?? '?');
@@ -440,8 +446,13 @@ final planningCalendarDataForMonthProvider =
 
   final conflictIds = detectConflicts(tasks);
 
+  // V1_RELEASE_AUDIT: Hardcoded 'NEPŘIŘAZENO' nahrazeno i18n klíčem planning_calendar.unassigned_row.
   final resources = <CalendarResource>[
-    const CalendarResource(id: kUnassignedResourceId, displayName: 'NEPŘIŘAZENO', avatarLetter: '?'),
+    CalendarResource(
+      id: kUnassignedResourceId,
+      displayName: 'planning_calendar.unassigned_row'.tr(),
+      avatarLetter: '?',
+    ),
     ...members.asMap().entries.map((e) {
       final m = e.value;
       final name = m.name.isNotEmpty ? m.name : (m.email ?? '?');

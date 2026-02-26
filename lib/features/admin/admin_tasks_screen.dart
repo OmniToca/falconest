@@ -1503,13 +1503,22 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
 
     setState(() => _isSaving = true);
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('common.error'.tr()), backgroundColor: Colors.red),
+        );
+        setState(() => _isSaving = false);
+      }
+      return;
+    }
 
     try {
       final assignedToUuid = _selectedAssignedTo != null && _selectedAssignedTo!.isNotEmpty
           ? _selectedAssignedTo
           : null;
       final dueIso = dueDate.toUtc().toIso8601String();
-      await SupabaseService.client.from('tasks').insert({
+      final payload = {
         'tenant_id': tenantId,
         'apartment_id': _selectedApartmentId,
         'assigned_to': assignedToUuid,
@@ -1519,7 +1528,8 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
         'task_type': _taskType,
         'due_date': dueIso,
         'scheduled_start': dueIso,
-      });
+      };
+      await ref.read(adminTasksProvider.notifier).insertTaskInAdmin(payload);
       if (!mounted) return;
       Navigator.of(context).pop();
       widget.onSaved();
@@ -2030,7 +2040,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
           ? _selectedAssignedTo
           : null;
       final dueIso = dueDate.toUtc().toIso8601String();
-      await SupabaseService.client.from('tasks').update({
+      final updateFields = {
         'apartment_id': apartmentIdToSave,
         'assigned_to': assignedToUuid,
         'title': _titleController.text.trim(),
@@ -2039,8 +2049,8 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
         'task_type': _taskType,
         'due_date': dueIso,
         'scheduled_start': dueIso,
-      }).eq('id', widget.task.id).eq('tenant_id', tenantId);
-
+      };
+      await ref.read(adminTasksProvider.notifier).updateTaskInAdmin(widget.task.id, updateFields);
       if (!mounted) return;
       Navigator.of(context).pop();
       widget.onSaved();

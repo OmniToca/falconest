@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/providers/sync_status_provider.dart';
 import 'package:falconest/features/worker/data/services/worker_sync_service.dart';
 
 /// Stav synchronizace – pro UI upozornění na selhání push do Supabase.
@@ -22,17 +23,23 @@ class WorkerSyncStateNotifier extends StateNotifier<String?> {
   }
 
   /// Provede plnou synchronizaci a při chybě nastaví reportSyncError.
+  /// PROČ: syncInProgressProvider – SyncStatusIcon zobrazí stav „Syncing“ během běhu.
   Future<void> runSync() async {
     state = null;
     final tenantId = _ref.read(authNotifierProvider).tenantIdForData;
     final workerId = _ref.read(authNotifierProvider).state.profileId;
     if (tenantId == null || workerId == null) return;
 
-    await WorkerSyncService.syncTasksFromSupabase(
-      workerId,
-      tenantId,
-      onSyncError: reportSyncError,
-    );
+    _ref.read(syncInProgressProvider.notifier).state = true;
+    try {
+      await WorkerSyncService.syncTasksFromSupabase(
+        workerId,
+        tenantId,
+        onSyncError: reportSyncError,
+      );
+    } finally {
+      _ref.read(syncInProgressProvider.notifier).state = false;
+    }
   }
 }
 
