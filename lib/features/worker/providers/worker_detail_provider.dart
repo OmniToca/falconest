@@ -59,12 +59,14 @@ class WorkerTaskStatusNotifier extends StateNotifier<AsyncValue<void>> {
   /// [startedAt] – při přechodu do in_progress (Time Tracking).
   /// [completedAt] – při přechodu do completed (Time Tracking).
   /// [metadataOverlay] – volitelně sloučí klíče do metadata (např. cash_collection_failed).
+  /// [mediaUrls] – URL fotek z Supabase Storage (úkoly s requires_photo).
   Future<void> updateStatus(
     String taskId,
     String status, {
     DateTime? startedAt,
     DateTime? completedAt,
     Map<String, dynamic>? metadataOverlay,
+    List<String>? mediaUrls,
   }) async {
     state = const AsyncValue.loading();
     final tenantId = _ref.read(authNotifierProvider).tenantIdForData;
@@ -86,6 +88,7 @@ class WorkerTaskStatusNotifier extends StateNotifier<AsyncValue<void>> {
         startedAt: startedAt,
         completedAt: completedAt,
         metadataOverlay: metadataOverlay,
+        mediaUrls: mediaUrls,
       );
 
       _ref.invalidate(workerTaskDetailProvider(taskId));

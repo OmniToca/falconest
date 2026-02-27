@@ -1,18 +1,15 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/widgets/sync_status_icon.dart';
-import 'package:falconest/core/widgets/task_header_widget.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
 import 'package:falconest/features/worker/utils/cash_collection_dialog.dart';
 import 'package:falconest/features/worker/widgets/issue_reporter_dialog.dart';
+import 'package:falconest/features/worker/widgets/task_complete_with_photo_section.dart';
 import 'package:falconest/features/worker/widgets/task_countdown_timer.dart';
-
-const _primaryBlue = Color(0xFF1565C0);
+import 'package:falconest/features/worker/widgets/worker_task_shared_header.dart';
 
 /// MVP obrazovka pro úkoly typu Úklid.
 /// Jednoduché zobrazení dat a tlačítko Dokončit.
@@ -36,7 +33,7 @@ class CleaningTaskScreen extends ConsumerWidget {
           backgroundColor: const Color(0xFFF3E5F5),
           appBar: AppBar(
             title: Text(
-              detail.title.isNotEmpty ? detail.title : detail.apartmentName ?? '—',
+              _appBarTitle(detail),
               style: const TextStyle(color: Colors.black87),
             ),
             backgroundColor: Colors.transparent,
@@ -86,14 +83,10 @@ class CleaningTaskScreen extends ConsumerWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        // Sjednocená hlavička podle vzoru Check-in (nadpis + datum/čas s ikonou hodin).
-                        TaskHeaderWidget(
+                        WorkerTaskSharedHeader(
                           title: detail.title.isNotEmpty ? detail.title : detail.apartmentName ?? '—',
                           scheduledStart: detail.scheduledStart,
-                        ),
-                        const SizedBox(height: 16),
-                        // PROČ: Odpočet času při aktivním úkolu – uklízečka vidí zbývající čas či zpoždění.
-                        TaskCountdownTimer(
+                          apartmentAddress: detail.apartmentAddress,
                           startedAt: detail.startedAt,
                           completedAt: detail.completedAt,
                           estimatedMinutes: parseTaskEstimateMinutes(
@@ -101,8 +94,6 @@ class CleaningTaskScreen extends ConsumerWidget {
                             detail.metadata,
                           ),
                         ),
-                        // PROČ: Tlačítko Navigovat – uklízečka potřebuje cestu k bytu, stejně jako ostatní profese.
-                        _buildAddressWithNavigate(context, detail.apartmentAddress),
                         const SizedBox(height: 16),
                         // PROČ: Kód schránky a poznámky majitele – kritické pro vstup do bytu (bez kontaktu na hosta).
                         ..._buildKeyboxAndOwnerNotes(detail),
@@ -116,7 +107,11 @@ class CleaningTaskScreen extends ConsumerWidget {
                   ),
                 ),
                 const SizedBox(height: 16),
-                _buildActionButton(context, ref, taskId, detail.status, 'worker.task_detail_finish'),
+                TaskCompleteWithPhotoSection(
+                  taskId: taskId,
+                  detail: detail,
+                  finishKey: 'worker.task_detail_finish',
+                ),
               ],
             ),
           ),
@@ -129,137 +124,10 @@ class CleaningTaskScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildActionButton(BuildContext context, WidgetRef ref, String taskId, String status, String finishKey) {
-    final s = status.trim().toLowerCase();
-    final isInProgress = s == 'in_progress' || s == 'probíhá';
-    final isCompleted = s == 'completed' || s == 'done' || s == 'dokončeno' || s == 'hotovo';
-
-    if (isCompleted) {
-      return SizedBox(
-        width: double.infinity,
-        child: FilledButton(
-          onPressed: () => context.pop(),
-          style: FilledButton.styleFrom(
-            backgroundColor: Colors.grey,
-            foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(vertical: 16),
-          ),
-          child: Text('common.back'.tr()),
-        ),
-      );
-    }
-
-    // Dvoufázové odpracování: Nejprve Zahájit (in_progress), poté Dokončit (completed).
-    // Uložení přesného UTC času pro sledování reálné doby práce.
-    // PROČ: Potvrzovací dialog zabrání překlikům v kapse při dokončení.
-    if (isInProgress) {
-      return SizedBox(
-        width: double.infinity,
-        child: FilledButton(
-          onPressed: () async {
-            final ok = await showDialog<bool>(
-              context: context,
-              builder: (ctx) => AlertDialog(
-                title: Text('worker.confirm_finish_title'.tr()),
-                content: Text('worker.confirm_finish_message'.tr()),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.of(ctx).pop(false),
-                    child: Text('common.cancel'.tr()),
-                  ),
-                  FilledButton(
-                    onPressed: () => Navigator.of(ctx).pop(true),
-                    child: Text('common.ok'.tr()),
-                  ),
-                ],
-              ),
-            );
-            if (ok != true || !context.mounted) return;
-            await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
-                  taskId,
-                  'completed',
-                  completedAt: DateTime.now().toUtc(),
-                );
-            if (context.mounted) context.pop();
-          },
-          style: FilledButton.styleFrom(
-            backgroundColor: _primaryBlue,
-            foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(vertical: 16),
-          ),
-          child: Text(finishKey.tr()),
-        ),
-      );
-    }
-
-    // PROČ: Potvrzovací dialog zabrání překlikům v kapse při zahájení.
-    return SizedBox(
-      width: double.infinity,
-      child: FilledButton(
-        onPressed: () async {
-          final ok = await showDialog<bool>(
-            context: context,
-            builder: (ctx) => AlertDialog(
-              title: Text('worker.confirm_start_title'.tr()),
-              content: Text('worker.confirm_start_message'.tr()),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  child: Text('common.cancel'.tr()),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  child: Text('common.ok'.tr()),
-                ),
-              ],
-            ),
-          );
-          if (ok != true) return;
-          await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
-                taskId,
-                'in_progress',
-                startedAt: DateTime.now().toUtc(),
-              );
-        },
-        style: FilledButton.styleFrom(
-          backgroundColor: _primaryBlue,
-          foregroundColor: Colors.white,
-          padding: const EdgeInsets.symmetric(vertical: 16),
-        ),
-        child: Text('worker.task_detail_start_work'.tr()),
-      ),
-    );
-  }
-
-  /// Adresa s tlačítkem Navigovat – otevře Google Maps.
-  Widget _buildAddressWithNavigate(BuildContext context, String? address) {
-    final addr = address?.trim() ?? '';
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          addr.isEmpty ? '—' : addr,
-          style: TextStyle(fontSize: 16, color: Colors.grey.shade800),
-        ),
-        if (addr.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          FilledButton.tonalIcon(
-            onPressed: () => _openMaps(context, addr),
-            icon: const Icon(Icons.map, size: 20),
-            label: Text('worker.task_detail_navigate'.tr()),
-          ),
-        ],
-      ],
-    );
-  }
-
-  Future<void> _openMaps(BuildContext context, String address) async {
-    final query = address.trim();
-    if (query.isEmpty) return;
-    final url = Uri.parse('https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(query)}');
-    if (await canLaunchUrl(url)) {
-      await launchUrl(url, mode: LaunchMode.externalApplication);
-    }
+  static String _appBarTitle(dynamic detail) {
+    final base = detail.title.isNotEmpty ? detail.title : (detail.apartmentName ?? '—');
+    final ref = detail.referenceNumber?.trim();
+    return (ref != null && ref.isNotEmpty) ? '$base • #$ref' : base;
   }
 
   /// Kód schránky a poznámky majitele – uklízečka potřebuje klíče a instrukce.

@@ -1,9 +1,12 @@
 import 'package:easy_localization/easy_localization.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/services/media_service.dart';
 import 'package:falconest/core/presentation/widgets/app_card.dart';
 import 'package:falconest/core/presentation/widgets/modern_admin_panel.dart';
 import 'package:falconest/features/admin/admin_layout.dart';
@@ -16,12 +19,14 @@ import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/task_categories_provider.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
+import 'package:falconest/features/admin/providers/clients_provider.dart';
 import 'package:falconest/features/admin/premium_upsell_dialog.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
 import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
 import 'package:falconest/features/settings/models/tenant_service_model.dart';
 // Sdílená komponenta pro zobrazení financí a poznámek z rezervace.
 import 'package:falconest/features/admin/widgets/task_metadata_section.dart';
+import 'package:falconest/features/admin/widgets/wallet_detail_modal.dart';
 import 'package:falconest/utils/task_visuals.dart';
 import 'package:falconest/widgets/task_legend.dart';
 
@@ -45,6 +50,35 @@ class AdminTasksScreen extends ConsumerStatefulWidget {
 
   @override
   ConsumerState<AdminTasksScreen> createState() => _AdminTasksScreenState();
+
+  /// Veřejná metoda pro otevření dialogu přidání úkolu.
+  /// [initialApartmentId] a [initialReservationId] – při vytváření z rezervace (Související úkoly).
+  /// [initialReservationInfo] – textová informace o rezervaci (host + termín) pro kontextový pruh.
+  /// [initialClientId] – předvyplní klienta u externí služby (z kontextu Detailu klienta).
+  static void showAddTaskDialog(
+    BuildContext context,
+    WidgetRef ref, {
+    VoidCallback? onSaved,
+    String? initialApartmentId,
+    String? initialReservationId,
+    String? initialReservationInfo,
+    String? initialClientId,
+  }) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => _AddTaskDialog(
+        ref: ref,
+        onSaved: onSaved ?? () {
+          ref.invalidate(adminTasksProvider);
+          ref.invalidate(adminTasksStreamProvider);
+        },
+        initialApartmentId: initialApartmentId,
+        initialReservationId: initialReservationId,
+        initialReservationInfo: initialReservationInfo,
+        initialClientId: initialClientId,
+      ),
+    );
+  }
 
   /// Veřejná metoda pro otevření dialogu úpravy úkolu (např. z Plánovacího kalendáře). Po uložení volá [onSaved].
   /// [onReservationTap] – callback při kliknutí na odkaz rezervace v kontextu; použije se pro navigaci na detail.
@@ -160,6 +194,7 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
       final count = await ref.read(adminTasksProvider.notifier).approveAllPendingTasks();
       if (!mounted) return;
       ref.invalidate(adminTasksProvider);
+      ref.invalidate(adminTasksStreamProvider);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -336,13 +371,7 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
   }
 
   void _showAddDialog(BuildContext context, WidgetRef ref) {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => _AddTaskDialog(
-        ref: ref,
-        onSaved: () => ref.invalidate(adminTasksProvider),
-      ),
-    );
+    AdminTasksScreen.showAddTaskDialog(context, ref);
   }
 
   void _showEditDialog(BuildContext context, WidgetRef ref, TaskRow task) {
@@ -528,7 +557,6 @@ class _GenerateButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final muted = Colors.grey.shade600;
     if (automaticTasksActive) {
       return ElevatedButton.icon(
         onPressed: isGenerating ? null : () => onGenerate(),
@@ -549,10 +577,13 @@ class _GenerateButton extends StatelessWidget {
     }
     return ElevatedButton.icon(
       onPressed: onPremiumLockedTap,
-      icon: Icon(Icons.lock_outline, size: 20, color: muted),
+      icon: const Icon(Icons.lock_outline, size: 20),
       label: Text('admin.tasks_generate'.tr()),
       style: ElevatedButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        backgroundColor: Colors.grey.shade200,
+        foregroundColor: Colors.grey.shade600,
+        elevation: 0,
       ),
     );
   }
@@ -694,7 +725,6 @@ class _RecalculateStaffButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final muted = Colors.grey.shade600;
     if (automaticTasksActive) {
       return ElevatedButton.icon(
         onPressed: isRecalculating ? null : onRecalculateStaff,
@@ -713,10 +743,13 @@ class _RecalculateStaffButton extends StatelessWidget {
     }
     return ElevatedButton.icon(
       onPressed: onPremiumLockedTap,
-      icon: Icon(Icons.lock_outline, size: 20, color: muted),
+      icon: const Icon(Icons.lock_outline, size: 20),
       label: Text('${'admin.tasks_recalculate_staff'.tr()} ${'admin.tasks_batch_limit'.tr()}'),
       style: ElevatedButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        backgroundColor: Colors.grey.shade200,
+        foregroundColor: Colors.grey.shade600,
+        elevation: 0,
       ),
     );
   }
@@ -1024,38 +1057,65 @@ class _KanbanTaskCardContent extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // 1. řádek – kontext: přeložený název kategorie
-        Text(
-          _taskTypeLabelKey(task.taskType).tr(),
-          style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+        // 1. řádek – kontext: referenční číslo (pokud existuje) + přeložený název kategorie
+        Row(
+          children: [
+            if (task.referenceNumber != null && task.referenceNumber!.trim().isNotEmpty) ...[
+              Text('#${task.referenceNumber!.trim()}', style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+              const SizedBox(width: 6),
+            ],
+            Expanded(
+              child: Text(
+                _taskTypeLabelKey(task.taskType).tr(),
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 4),
-        // 2. řádek – hlavní nadpis
-        Text(
-          (task.title.trim().isNotEmpty)
-              ? task.title
-              : (task.apartmentName?.trim().isNotEmpty == true
-                  ? task.apartmentName!
-                  : 'admin.task_no_title'.tr()),
-          style: const TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.bold,
-            color: Colors.black87,
-          ),
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
+        // 2. řádek – hlavní nadpis (externí: custom_title modře; apartmán: title/apartmentName)
+        Builder(
+          builder: (context) {
+            final isExternal = (task.apartmentId.trim().isEmpty);
+            final displayTitle = isExternal
+                ? (task.customTitle?.trim().isNotEmpty == true ? task.customTitle! : task.title.trim().isNotEmpty ? task.title : 'admin.task_no_title'.tr())
+                : (task.title.trim().isNotEmpty ? task.title : (task.apartmentName?.trim().isNotEmpty == true ? task.apartmentName! : 'admin.task_no_title'.tr()));
+            return Text(
+              displayTitle,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                color: isExternal ? const Color(0xFF1565C0) : Colors.black87,
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            );
+          },
         ),
         const SizedBox(height: 4),
-        // 3. řádek – lokace (jen pokud se liší od nadpisu) a osoba
-        if (task.apartmentName != null &&
-            task.apartmentName!.trim().isNotEmpty &&
-            (task.title.trim().isNotEmpty))
-          Text(
-            task.apartmentName!,
-            style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
+        // 3. řádek – lokace: externí = custom_location; apartmán = apartmentName (jen pokud se liší od nadpisu)
+        Builder(
+          builder: (context) {
+            final isExternal = (task.apartmentId.trim().isEmpty);
+            if (isExternal && task.customLocation != null && task.customLocation!.trim().isNotEmpty) {
+              return Text(
+                task.customLocation!,
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              );
+            }
+            if (!isExternal && task.apartmentName != null && task.apartmentName!.trim().isNotEmpty && task.title.trim().isNotEmpty) {
+              return Text(
+                task.apartmentName!,
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              );
+            }
+            return const SizedBox.shrink();
+          },
+        ),
         Text(
           assignedText,
           style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontStyle: FontStyle.italic),
@@ -1170,9 +1230,16 @@ class _TaskCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // 1. řádek – kontext: ikona + přeložený název kategorie
+                    // 1. řádek – kontext: referenční číslo (pokud existuje) + ikona + přeložený název kategorie
                     Row(
                       children: [
+                        if (task.referenceNumber != null && task.referenceNumber!.trim().isNotEmpty) ...[
+                          Text(
+                            '#${task.referenceNumber!.trim()}',
+                            style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                          ),
+                          const SizedBox(width: 6),
+                        ],
                         Icon(
                           typeIcon,
                           size: 16,
@@ -1191,32 +1258,49 @@ class _TaskCard extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 4),
-                    // 2. řádek – hlavní nadpis: task.title (nebo fallback)
-                    Text(
-                      (task.title.trim().isNotEmpty)
-                          ? task.title
-                          : (task.apartmentName?.trim().isNotEmpty == true
-                              ? task.apartmentName!
-                              : 'admin.task_no_title'.tr()),
-                      style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black87,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+                    // 2. řádek – hlavní nadpis (externí: custom_title modře; apartmán: title/apartmentName)
+                    Builder(
+                      builder: (context) {
+                        final isExternal = (task.apartmentId.trim().isEmpty);
+                        final displayTitle = isExternal
+                            ? (task.customTitle?.trim().isNotEmpty == true ? task.customTitle! : task.title.trim().isNotEmpty ? task.title : 'admin.task_no_title'.tr())
+                            : (task.title.trim().isNotEmpty ? task.title : (task.apartmentName?.trim().isNotEmpty == true ? task.apartmentName! : 'admin.task_no_title'.tr()));
+                        return Text(
+                          displayTitle,
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                            color: isExternal ? const Color(0xFF1565C0) : Colors.black87,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        );
+                      },
                     ),
                     const SizedBox(height: 4),
-                    // 3. řádek – lokace (jen pokud se liší od nadpisu) a osoba
-                    if (task.apartmentName != null &&
-                        task.apartmentName!.trim().isNotEmpty &&
-                        (task.title.trim().isNotEmpty))
-                      Text(
-                        task.apartmentName!,
-                        style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
+                    // 3. řádek – lokace: externí = custom_location; apartmán = apartmentName
+                    Builder(
+                      builder: (context) {
+                        final isExternal = (task.apartmentId.trim().isEmpty);
+                        if (isExternal && task.customLocation != null && task.customLocation!.trim().isNotEmpty) {
+                          return Text(
+                            task.customLocation!,
+                            style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          );
+                        }
+                        if (!isExternal && task.apartmentName != null && task.apartmentName!.trim().isNotEmpty && task.title.trim().isNotEmpty) {
+                          return Text(
+                            task.apartmentName!,
+                            style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          );
+                        }
+                        return const SizedBox.shrink();
+                      },
+                    ),
                     Text(
                       assigned,
                       style: TextStyle(
@@ -1391,6 +1475,35 @@ bool _isTaskTypeAlert(String? taskType) {
   return taskType == 'issue' || taskType == 'material';
 }
 
+/// Zda je typ úkolu transfer – pro zobrazení pole čísla letu a uložení do metadata.
+bool _isTransferTaskType(String? taskType) {
+  if (taskType == null || taskType.trim().isEmpty) return false;
+  return ['transfer_in', 'transfer_out', 'transfer'].contains(taskType.trim().toLowerCase());
+}
+
+/// Vrací položky dropdownu pro výběr služby z katalogu. Value = service.id.
+/// [includeNone] – přidá položku "Žádná" pro Edit dialog, aby šlo odebrat službu.
+/// PROČ: Umožňuje přenos requires_photo do metadata při manuální tvorbě/úpravě úkolu.
+List<DropdownMenuItem<String?>> _buildServiceDropdownItems(
+  List<TenantServiceModel> catalog,
+  String? selectedServiceId, {
+  bool includeNone = false,
+}) {
+  if (catalog.isEmpty) {
+    return [DropdownMenuItem(value: null, child: Text('admin.no_services_in_catalog'.tr()))];
+  }
+  final items = catalog
+      .map<DropdownMenuItem<String?>>((s) => DropdownMenuItem(
+            value: s.id,
+            child: Text(s.name.trim().isEmpty ? s.serviceType : s.name),
+          ))
+      .toList();
+  if (includeNone) {
+    items.insert(0, DropdownMenuItem(value: null, child: Text('common.none'.tr())));
+  }
+  return items;
+}
+
 /// Dynamické načtení typů úkolů z katalogu klienta (tenant_services) s fallbackem pro smazané/systémové typy.
 /// [catalog] = aktivní služby z DB, [currentValue] = typ úkolu při editaci – pokud není v katalogu, přidá se uměle.
 List<DropdownMenuItem<String>> _buildTaskTypeDropdownItems(
@@ -1423,41 +1536,212 @@ List<DropdownMenuItem<String>> _buildTaskTypeDropdownItems(
 }
 
 /// Dialog pro přidání nového úkolu.
+///
+/// [initialApartmentId] a [initialReservationId] – volitelné při vytváření úkolu z rezervace
+/// (sekce Související úkoly). Předvyberou apartmán a provážou úkol s rezervací v DB.
+/// [initialReservationInfo] – text hosta a termínu pro kontextový pruh (např. "Káťa (4.3. - 11.3.2026)").
+/// [initialClientId] – předvybrání klienta u externí služby (z kontextu Detailu klienta).
 class _AddTaskDialog extends ConsumerStatefulWidget {
-  const _AddTaskDialog({required this.ref, required this.onSaved});
+  const _AddTaskDialog({
+    required this.ref,
+    required this.onSaved,
+    this.initialApartmentId,
+    this.initialReservationId,
+    this.initialReservationInfo,
+    this.initialClientId,
+  });
 
   final WidgetRef ref;
   final VoidCallback onSaved;
+  /// Při vytvoření z rezervace – předvybrání apartmánu.
+  final String? initialApartmentId;
+  /// Při vytvoření z rezervace – provázání úkolu s rezervací (reservation_id v payloadu).
+  final String? initialReservationId;
+  /// Při vytvoření z rezervace – text pro kontextový pruh (host + termín).
+  final String? initialReservationInfo;
+  /// Z kontextu Detailu klienta – předvybrání klienta u externí služby.
+  final String? initialClientId;
 
   @override
   ConsumerState<_AddTaskDialog> createState() => _AddTaskDialogState();
 }
+
+/// Kontextový pruh v dialogu přidání úkolu – apartmán a rezervace (při vytváření z rezervace).
+class _AddTaskContextBar extends StatelessWidget {
+  const _AddTaskContextBar({
+    required this.apartmentsAsync,
+    required this.selectedApartmentId,
+    required this.taskMode,
+    this.initialReservationInfo,
+  });
+
+  final AsyncValue<List<ApartmentRow>> apartmentsAsync;
+  final String? selectedApartmentId;
+  final _TaskFormMode taskMode;
+  final String? initialReservationInfo;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasApartment = taskMode == _TaskFormMode.apartmentBound &&
+        selectedApartmentId != null &&
+        selectedApartmentId!.isNotEmpty;
+    final reservationInfoText = initialReservationInfo?.trim();
+    final hasReservation = reservationInfoText != null && reservationInfoText.isNotEmpty;
+
+    if (!hasApartment && !hasReservation) return const SizedBox.shrink();
+
+    String? apartmentName;
+    if (hasApartment) {
+      final apartments = apartmentsAsync.valueOrNull ?? [];
+      apartmentName = apartments
+          .where((a) => a.id == selectedApartmentId)
+          .firstOrNull
+          ?.name;
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (hasApartment && apartmentName != null && apartmentName.isNotEmpty)
+            Row(
+              children: [
+                Icon(Icons.apartment_outlined, size: 16, color: Colors.grey.shade600),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'admin.task_context_apartment'.tr(namedArgs: {'name': apartmentName}),
+                    style: TextStyle(fontSize: 13, color: Colors.grey.shade800),
+                  ),
+                ),
+              ],
+            ),
+          if (hasApartment && hasReservation) const SizedBox(height: 8),
+          if (hasReservation)
+            Row(
+              children: [
+                Icon(Icons.calendar_today_outlined, size: 16, color: Colors.grey.shade600),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'admin.task_context_reservation'.tr(namedArgs: {'guest': reservationInfoText}),
+                    style: TextStyle(fontSize: 13, color: Colors.grey.shade800),
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Modul v Supabase Storage pro přílohy úkolů – konzistence s mobilní aplikací.
+const _storageModuleTasks = 'tasks';
+
+/// Typ úkolu: vázáno na apartmán (výchozí) nebo externí služba bez bytu.
+enum _TaskFormMode { apartmentBound, externalService }
 
 class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
   final _formKey = GlobalKey<FormState>();
   final _titleController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _dueDateController = TextEditingController();
+  /// Pro externí službu: adresa/lokace (custom_location).
+  final _customLocationController = TextEditingController();
+  /// Pro externí službu – cena v EUR při „Vybere personál v hotovosti“.
+  final _priceController = TextEditingController();
+  /// Číslo letu pro transfery – uloží se do metadata['flight_number'], zobrazí jen při transfer_in/out/transfer.
+  final _flightNumberController = TextEditingController();
+  _TaskFormMode _taskMode = _TaskFormMode.apartmentBound;
   String? _selectedApartmentId;
+  String? _selectedClientId;
+
+  @override
+  void initState() {
+    super.initState();
+    // Při vytvoření z rezervace: předvyber apartmán a typ "Vázáno na apartmán".
+    if (widget.initialApartmentId != null && widget.initialApartmentId!.isNotEmpty) {
+      _taskMode = _TaskFormMode.apartmentBound;
+      _selectedApartmentId = widget.initialApartmentId;
+    }
+    // Z kontextu Detailu klienta (externí/agency): předvyber klienta a typ "Externí služba".
+    if (widget.initialClientId != null && widget.initialClientId!.isNotEmpty) {
+      _taskMode = _TaskFormMode.externalService;
+      _selectedClientId = widget.initialClientId;
+    }
+  }
   String? _selectedAssignedTo;
-  String _taskType = 'extra';
+  /// ID vybrané služby z katalogu. PROČ: Umožňuje odvodit task_type a requires_photo.
+  String? _selectedServiceId;
+  /// Způsob platby u externí služby: true = vybere personál v hotovosti, false = faktura/zaplaceno předem.
+  bool _staffCollectsCash = false;
   String _status = _systemStatuses.first;
   bool _isSaving = false;
+  /// Nově vybrané soubory k nahrání – bytes z file_picker (withData: true).
+  List<PlatformFile> _pendingAttachments = [];
 
   @override
   void dispose() {
     _titleController.dispose();
     _descriptionController.dispose();
     _dueDateController.dispose();
+    _customLocationController.dispose();
+    _priceController.dispose();
+    _flightNumberController.dispose();
     super.dispose();
+  }
+
+  /// Otevře file_picker pro výběr přílohy (obrázek nebo PDF). withData: true získá bytes pro upload na web.
+  Future<void> _pickAttachment() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf'],
+      withData: true,
+    );
+    if (result != null && result.files.isNotEmpty && mounted) {
+      final valid = result.files.where((f) => f.bytes != null && f.name.isNotEmpty).toList();
+      if (valid.isNotEmpty) {
+        setState(() => _pendingAttachments = [..._pendingAttachments, ...valid]);
+      }
+    }
   }
 
   Future<void> _onSave() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_selectedApartmentId == null || _selectedApartmentId!.isEmpty) {
+    final isExternal = _taskMode == _TaskFormMode.externalService;
+    if (!isExternal && (_selectedApartmentId == null || _selectedApartmentId!.isEmpty)) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('admin.validation_apartment_required_short'.tr()),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    if (isExternal && (_selectedClientId == null || _selectedClientId!.isEmpty)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('tasks.validation_client_required'.tr()),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    if (isExternal && _titleController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('tasks.validation_service_name_required'.tr()),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
         ),
@@ -1490,20 +1774,83 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
     }
 
     try {
+      final catalog = ref.read(tenantServicesProvider).valueOrNull ?? [];
+      TenantServiceModel? service;
+      if (_selectedServiceId != null && catalog.isNotEmpty) {
+        try {
+          service = catalog.firstWhere((s) => s.id == _selectedServiceId);
+        } catch (_) {}
+      }
+      final taskType = service?.serviceType ?? 'extra';
+      final metadata = <String, dynamic>{};
+      if (service?.requiresPhoto == true) metadata['requires_photo'] = true;
+
+      // PROČ: Externí služba – metadata.amount_to_collect. Mobilní aplikace zobrazí personálu
+      // částku k vybrání. Pokud dispečer zvolil „Faktura/Zaplaceno předem“, amount_to_collect nenastavujeme.
+      if (isExternal && _staffCollectsCash) {
+        final priceStr = _priceController.text.trim();
+        final price = double.tryParse(priceStr);
+        if (price != null && price > 0) {
+          metadata['amount_to_collect'] = price;
+        }
+      }
+
+      // PROČ: Číslo letu pro transfery – řidič v mobilní aplikaci získá proklik na FlightRadar24.
+      if (_isTransferTaskType(taskType)) {
+        final fn = _flightNumberController.text.trim();
+        if (fn.isNotEmpty) metadata['flight_number'] = fn;
+      }
+
       final assignedToUuid = _selectedAssignedTo != null && _selectedAssignedTo!.isNotEmpty
           ? _selectedAssignedTo
           : null;
       final dueIso = dueDate.toUtc().toIso8601String();
-      final payload = {
+      final titleText = _titleController.text.trim();
+
+      // KROK 1: Nahrání příloh na Supabase Storage (bytes z file_picker).
+      List<String> mediaUrls = [];
+      for (final file in _pendingAttachments) {
+        if (file.bytes == null || file.bytes!.isEmpty) continue;
+        try {
+          final url = await MediaService.instance.uploadMediaBytes(
+            file.bytes!,
+            fileName: file.name,
+            tenantId: tenantId,
+            moduleName: _storageModuleTasks,
+          );
+          if (url != null && url.isNotEmpty) mediaUrls.add(url);
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+                backgroundColor: Colors.red.shade700,
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+            setState(() => _isSaving = false);
+          }
+          return;
+        }
+      }
+
+      final payload = <String, dynamic>{
         'tenant_id': tenantId,
-        'apartment_id': _selectedApartmentId,
+        'apartment_id': isExternal ? null : _selectedApartmentId,
+        if (!isExternal && widget.initialReservationId != null && widget.initialReservationId!.isNotEmpty) 'reservation_id': widget.initialReservationId,
+        if (isExternal && _selectedClientId != null) 'client_id': _selectedClientId,
+        if (isExternal) 'custom_title': titleText,
+        if (isExternal) 'custom_location': _customLocationController.text.trim(),
         'assigned_to': assignedToUuid,
-        'title': _titleController.text.trim(),
+        'title': titleText,
         'description': _descriptionController.text.trim(),
         'status': _status,
-        'task_type': _taskType,
+        'task_type': taskType,
         'due_date': dueIso,
         'scheduled_start': dueIso,
+        if (service != null) 'service_id': service.id,
+        'metadata': metadata,
+        if (mediaUrls.isNotEmpty) 'media_urls': mediaUrls,
       };
       await ref.read(adminTasksProvider.notifier).insertTaskInAdmin(payload);
       if (!mounted) return;
@@ -1554,10 +1901,44 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
       maxWidth: 800,
       content: Form(
         key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _AddTaskContextBar(
+                apartmentsAsync: apartmentsAsync,
+                selectedApartmentId: _selectedApartmentId,
+                taskMode: _taskMode,
+                initialReservationInfo: widget.initialReservationInfo,
+              ),
+              // Přepínač: Vázáno na apartmán vs Externí služba.
+            Text(
+              'tasks.form_task_type'.tr(),
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey.shade800,
+              ),
+            ),
+            const SizedBox(height: 8),
+            SegmentedButton<_TaskFormMode>(
+              segments: [
+                ButtonSegment<_TaskFormMode>(
+                  value: _TaskFormMode.apartmentBound,
+                  icon: const Icon(Icons.apartment, size: 18),
+                  label: Text('tasks.form_mode_apartment'.tr()),
+                ),
+                ButtonSegment<_TaskFormMode>(
+                  value: _TaskFormMode.externalService,
+                  icon: const Icon(Icons.person_pin_circle, size: 18),
+                  label: Text('tasks.form_mode_external'.tr()),
+                ),
+              ],
+              selected: {_taskMode},
+              onSelectionChanged: (s) => setState(() => _taskMode = s.first),
+            ),
+            const SizedBox(height: 16),
             TextFormField(
               controller: _titleController,
               decoration: InputDecoration(
@@ -1565,8 +1946,14 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                 labelText: 'admin.task_field_title'.tr(),
                 border: OutlineInputBorder(),
               ),
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? 'admin.validation_title_required'.tr() : null,
+              validator: (v) {
+                if (v == null || v.trim().isEmpty) {
+                  return _taskMode == _TaskFormMode.apartmentBound
+                      ? 'admin.validation_title_required'.tr()
+                      : 'tasks.validation_service_name_required'.tr();
+                }
+                return null;
+              },
             ),
                 const SizedBox(height: 12),
                 TextFormField(
@@ -1582,78 +1969,220 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                 const SizedBox(height: 12),
                 catalogAsync.when(
                   data: (catalog) {
-                    // Dynamické načtení typů úkolů z katalogu klienta (tenant_services) s fallbackem pro smazané/systémové typy.
-                    final items = _buildTaskTypeDropdownItems(catalog, null);
-                    final validValue = items.any((i) => i.value == _taskType)
-                        ? _taskType
-                        : (items.isNotEmpty ? items.first.value! : 'extra');
-                    if (validValue != _taskType) WidgetsBinding.instance.addPostFrameCallback((_) => setState(() => _taskType = validValue));
-                    return DropdownButtonFormField<String>(
-                      value: validValue,
-                      decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.list_alt_outlined),
-                        labelText: 'admin.task_type_label'.tr(),
-                        border: const OutlineInputBorder(),
-                      ),
-                      items: items,
-                      onChanged: (v) => setState(() => _taskType = v ?? 'extra'),
+                    // PROČ: Výběr služby (ne jen typu) umožňuje předat requires_photo do metadata.
+                    final items = _buildServiceDropdownItems(catalog, _selectedServiceId);
+                    final validValue = items.any((i) => i.value == _selectedServiceId)
+                        ? _selectedServiceId
+                        : (items.isNotEmpty ? items.first.value : null);
+                    if (validValue != _selectedServiceId) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) => setState(() => _selectedServiceId = validValue));
+                    }
+                    TenantServiceModel? service;
+                    if (_selectedServiceId != null && catalog.isNotEmpty) {
+                      try { service = catalog.firstWhere((s) => s.id == _selectedServiceId); } catch (_) {}
+                    }
+                    final taskType = service?.serviceType;
+                    final showFlightField = _isTransferTaskType(taskType);
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        DropdownButtonFormField<String?>(
+                          value: validValue,
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.list_alt_outlined),
+                            labelText: 'admin.task_service_label'.tr(),
+                            border: const OutlineInputBorder(),
+                          ),
+                          items: items,
+                          onChanged: (v) => setState(() => _selectedServiceId = v),
+                        ),
+                        if (showFlightField) ...[
+                          const SizedBox(height: 12),
+                          TextFormField(
+                            controller: _flightNumberController,
+                            decoration: InputDecoration(
+                              prefixIcon: const Icon(Icons.flight_takeoff_outlined),
+                              labelText: 'tasks.flight_number_label'.tr(),
+                              hintText: 'tasks.flight_number_hint'.tr(),
+                              border: const OutlineInputBorder(),
+                            ),
+                          ),
+                        ],
+                      ],
                     );
                   },
                   loading: () => DropdownButtonFormField<String>(
-                    value: 'extra',
+                    value: null,
                     decoration: InputDecoration(
                       prefixIcon: const Icon(Icons.list_alt_outlined),
-                      labelText: 'admin.task_type_label'.tr(),
+                      labelText: 'admin.task_service_label'.tr(),
                       border: const OutlineInputBorder(),
                     ),
-                    items: [DropdownMenuItem(value: 'extra', child: Text(_taskTypeLabelKey('extra').tr()))],
+                    items: [DropdownMenuItem(value: null, child: Text('common.loading'.tr()))],
                     onChanged: null,
                   ),
                   error: (_, __) => DropdownButtonFormField<String>(
-                    value: 'extra',
+                    value: null,
                     decoration: InputDecoration(
                       prefixIcon: const Icon(Icons.list_alt_outlined),
-                      labelText: 'admin.task_type_label'.tr(),
+                      labelText: 'admin.task_service_label'.tr(),
                       border: const OutlineInputBorder(),
                     ),
-                    items: [DropdownMenuItem(value: 'extra', child: Text(_taskTypeLabelKey('extra').tr()))],
-                    onChanged: (v) => setState(() => _taskType = v ?? 'extra'),
+                    items: [DropdownMenuItem(value: null, child: Text('admin.task_type_label'.tr()))],
+                    onChanged: null,
                   ),
                 ),
                 const SizedBox(height: 12),
-                apartmentsAsync.when(
-                  data: (apartments) {
-                    return DropdownButtonFormField<String?>(
-                      initialValue: _selectedApartmentId,
-                      decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.list_alt_outlined),
-                        labelText: 'admin.task_field_apartment'.tr(),
-                        border: OutlineInputBorder(),
-                      ),
-                      items: [
-                        DropdownMenuItem<String?>(
-                          value: null,
-                          child: Text('admin.validation_apartment_required_short'.tr()),
+                // Vázáno na apartmán: výběr bytu. Externí: klient + název služby + adresa.
+                if (_taskMode == _TaskFormMode.apartmentBound)
+                  apartmentsAsync.when(
+                    data: (apartments) {
+                      return DropdownButtonFormField<String?>(
+                        value: _selectedApartmentId,
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.apartment),
+                          labelText: 'admin.task_field_apartment'.tr(),
+                          border: OutlineInputBorder(),
                         ),
-                        ...apartments.map((a) => DropdownMenuItem<String?>(
-                              value: a.id,
-                              child: Text(a.name),
-                            )),
+                        items: [
+                          DropdownMenuItem<String?>(
+                            value: null,
+                            child: Text('admin.validation_apartment_required_short'.tr()),
+                          ),
+                          ...apartments.map((a) => DropdownMenuItem<String?>(
+                                value: a.id,
+                                child: Text(a.name),
+                              )),
+                        ],
+                        onChanged: (v) => setState(() => _selectedApartmentId = v),
+                        validator: (v) =>
+                            (v == null || v.isEmpty) ? 'admin.validation_apartment_required_short'.tr() : null,
+                      );
+                    },
+                    loading: () => const LinearProgressIndicator(),
+                    error: (e, st) => Text('admin.apartments_load_error'.tr()),
+                  ),
+                if (_taskMode == _TaskFormMode.externalService) ...[
+                  ref.watch(clientsProvider).when(
+                    data: (clients) {
+                      if (clients.isEmpty) {
+                        return Padding(
+                          padding: const EdgeInsets.all(8.0),
+                          child: Text(
+                            'tasks.no_clients_hint'.tr(),
+                            style: TextStyle(color: Colors.orange.shade800, fontSize: 13),
+                          ),
+                        );
+                      }
+                      return DropdownButtonFormField<String?>(
+                        value: _selectedClientId,
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.person),
+                          labelText: 'tasks.form_client'.tr(),
+                          border: OutlineInputBorder(),
+                        ),
+                        items: [
+                          DropdownMenuItem<String?>(
+                            value: null,
+                            child: Text('tasks.validation_client_required'.tr()),
+                          ),
+                          ...clients.map((c) => DropdownMenuItem<String?>(
+                                value: c.id,
+                                child: Text(c.name),
+                              )),
+                        ],
+                        onChanged: (v) => setState(() => _selectedClientId = v),
+                        validator: (v) => (v == null || v.isEmpty) ? 'tasks.validation_client_required'.tr() : null,
+                      );
+                    },
+                    loading: () => const LinearProgressIndicator(),
+                    error: (e, _) => Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _customLocationController,
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.location_on_outlined),
+                      labelText: 'tasks.form_location'.tr(),
+                      hintText: 'tasks.form_location_hint'.tr(),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  // Finanční blok pro externí službu.
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          'tasks.form_payment_block'.tr(),
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.grey.shade800,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _priceController,
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.euro),
+                            labelText: 'tasks.form_price'.tr(),
+                            hintText: '0',
+                            border: OutlineInputBorder(),
+                          ),
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'tasks.form_payment_method'.tr(),
+                          style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                        ),
+                        const SizedBox(height: 8),
+                        SegmentedButton<bool>(
+                          segments: [
+                            ButtonSegment<bool>(
+                              value: true,
+                              icon: const Icon(Icons.payments, size: 16),
+                              label: Text('tasks.form_payment_cash'.tr()),
+                            ),
+                            ButtonSegment<bool>(
+                              value: false,
+                              icon: const Icon(Icons.receipt_long, size: 16),
+                              label: Text('tasks.form_payment_invoice'.tr()),
+                            ),
+                          ],
+                          selected: {_staffCollectsCash},
+                          onSelectionChanged: (s) => setState(() => _staffCollectsCash = s.first),
+                        ),
                       ],
-                      onChanged: (v) => setState(() => _selectedApartmentId = v),
-                      validator: (v) =>
-                          (v == null || v.isEmpty) ? 'admin.validation_apartment_required_short'.tr() : null,
-                    );
-                  },
-                  loading: () => const LinearProgressIndicator(),
-                  error: (e, st) => Text('admin.apartments_load_error'.tr()),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                _TaskAttachmentsSection(
+                  existingUrls: const [],
+                  onRemoveExisting: null,
+                  pendingFiles: _pendingAttachments,
+                  onRemovePending: (i) => setState(() => _pendingAttachments = List.from(_pendingAttachments)..removeAt(i)),
+                  onAddPressed: _pickAttachment,
+                  isUploading: _isSaving,
                 ),
                 const SizedBox(height: 12),
                 teamAsync.when(
                   data: (members) {
+                    // BUGFIX: Majitelé apartmánů (owners) jsou klienti, nesmí se jim přiřazovat úkoly. Filtrujeme pouze reálný personál.
+                    final staffMembers = members.where((m) => m.role != 'property_owner').toList();
                     final seenValues = <String>{};
                     final unique = <TeamMember>[];
-                    for (final m in members) {
+                    for (final m in staffMembers) {
                       final value = m.dropdownId;
                       if (value.isEmpty) continue;
                       if (seenValues.contains(value)) continue;
@@ -1726,7 +2255,8 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                       .toList(),
                   onChanged: (v) => setState(() => _status = v ?? _systemStatuses.first),
                 ),
-          ],
+            ],
+          ),
         ),
       ),
       actions: [
@@ -1738,14 +2268,159 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
         FilledButton(
           onPressed: _isSaving ? null : _onSave,
           child: _isSaving
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    if (_pendingAttachments.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      Text('tasks.attachment_uploading'.tr()),
+                    ],
+                  ],
                 )
               : Text('common.save'.tr()),
         ),
       ],
+    );
+  }
+}
+
+/// Sekce příloh úkolu – stávající URL (klikací odkaz + mazání) a nově vybrané soubory.
+/// Používá se v _AddTaskDialog i _EditTaskDialog pro nahrávání fotek/PDF z administrace.
+class _TaskAttachmentsSection extends StatelessWidget {
+  const _TaskAttachmentsSection({
+    required this.existingUrls,
+    required this.onRemoveExisting,
+    required this.pendingFiles,
+    required this.onRemovePending,
+    required this.onAddPressed,
+    required this.isUploading,
+  });
+
+  final List<String> existingUrls;
+  final void Function(int index)? onRemoveExisting;
+  final List<PlatformFile> pendingFiles;
+  final void Function(int index) onRemovePending;
+  final VoidCallback? onAddPressed;
+  final bool isUploading;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasExisting = existingUrls.isNotEmpty;
+    final hasPending = pendingFiles.isNotEmpty;
+    if (!hasExisting && !hasPending && onAddPressed == null) return const SizedBox.shrink();
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'tasks.attachments_title'.tr(),
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Colors.grey.shade800,
+            ),
+          ),
+          if (onAddPressed != null) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: isUploading ? null : onAddPressed,
+              icon: const Icon(Icons.attach_file, size: 18),
+              label: Text('tasks.add_attachment_button'.tr()),
+            ),
+          ],
+          if (hasExisting || hasPending) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (var i = 0; i < existingUrls.length; i++) ...[
+                  _AttachmentChip(
+                    label: '${'tasks.attachments_title'.tr()} ${i + 1}',
+                    onTap: () => launchUrl(Uri.parse(existingUrls[i]), mode: LaunchMode.externalApplication),
+                    onRemove: onRemoveExisting != null ? () => onRemoveExisting!(i) : null,
+                    isExisting: true,
+                  ),
+                ],
+                for (var i = 0; i < pendingFiles.length; i++) ...[
+                  _AttachmentChip(
+                    label: pendingFiles[i].name,
+                    onRemove: () => onRemovePending(i),
+                    isExisting: false,
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Čip jedné přílohy – label, volitelně klik na otevření, křížek pro smazání.
+class _AttachmentChip extends StatelessWidget {
+  const _AttachmentChip({
+    required this.label,
+    this.onTap,
+    this.onRemove,
+    required this.isExisting,
+  });
+
+  final String label;
+  final VoidCallback? onTap;
+  final VoidCallback? onRemove;
+  final bool isExisting;
+
+  @override
+  Widget build(BuildContext context) {
+    final child = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Flexible(
+          child: Text(
+            label.length > 25 ? '${label.substring(0, 22)}...' : label,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 12,
+              color: isExisting ? Theme.of(context).colorScheme.primary : Colors.grey.shade700,
+              decoration: isExisting ? TextDecoration.underline : null,
+            ),
+          ),
+        ),
+        if (onRemove != null) ...[
+          const SizedBox(width: 4),
+          GestureDetector(
+            onTap: onRemove,
+            child: Icon(Icons.close, size: 16, color: Colors.red.shade700),
+          ),
+        ],
+      ],
+    );
+
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          child: child,
+        ),
+      ),
     );
   }
 }
@@ -1765,6 +2440,14 @@ class _TaskContextSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final chips = <Widget>[];
+
+    // Referenční číslo úkolu – zobrazeno nahoře pro rychlou identifikaci.
+    if (task.referenceNumber != null && task.referenceNumber!.trim().isNotEmpty) {
+      chips.add(_ContextChip(
+        icon: Icons.tag,
+        text: '#${task.referenceNumber!.trim()}',
+      ));
+    }
 
     // Apartmán – ikona + lokalizovaný text s názvem bytu.
     final aptName = task.apartmentName;
@@ -1926,6 +2609,74 @@ class _ContextLinkChip extends StatelessWidget {
   }
 }
 
+/// Sekce přiložených fotek u úkolu typu Issue – horizontální seznam miniatur.
+///
+/// PROČ: Hlášení závad od pracovníků může mít více fotek. Klik otevře dialog
+/// s InteractiveViewer (recyklace logiky z detailu účtenky).
+class _TaskMediaSection extends StatelessWidget {
+  const _TaskMediaSection({required this.mediaUrls});
+
+  final List<String> mediaUrls;
+
+  @override
+  Widget build(BuildContext context) {
+    if (mediaUrls.isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'admin.task_media_attached_photos'.tr(),
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Colors.grey.shade800,
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 100,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: mediaUrls.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (context, index) {
+                final url = mediaUrls[index];
+                return GestureDetector(
+                  onTap: () => WalletDetailModal.showReceiptDialog(context, url),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.network(
+                      url,
+                      width: 100,
+                      height: 100,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        width: 100,
+                        height: 100,
+                        color: Colors.grey.shade200,
+                        child: Icon(Icons.broken_image_outlined, color: Colors.grey.shade600),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Dialog pro úpravu existujícího úkolu.
 class _EditTaskDialog extends ConsumerStatefulWidget {
   const _EditTaskDialog({
@@ -1950,23 +2701,52 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
   late final TextEditingController _titleController;
   late final TextEditingController _descriptionController;
   late final TextEditingController _dueDateController;
+  late final TextEditingController _customLocationController;
+  late final TextEditingController _priceController;
+  late final TextEditingController _flightNumberController;
   late String _selectedApartmentId;
+  late String? _selectedClientId;
   late String? _selectedAssignedTo;
-  late String _taskType;
+  /// ID vybrané služby z katalogu. PROČ: Umožňuje aktualizovat metadata.requires_photo při změně služby.
+  late String? _selectedServiceId;
   late String _status;
+  late bool _staffCollectsCash;
   bool _isSaving = false;
+  /// Nově vybrané soubory k nahrání.
+  List<PlatformFile> _pendingAttachments = [];
+  /// Stávající URL z media_urls – uživatel může odstraňovat před uložením.
+  late List<String> _existingMediaUrls;
+
+  /// Externí úkol = bez apartment_id (apartmentId prázdné).
+  bool get _isExternal => widget.task.apartmentId.trim().isEmpty;
 
   @override
   void initState() {
     super.initState();
+    _existingMediaUrls = List.from(widget.task.mediaUrls);
     final t = widget.task;
-    _titleController = TextEditingController(text: t.title);
+    // Externí úkol: custom_title je hlavní název; jinak title.
+    final isExt = t.apartmentId.trim().isEmpty;
+    _titleController = TextEditingController(text: isExt ? (t.customTitle ?? t.title) : t.title);
     _descriptionController = TextEditingController(text: t.description);
     _dueDateController = TextEditingController(text: _formatDateTime(t.dueDate));
+    _customLocationController = TextEditingController(text: t.customLocation ?? '');
     _selectedApartmentId = t.apartmentId;
+    _selectedClientId = t.clientId;
     _selectedAssignedTo = t.assignedTo;
-    _taskType = t.taskType.trim().isEmpty ? 'extra' : t.taskType.trim().toLowerCase();
+    _selectedServiceId = t.serviceId;
     _status = _normalizeToSystemStatus(t.status);
+    // amount_to_collect v metadata znamená, že personál vybírá hotovost.
+    final amt = t.metadata?['amount_to_collect'];
+    _staffCollectsCash = amt != null && (amt is num && amt > 0);
+    _priceController = TextEditingController(
+      text: _staffCollectsCash && amt is num ? amt.toString() : '',
+    );
+    // PROČ: Číslo letu z metadat – řidič získá proklik na FlightRadar24.
+    final fn = t.metadata?['flight_number'];
+    _flightNumberController = TextEditingController(
+      text: fn is String ? fn.trim() : (fn?.toString().trim() ?? ''),
+    );
   }
 
   @override
@@ -1974,11 +2754,49 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
     _titleController.dispose();
     _descriptionController.dispose();
     _dueDateController.dispose();
+    _customLocationController.dispose();
+    _priceController.dispose();
+    _flightNumberController.dispose();
     super.dispose();
+  }
+
+  /// Otevře file_picker pro výběr přílohy (obrázek nebo PDF). withData: true získá bytes pro upload na web.
+  Future<void> _pickAttachment() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf'],
+      withData: true,
+    );
+    if (result != null && result.files.isNotEmpty && mounted) {
+      final valid = result.files.where((f) => f.bytes != null && f.name.isNotEmpty).toList();
+      if (valid.isNotEmpty) {
+        setState(() => _pendingAttachments = [..._pendingAttachments, ...valid]);
+      }
+    }
   }
 
   Future<void> _onSave() async {
     if (!_formKey.currentState!.validate()) return;
+    if (_isExternal && (_selectedClientId == null || _selectedClientId!.isEmpty)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('tasks.validation_client_required'.tr()),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    if (_isExternal && _titleController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('tasks.validation_service_name_required'.tr()),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
     final dueDate = _parseDateTime(_dueDateController.text.trim());
     if (dueDate == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2007,24 +2825,97 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
     setState(() => _isSaving = true);
 
     final apartments = ref.read(apartmentsProvider).valueOrNull ?? [];
-    final apartmentIdToSave = apartments.any((a) => a.id == _selectedApartmentId)
-        ? _selectedApartmentId
-        : (apartments.isNotEmpty ? apartments.first.id : _selectedApartmentId);
+    final apartmentIdToSave = _isExternal
+        ? null
+        : (apartments.any((a) => a.id == _selectedApartmentId)
+            ? _selectedApartmentId
+            : (apartments.isNotEmpty ? apartments.first.id : _selectedApartmentId));
 
     try {
+      final catalog = ref.read(tenantServicesProvider).valueOrNull ?? [];
+      TenantServiceModel? service;
+      if (_selectedServiceId != null && catalog.isNotEmpty) {
+        try {
+          service = catalog.firstWhere((s) => s.id == _selectedServiceId);
+        } catch (_) {}
+      }
+      final taskType = service?.serviceType ?? widget.task.taskType;
+      final mergedMetadata = Map<String, dynamic>.from(widget.task.metadata ?? {});
+      mergedMetadata['requires_photo'] = service?.requiresPhoto == true;
+      if (mergedMetadata['requires_photo'] == false) mergedMetadata.remove('requires_photo');
+
+      // PROČ: Externí úkol – metadata.amount_to_collect. Při Faktura/Zaplaceno předem amount_to_collect nenastavujeme.
+      if (_isExternal) {
+        if (_staffCollectsCash) {
+          final price = double.tryParse(_priceController.text.trim());
+          if (price != null && price > 0) {
+            mergedMetadata['amount_to_collect'] = price;
+          } else {
+            mergedMetadata.remove('amount_to_collect');
+          }
+        } else {
+          mergedMetadata.remove('amount_to_collect');
+        }
+      }
+
+      // PROČ: Číslo letu pro transfery – přidáme/odebereme dle zadané hodnoty, bez mazání ostatních metadat.
+      if (_isTransferTaskType(taskType)) {
+        final fn = _flightNumberController.text.trim();
+        if (fn.isNotEmpty) {
+          mergedMetadata['flight_number'] = fn;
+        } else {
+          mergedMetadata.remove('flight_number');
+        }
+      }
+
       final assignedToUuid = _selectedAssignedTo != null && _selectedAssignedTo!.isNotEmpty
           ? _selectedAssignedTo
           : null;
       final dueIso = dueDate.toUtc().toIso8601String();
-      final updateFields = {
+      final titleText = _titleController.text.trim();
+
+      // KROK 1: Nahrání nových příloh na Supabase Storage.
+      List<String> mediaUrls = List.from(_existingMediaUrls);
+      for (final file in _pendingAttachments) {
+        if (file.bytes == null || file.bytes!.isEmpty) continue;
+        try {
+          final url = await MediaService.instance.uploadMediaBytes(
+            file.bytes!,
+            fileName: file.name,
+            tenantId: tenantId,
+            moduleName: _storageModuleTasks,
+          );
+          if (url != null && url.isNotEmpty) mediaUrls.add(url);
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+                backgroundColor: Colors.red.shade700,
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+            setState(() => _isSaving = false);
+          }
+          return;
+        }
+      }
+
+      final updateFields = <String, dynamic>{
         'apartment_id': apartmentIdToSave,
+        if (_isExternal && _selectedClientId != null) 'client_id': _selectedClientId,
+        if (_isExternal) 'custom_title': titleText,
+        if (_isExternal) 'custom_location': _customLocationController.text.trim(),
         'assigned_to': assignedToUuid,
-        'title': _titleController.text.trim(),
+        'title': titleText,
         'description': _descriptionController.text.trim(),
         'status': _status,
-        'task_type': _taskType,
+        'task_type': taskType,
         'due_date': dueIso,
         'scheduled_start': dueIso,
+        'metadata': mergedMetadata,
+        'service_id': service?.id,
+        'media_urls': mediaUrls,
       };
       await ref.read(adminTasksProvider.notifier).updateTaskInAdmin(widget.task.id, updateFields);
       if (!mounted) return;
@@ -2066,8 +2957,12 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
     final teamAsync = ref.watch(adminTeamProvider);
     final catalogAsync = ref.watch(tenantServicesProvider);
 
+    final refNum = widget.task.referenceNumber?.trim();
+    final editTitle = refNum != null && refNum.isNotEmpty
+        ? '${'admin.tasks_edit'.tr()} • #$refNum'
+        : 'admin.tasks_edit'.tr();
     return ModernAdminPanel(
-      title: 'admin.tasks_edit'.tr(),
+      title: editTitle,
       maxWidth: 800,
       content: Form(
         key: _formKey,
@@ -2088,8 +2983,14 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                 labelText: 'admin.task_field_title'.tr(),
                 border: OutlineInputBorder(),
               ),
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? 'admin.validation_title_required'.tr() : null,
+              validator: (v) {
+                if (v == null || v.trim().isEmpty) {
+                  return _isExternal
+                      ? 'tasks.validation_service_name_required'.tr()
+                      : 'admin.validation_title_required'.tr();
+                }
+                return null;
+              },
             ),
                 const SizedBox(height: 12),
                 TextFormField(
@@ -2103,78 +3004,226 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                   ),
                 ),
                 TaskMetadataSection(metadata: widget.task.metadata),
+                if (widget.task.mediaUrls.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  _TaskMediaSection(mediaUrls: widget.task.mediaUrls),
+                ],
                 const SizedBox(height: 12),
                 catalogAsync.when(
                   data: (catalog) {
-                    // Dynamické načtení typů úkolů z katalogu klienta (tenant_services) s fallbackem pro smazané/systémové typy.
-                    final items = _buildTaskTypeDropdownItems(catalog, _taskType);
-                    final validValue = items.any((i) => i.value == _taskType) ? _taskType : items.first.value!;
-                    return DropdownButtonFormField<String>(
-                      value: validValue,
-                      decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.list_alt_outlined),
-                        labelText: 'admin.task_type_label'.tr(),
-                        border: const OutlineInputBorder(),
-                      ),
-                      items: items,
-                      onChanged: (v) => setState(() => _taskType = v ?? validValue),
+                    // PROČ: Výběr služby umožňuje aktualizovat metadata.requires_photo při změně služby.
+                    final items = _buildServiceDropdownItems(catalog, _selectedServiceId, includeNone: true);
+                    final validValue = items.any((i) => i.value == _selectedServiceId)
+                        ? _selectedServiceId
+                        : (items.isNotEmpty ? items.first.value : _selectedServiceId);
+                    if (validValue != _selectedServiceId) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) => setState(() => _selectedServiceId = validValue));
+                    }
+                    TenantServiceModel? service;
+                    if (_selectedServiceId != null && catalog.isNotEmpty) {
+                      try { service = catalog.firstWhere((s) => s.id == _selectedServiceId); } catch (_) {}
+                    }
+                    final taskType = service?.serviceType ?? widget.task.taskType;
+                    final showFlightField = _isTransferTaskType(taskType);
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        DropdownButtonFormField<String?>(
+                          value: validValue,
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.list_alt_outlined),
+                            labelText: 'admin.task_service_label'.tr(),
+                            border: const OutlineInputBorder(),
+                          ),
+                          items: items,
+                          onChanged: (v) => setState(() => _selectedServiceId = v),
+                        ),
+                        if (showFlightField) ...[
+                          const SizedBox(height: 12),
+                          TextFormField(
+                            controller: _flightNumberController,
+                            decoration: InputDecoration(
+                              prefixIcon: const Icon(Icons.flight_takeoff_outlined),
+                              labelText: 'tasks.flight_number_label'.tr(),
+                              hintText: 'tasks.flight_number_hint'.tr(),
+                              border: const OutlineInputBorder(),
+                            ),
+                          ),
+                        ],
+                      ],
                     );
                   },
-                  loading: () => DropdownButtonFormField<String>(
-                    value: _taskType,
+                  loading: () => DropdownButtonFormField<String?>(
+                    value: _selectedServiceId,
                     decoration: InputDecoration(
                       prefixIcon: const Icon(Icons.list_alt_outlined),
-                      labelText: 'admin.task_type_label'.tr(),
+                      labelText: 'admin.task_service_label'.tr(),
                       border: const OutlineInputBorder(),
                     ),
-                    items: [DropdownMenuItem(value: _taskType, child: Text(_taskTypeLabelKey(_taskType).tr()))],
+                    items: [DropdownMenuItem(value: _selectedServiceId, child: Text('common.loading'.tr()))],
                     onChanged: null,
                   ),
-                  error: (_, __) => DropdownButtonFormField<String>(
-                    value: _taskType,
+                  error: (_, __) => DropdownButtonFormField<String?>(
+                    value: _selectedServiceId,
                     decoration: InputDecoration(
                       prefixIcon: const Icon(Icons.list_alt_outlined),
-                      labelText: 'admin.task_type_label'.tr(),
+                      labelText: 'admin.task_service_label'.tr(),
                       border: const OutlineInputBorder(),
                     ),
-                    items: [DropdownMenuItem(value: _taskType, child: Text(_taskTypeLabelKey(_taskType).tr()))],
-                    onChanged: (v) => setState(() => _taskType = v ?? _taskType),
+                    items: [DropdownMenuItem(value: _selectedServiceId, child: Text('admin.task_type_label'.tr()))],
+                    onChanged: null,
                   ),
                 ),
                 const SizedBox(height: 12),
-                apartmentsAsync.when(
-                  data: (apartments) {
-                    final validId = apartments.any((a) => a.id == _selectedApartmentId)
-                        ? _selectedApartmentId
-                        : (apartments.isNotEmpty ? apartments.first.id : null);
-                    return DropdownButtonFormField<String?>(
-                      initialValue: validId,
-                      decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.list_alt_outlined),
-                        labelText: 'admin.task_field_apartment'.tr(),
-                        border: OutlineInputBorder(),
-                      ),
-                      items: [
-                        DropdownMenuItem<String?>(
-                          value: null,
-                          child: Text('admin.validation_apartment_required_short'.tr()),
+                // Vázáno na apartmán: výběr bytu. Externí: klient + název služby + adresa + platba.
+                if (!_isExternal)
+                  apartmentsAsync.when(
+                    data: (apartments) {
+                      final validId = apartments.any((a) => a.id == _selectedApartmentId)
+                          ? _selectedApartmentId
+                          : (apartments.isNotEmpty ? apartments.first.id : null);
+                      return DropdownButtonFormField<String?>(
+                        value: validId,
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.apartment),
+                          labelText: 'admin.task_field_apartment'.tr(),
+                          border: OutlineInputBorder(),
                         ),
-                        ...apartments.map((a) => DropdownMenuItem<String?>(
-                              value: a.id,
-                              child: Text(a.name),
-                            )),
+                        items: [
+                          DropdownMenuItem<String?>(
+                            value: null,
+                            child: Text('admin.validation_apartment_required_short'.tr()),
+                          ),
+                          ...apartments.map((a) => DropdownMenuItem<String?>(
+                                value: a.id,
+                                child: Text(a.name),
+                              )),
+                        ],
+                        onChanged: (v) => setState(() => _selectedApartmentId = v ?? ''),
+                        validator: (v) =>
+                            (v == null || v.isEmpty) ? 'admin.validation_apartment_required_short'.tr() : null,
+                      );
+                    },
+                    loading: () => const LinearProgressIndicator(),
+                    error: (e, st) => Text('admin.apartments_load_error'.tr()),
+                  ),
+                if (_isExternal) ...[
+                  ref.watch(clientsProvider).when(
+                    data: (clients) {
+                      if (clients.isEmpty) {
+                        return Padding(
+                          padding: const EdgeInsets.all(8.0),
+                          child: Text(
+                            'tasks.no_clients_hint'.tr(),
+                            style: TextStyle(color: Colors.orange.shade800, fontSize: 13),
+                          ),
+                        );
+                      }
+                      return DropdownButtonFormField<String?>(
+                        value: _selectedClientId,
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.person),
+                          labelText: 'tasks.form_client'.tr(),
+                          border: OutlineInputBorder(),
+                        ),
+                        items: [
+                          DropdownMenuItem<String?>(
+                            value: null,
+                            child: Text('tasks.validation_client_required'.tr()),
+                          ),
+                          ...clients.map((c) => DropdownMenuItem<String?>(
+                                value: c.id,
+                                child: Text(c.name),
+                              )),
+                        ],
+                        onChanged: (v) => setState(() => _selectedClientId = v),
+                        validator: (v) => (v == null || v.isEmpty) ? 'tasks.validation_client_required'.tr() : null,
+                      );
+                    },
+                    loading: () => const LinearProgressIndicator(),
+                    error: (e, _) => Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _customLocationController,
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.location_on_outlined),
+                      labelText: 'tasks.form_location'.tr(),
+                      hintText: 'tasks.form_location_hint'.tr(),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          'tasks.form_payment_block'.tr(),
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.grey.shade800,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _priceController,
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.euro),
+                            labelText: 'tasks.form_price'.tr(),
+                            hintText: '0',
+                            border: OutlineInputBorder(),
+                          ),
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'tasks.form_payment_method'.tr(),
+                          style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                        ),
+                        const SizedBox(height: 8),
+                        SegmentedButton<bool>(
+                          segments: [
+                            ButtonSegment<bool>(
+                              value: true,
+                              icon: const Icon(Icons.payments, size: 16),
+                              label: Text('tasks.form_payment_cash'.tr()),
+                            ),
+                            ButtonSegment<bool>(
+                              value: false,
+                              icon: const Icon(Icons.receipt_long, size: 16),
+                              label: Text('tasks.form_payment_invoice'.tr()),
+                            ),
+                          ],
+                          selected: {_staffCollectsCash},
+                          onSelectionChanged: (s) => setState(() => _staffCollectsCash = s.first),
+                        ),
                       ],
-                      onChanged: (v) => setState(() => _selectedApartmentId = v ?? ''),
-                      validator: (v) =>
-                          (v == null || v.isEmpty) ? 'admin.validation_apartment_required_short'.tr() : null,
-                    );
-                  },
-                  loading: () => const LinearProgressIndicator(),
-                  error: (e, st) => Text('admin.apartments_load_error'.tr()),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                _TaskAttachmentsSection(
+                  existingUrls: _existingMediaUrls,
+                  onRemoveExisting: (i) => setState(() => _existingMediaUrls = List.from(_existingMediaUrls)..removeAt(i)),
+                  pendingFiles: _pendingAttachments,
+                  onRemovePending: (i) => setState(() => _pendingAttachments = List.from(_pendingAttachments)..removeAt(i)),
+                  onAddPressed: _pickAttachment,
+                  isUploading: _isSaving,
                 ),
                 const SizedBox(height: 12),
                 teamAsync.when(
                   data: (members) {
+                    // BUGFIX: Majitelé apartmánů (owners) jsou klienti, nesmí se jim přiřazovat úkoly. Filtrujeme pouze reálný personál.
+                    final staffMembers = members.where((m) => m.role != 'property_owner').toList();
                     final currentUserId = widget.task.assignedTo;
                     final currentUserName = widget.task.assignedToName ?? 'planning_calendar.unknown'.tr();
                     final pendingLabel = 'admin.team_status_pending'.tr();
@@ -2206,7 +3255,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                       }
                     }
 
-                    for (final m in members) {
+                    for (final m in staffMembers) {
                       addProfileItem(m.dropdownId, m.name, m.isFromInvitation);
                     }
 
@@ -2272,10 +3321,19 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
         FilledButton(
           onPressed: _isSaving ? null : _onSave,
           child: _isSaving
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    if (_pendingAttachments.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      Text('tasks.attachment_uploading'.tr()),
+                    ],
+                  ],
                 )
               : Text('common.save'.tr()),
         ),

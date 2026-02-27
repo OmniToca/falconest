@@ -6,29 +6,50 @@ import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/reservation_services_repository.dart';
 
-/// Řádek fakturačního podkladu – agregace služeb za jednu rezervaci.
-/// Výpočet podkladů pro fakturaci. Ignoruje nezaplacené hotovosti zaměstnanci,
-/// bere pevná data z reservation_services podle plátce.
-class BillingReportRow {
-  const BillingReportRow({
-    required this.reservationId,
-    required this.apartmentName,
-    required this.periodLabel,
-    required this.totalValue,
-    required this.cashCollected,
-    required this.toInvoice,
+/// Jeden dokončený úkol v podkladu pro fakturaci.
+///
+/// PROČ úkolová logika: Fakturujeme POUZE skutečně dokončené úkoly, ne rezervace.
+/// Rezervace může být zrušena, úkol nemusel vzniknout nebo byl smazán – zdrojem pravdy
+/// pro „co bylo fyzicky vykonáno“ je úkol se statusem completed. Sloupec invoiced_at
+/// zajišťuje, že vyfakturované úkoly se již neukazují a neduplikují se.
+class BillingTaskItem {
+  const BillingTaskItem({
+    required this.taskId,
+    required this.title,
+    required this.completedAt,
+    required this.chargedPrice,
+    required this.payerType,
+    this.taskType,
   });
 
-  final String reservationId;
+  final String taskId;
+  final String title;
+  final DateTime? completedAt;
+  final double chargedPrice;
+  /// 'owner' = k fakturaci majiteli, 'guest' = vybráno v hotovosti.
+  final String payerType;
+  final String? taskType;
+}
+
+/// Skupina úkolů pro jeden apartmán – agregace pro fakturaci.
+///
+/// PROČ seskupení po bytu: Majitelé vlastní byty; faktura se sestavuje per apartmán.
+/// Každá karta zobrazuje seznam skutečně dokončených a nevyfakturovaných úkolů
+/// s jejich cenami z reservation_services (přes service_id úkolu).
+class BillingApartmentGroup {
+  const BillingApartmentGroup({
+    required this.apartmentId,
+    required this.apartmentName,
+    required this.tasks,
+    required this.totalToInvoice,
+    required this.totalCashCollected,
+  });
+
+  final String apartmentId;
   final String apartmentName;
-  /// Formátované období rezervace (např. "1.3. – 15.3.2026").
-  final String periodLabel;
-  /// Služby celkem – součet charged_price ze všech reservation_services.
-  final double totalValue;
-  /// Vybráno v hotovosti – součet charged_price kde payer_type == 'guest'.
-  final double cashCollected;
-  /// K fakturaci majiteli – součet charged_price kde payer_type == 'owner'.
-  final double toInvoice;
+  final List<BillingTaskItem> tasks;
+  final double totalToInvoice;
+  final double totalCashCollected;
 }
 
 /// Parametr pro billing report – měsíc a rok.
@@ -38,115 +59,152 @@ class BillingMonthParam {
   final int month;
 }
 
-/// Načte fakturační podklady pro zvolený měsíc a rok.
-/// Rezervace musí mít status 'checked_out' a konec pobytu (departure_time nebo end_date)
-/// musí spadat do zvoleného měsíce.
+/// Načte fakturační podklady na základě DOKONČENÝCH a NEVYFAKTUROVANÝCH ÚKOLŮ.
+///
+/// PROČ úkolová logika místo rezervací:
+/// - Rezervace = záměr pobytu. Skutečnost = co pracovník reálně udělal (úkol completed).
+/// - Rezervace mohla být zrušena, úklid mohl být přeřazen – fakturujeme jen to, co proběhlo.
+/// - Sloupec invoiced_at zabraňuje duplicitnímu fakturování; po označení úkoly zmizí z přehledu.
+///
+/// Filtrace: status = 'completed', invoiced_at IS NULL, completed_at v zvoleném měsíci.
+/// Ceny: Z reservation_services (charged_price, payer_type) – párování přes reservation_id a service_id.
 final billingReportProvider =
-    FutureProvider.family<List<BillingReportRow>, BillingMonthParam>((ref, param) async {
+    FutureProvider.family<List<BillingApartmentGroup>, BillingMonthParam>((ref, param) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];
 
   final apartments = await ref.watch(apartmentsProvider.future);
-  final apartmentIds = apartments.map((a) => a.id).where((id) => id.isNotEmpty).toList();
-  if (apartmentIds.isEmpty) return [];
+  final apartmentById = {for (final a in apartments) a.id: a.name};
+  if (apartments.isEmpty) return [];
 
   final startOfMonth = DateTime.utc(param.year, param.month, 1);
   final startOfNextMonth = DateTime.utc(param.year, param.month + 1, 1);
 
   try {
-    /// a) Rezervace s koncem pobytu (departure_time) v zvoleném měsíci a status checked_out.
-    /// Filtrování na departure_time přímo v DB – timestamptz.
-    final reservationsData = await SupabaseService.client
-        .from('reservations')
-        .select(
-          'id, apartment_id, start_date, end_date, departure_time, apartments(name)',
-        )
-        .inFilter('apartment_id', apartmentIds)
-        .eq('status', 'checked_out')
+    // Krok 1: Načti dokončené nevyfakturované úkoly s completed_at v zvoleném měsíci.
+    // PROČ: Fakturujeme pouze reálně vykonané úkoly; completed_at = kdy byl úkol dokončen.
+    final tasksRes = await SupabaseService.client
+        .from('tasks')
+        .select('id, title, task_type, apartment_id, reservation_id, service_id, completed_at, due_date')
+        .eq('tenant_id', tenantId)
+        .eq('status', 'completed')
         .isFilter('deleted_at', null)
-        .gte('departure_time', startOfMonth.toUtc().toIso8601String())
-        .lt('departure_time', startOfNextMonth.toUtc().toIso8601String());
+        .isFilter('invoiced_at', null);
 
-    final list = reservationsData as List;
-    if (list.isEmpty) return [];
-    final reservationIds = <String>[];
-    final reservationData = <String, ({String apartmentName, String periodLabel})>{};
+    final tasksList = (tasksRes as List).cast<Map<String, dynamic>>();
+    if (tasksList.isEmpty) return [];
 
-    for (final e in list) {
-      final raw = e as Map<String, dynamic>;
-      final id = (raw['id'] as String?)?.trim();
-      if (id == null || id.isEmpty) continue;
-
-      final apartmentId = (raw['apartment_id'] as String?)?.trim();
-      if (apartmentId == null || apartmentId.isEmpty) continue;
-
-      String apartmentName = '—';
-      final apt = raw['apartments'];
-      if (apt is Map && apt['name'] != null) {
-        apartmentName = (apt['name'] as String?).toString().trim();
-      }
-      if (apartmentName.isEmpty) apartmentName = '—';
-
-      final startRaw = raw['start_date'];
-      final endRaw = raw['end_date'];
-      String startStr = '—';
-      String endStr = '—';
-      if (startRaw != null) {
-        final d = startRaw is DateTime ? startRaw : (startRaw is String ? DateTime.tryParse(startRaw) : null);
-        if (d != null) startStr = '${d.day}.${d.month}.${d.year}';
-      }
-      if (endRaw != null) {
-        final d = endRaw is DateTime ? endRaw : (endRaw is String ? DateTime.tryParse(endRaw) : null);
-        if (d != null) endStr = '${d.day}.${d.month}.${d.year}';
-      }
-      final periodLabel = '$startStr – $endStr';
-
-      reservationIds.add(id);
-      reservationData[id] = (apartmentName: apartmentName, periodLabel: periodLabel);
+    // Filtrace podle měsíce: preferuj completed_at, fallback due_date.
+    final tasksInMonth = <Map<String, dynamic>>[];
+    for (final t in tasksList) {
+      final completedAt = _parseDateTime(t['completed_at']);
+      final dueDate = _parseDateTime(t['due_date']);
+      final refDate = completedAt ?? dueDate;
+      if (refDate == null) continue;
+      final utc = refDate.toUtc();
+      if (utc.isBefore(startOfMonth) || !utc.isBefore(startOfNextMonth)) continue;
+      tasksInMonth.add(t);
     }
+    if (tasksInMonth.isEmpty) return [];
 
-    /// Ochrana před voláním fetchByReservationIds s prázdným seznamem – Postgrest .inFilter vyvolá výjimku.
+    final reservationIds = tasksInMonth
+        .map((t) => (t['reservation_id'] as String?)?.trim())
+        .where((id) => id != null && id.isNotEmpty)
+        .cast<String>()
+        .toSet()
+        .toList();
     if (reservationIds.isEmpty) return [];
 
-    /// b) Načtení reservation_services pro všechny rezervace (tenant_id pro defense-in-depth).
+    // Krok 2: Načti reservation_services pro tyto rezervace.
     final servicesByRes = await fetchByReservationIds(reservationIds, tenantId);
 
-    final rows = <BillingReportRow>[];
-
-    for (final rid in reservationIds) {
-      final data = reservationData[rid];
-      if (data == null) continue;
-
-      final services = servicesByRes[rid] ?? [];
-
-      double totalValue = 0;
-      double cashCollected = 0;
-      double toInvoice = 0;
-
-      for (final s in services) {
-        final price = (s.chargedPrice ?? 0).toDouble();
-        totalValue += price;
-
-        final pt = (s.payerType ?? '').trim();
-        if (pt == 'guest') {
-          cashCollected += price;
-        } else if (pt == 'owner') {
-          toInvoice += price;
+    // Krok 3: Mapování apartment_service_id -> service_id (pro párování úkol-service).
+    final apartmentServiceIds = <String>{};
+    for (final list in servicesByRes.values) {
+      for (final rs in list) {
+        final id = rs.apartmentServiceId.trim();
+        if (id.isNotEmpty) apartmentServiceIds.add(id);
+      }
+    }
+    final aptServiceToServiceId = <String, String>{};
+    if (apartmentServiceIds.isNotEmpty) {
+      // SECURITY FIX: Explicitní defense-in-depth kontrola na tenant_id.
+      final aptRes = await SupabaseService.client
+          .from('apartment_services')
+          .select('id, service_id')
+          .eq('tenant_id', tenantId)
+          .inFilter('id', apartmentServiceIds.toList());
+      for (final row in (aptRes as List)) {
+        final m = row as Map<String, dynamic>;
+        final id = (m['id'] as String?)?.trim();
+        final sid = (m['service_id'] as String?)?.trim();
+        if (id != null && id.isNotEmpty && sid != null && sid.isNotEmpty) {
+          aptServiceToServiceId[id] = sid;
         }
       }
-
-      rows.add(BillingReportRow(
-        reservationId: rid,
-        apartmentName: data.apartmentName,
-        periodLabel: data.periodLabel,
-        totalValue: totalValue,
-        cashCollected: cashCollected,
-        toInvoice: toInvoice,
-      ));
     }
 
-    rows.sort((a, b) => a.apartmentName.compareTo(b.apartmentName));
-    return rows;
+    // Krok 4: Sestav (reservation_id, service_id) -> (charged_price, payer_type).
+    final priceByResService = <String, ({double price, String payerType})>{};
+    for (final entry in servicesByRes.entries) {
+      for (final rs in entry.value) {
+        final sid = aptServiceToServiceId[rs.apartmentServiceId];
+        if (sid == null) continue;
+        final key = '${entry.key}|$sid';
+        final price = (rs.chargedPrice ?? 0).toDouble();
+        final pt = (rs.payerType ?? 'guest').trim();
+        priceByResService[key] = (price: price, payerType: pt);
+      }
+    }
+
+    // Krok 5: Pro každý úkol vytvoř BillingTaskItem a seskupte po apartmánu.
+    final byApartment = <String, List<BillingTaskItem>>{};
+    for (final t in tasksInMonth) {
+      final resId = (t['reservation_id'] as String?)?.trim() ?? '';
+      final svcId = (t['service_id'] as String?)?.trim() ?? '';
+      final aptId = (t['apartment_id'] as String?)?.trim() ?? '';
+      if (aptId.isEmpty) continue;
+
+      final key = '$resId|$svcId';
+      final priceData = priceByResService[key];
+      final chargedPrice = priceData?.price ?? 0.0;
+      final payerType = priceData?.payerType ?? 'guest';
+
+      final item = BillingTaskItem(
+        taskId: (t['id'] as String?)?.trim() ?? '',
+        title: (t['title'] as String?)?.trim() ?? '',
+        completedAt: _parseDateTime(t['completed_at']),
+        chargedPrice: chargedPrice,
+        payerType: payerType,
+        taskType: (t['task_type'] as String?)?.trim(),
+      );
+      byApartment.putIfAbsent(aptId, () => []).add(item);
+    }
+
+    // Krok 6: Agregace na BillingApartmentGroup.
+    final groups = <BillingApartmentGroup>[];
+    for (final entry in byApartment.entries) {
+      final aptId = entry.key;
+      final items = entry.value;
+      double toInvoice = 0;
+      double cash = 0;
+      for (final it in items) {
+        if (it.payerType == 'owner') {
+          toInvoice += it.chargedPrice;
+        } else {
+          cash += it.chargedPrice;
+        }
+      }
+      groups.add(BillingApartmentGroup(
+        apartmentId: aptId,
+        apartmentName: apartmentById[aptId] ?? aptId,
+        tasks: items,
+        totalToInvoice: toInvoice,
+        totalCashCollected: cash,
+      ));
+    }
+    groups.sort((a, b) => a.apartmentName.compareTo(b.apartmentName));
+    return groups;
   } catch (e, st) {
     if (kDebugMode) {
       // ignore: avoid_print
@@ -157,3 +215,10 @@ final billingReportProvider =
     rethrow;
   }
 });
+
+DateTime? _parseDateTime(dynamic raw) {
+  if (raw == null) return null;
+  if (raw is DateTime) return raw;
+  if (raw is String) return DateTime.tryParse(raw);
+  return null;
+}

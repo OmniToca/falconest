@@ -1,17 +1,18 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:falconest/core/services/currency_service.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
-import 'package:falconest/core/widgets/task_header_widget.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
 import 'package:falconest/features/worker/widgets/task_countdown_timer.dart';
+import 'package:falconest/features/worker/widgets/worker_task_shared_header.dart';
 import 'package:falconest/features/worker/utils/cash_collection_dialog.dart';
+import 'package:falconest/features/worker/widgets/task_complete_with_photo_section.dart';
 import 'package:falconest/features/worker/widgets/issue_reporter_dialog.dart';
-
-const _primaryBlue = Color(0xFF1565C0);
 
 /// MVP obrazovka pro úkoly typu Transfer (předání/převzetí bytu).
 /// Jednoduché zobrazení dat a tlačítko Dokončit.
@@ -69,14 +70,10 @@ class TransferTaskScreen extends ConsumerWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        TaskHeaderWidget(
+                        WorkerTaskSharedHeader(
                           title: _mainHeading(detail),
                           scheduledStart: detail.scheduledStart,
-                        ),
-                        const SizedBox(height: 16),
-                        _buildAddressWithNavigate(context, detail.apartmentAddress),
-                        const SizedBox(height: 16),
-                        TaskCountdownTimer(
+                          apartmentAddress: detail.displayAddress.isNotEmpty ? detail.displayAddress : null,
                           startedAt: detail.startedAt,
                           completedAt: detail.completedAt,
                           estimatedMinutes: parseTaskEstimateMinutes(
@@ -85,17 +82,37 @@ class TransferTaskScreen extends ConsumerWidget {
                           ),
                         ),
                         const SizedBox(height: 16),
+                        // PROČ: Karta Kontakt a Lokace – jméno, adresa (s navigací), odhad času. Používá displayName/displayAddress pro ruční i automatické úkoly.
+                        ..._buildContactAndLocationCard(context, detail),
+                        const SizedBox(height: 16),
                         // PROČ: Kód schránky a kontakt na hosta – řidič řeší zpoždění a předání klíčů.
                         ..._buildKeyboxAndGuestContact(context, detail),
                         const SizedBox(height: 16),
                         _buildInstructionsCard(context, detail.description, detail.metadata ?? {}),
-                        ..._buildTransferMetadata(context, detail.metadata ?? {}),
+                        ..._buildFlightInfo(context, detail.flightNumber),
+                        ..._buildTransferMetadata(context, ref, detail.metadata ?? {}),
                       ],
                     ),
                   ),
                 ),
                 const SizedBox(height: 16),
-                _buildActionButton(context, ref, taskId, detail, 'worker.task_detail_finish_transfer'),
+                TaskCompleteWithPhotoSection(
+                  taskId: taskId,
+                  detail: detail,
+                  finishKey: 'worker.task_detail_finish_transfer',
+                  beforeComplete: (ctx, ref, mediaUrls) =>
+                      maybeShowCashCollectionDialog(
+                    ctx,
+                    ref,
+                    detail,
+                    taskId: taskId,
+                    onCompleted: () {
+                      ref.invalidate(workerTaskDetailProvider(taskId));
+                      if (ctx.mounted) ctx.pop();
+                    },
+                    mediaUrls: mediaUrls.isEmpty ? null : mediaUrls,
+                  ),
+                ),
               ],
             ),
           ),
@@ -108,115 +125,85 @@ class TransferTaskScreen extends ConsumerWidget {
     );
   }
 
-  // Dvoufázové odpracování: Nejprve Zahájit (in_progress), poté Dokončit (completed).
-  // Uložení přesného UTC času pro sledování reálné doby práce.
-  Widget _buildActionButton(BuildContext context, WidgetRef ref, String taskId, dynamic detail, String finishKey) {
-    final status = detail?.status ?? '';
-    final s = status.trim().toLowerCase();
-    final isInProgress = s == 'in_progress' || s == 'probíhá';
-    final isCompleted = s == 'completed' || s == 'done' || s == 'dokončeno' || s == 'hotovo';
+  /// Karta Kontakt a Lokace – jméno, adresa (s navigací), odhad času.
+  /// PROČ: Jednotné zobrazení pro ruční i automatické úkoly – používá displayName/displayAddress.
+  static List<Widget> _buildContactAndLocationCard(BuildContext context, dynamic detail) {
+    final displayName = detail.displayName.trim();
+    final displayAddress = detail.displayAddress.trim();
+    final estimatedMin = parseTaskEstimateMinutes(detail.description, detail.metadata);
+    final hasAny = displayName.isNotEmpty || displayAddress.isNotEmpty || estimatedMin > 0;
+    if (!hasAny) return [];
 
-    if (isCompleted) {
-      return SizedBox(
-        width: double.infinity,
-        child: FilledButton(
-          onPressed: () => context.pop(),
-          style: FilledButton.styleFrom(
-            backgroundColor: Colors.grey,
-            foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(vertical: 16),
+    return [
+      Card(
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (displayName.isNotEmpty)
+                _buildContactRow(context, Icons.person, displayName),
+              if (displayName.isNotEmpty && (displayAddress.isNotEmpty || estimatedMin > 0))
+                const SizedBox(height: 12),
+              if (displayAddress.isNotEmpty)
+                _buildAddressRowWithNavigate(context, displayAddress),
+              if (displayAddress.isNotEmpty && estimatedMin > 0) const SizedBox(height: 12),
+              if (estimatedMin > 0)
+                _buildContactRow(
+                  context,
+                  Icons.access_time,
+                  'worker.estimated_time'.tr(namedArgs: {'minutes': '$estimatedMin'}),
+                ),
+            ],
           ),
-          child: Text('common.back'.tr()),
         ),
-      );
-    }
-    if (isInProgress) {
-      return SizedBox(
-        width: double.infinity,
-        child: FilledButton(
-          onPressed: () async {
-            final result = await maybeShowCashCollectionDialog(
-              context,
-              ref,
-              detail,
-              taskId: taskId,
-              onCompleted: () {
-                ref.invalidate(workerTaskDetailProvider(taskId));
-                if (context.mounted) context.pop();
-              },
-            );
-            // Když Cash dialog nebyl zobrazen – potvrzovací dialog zabrání překlikům.
-            if (result == null) {
-              final ok = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: Text('worker.confirm_finish_title'.tr()),
-                  content: Text('worker.confirm_finish_message'.tr()),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.of(ctx).pop(false),
-                      child: Text('common.cancel'.tr()),
-                    ),
-                    FilledButton(
-                      onPressed: () => Navigator.of(ctx).pop(true),
-                      child: Text('common.ok'.tr()),
-                    ),
-                  ],
-                ),
-              );
-              if (ok != true || !context.mounted) return;
-              await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
-                    taskId,
-                    'completed',
-                    completedAt: DateTime.now().toUtc(),
-                  );
-              if (context.mounted) context.pop();
-            }
-          },
-          style: FilledButton.styleFrom(
-            backgroundColor: _primaryBlue,
-            foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(vertical: 16),
-          ),
-          child: Text(finishKey.tr()),
+      ),
+    ];
+  }
+
+  static Widget _buildContactRow(BuildContext context, IconData icon, String text) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 22, color: Colors.blue.shade700),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(text, style: TextStyle(fontSize: 15, color: Colors.grey.shade800)),
         ),
-      );
-    }
-    // PROČ: Potvrzovací dialog zabrání překlikům v kapse při zahájení.
-    return SizedBox(
-      width: double.infinity,
-      child: FilledButton(
-        onPressed: () async {
-          final ok = await showDialog<bool>(
-            context: context,
-            builder: (ctx) => AlertDialog(
-              title: Text('worker.confirm_start_title'.tr()),
-              content: Text('worker.confirm_start_message'.tr()),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  child: Text('common.cancel'.tr()),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  child: Text('common.ok'.tr()),
-                ),
-              ],
+      ],
+    );
+  }
+
+  static Widget _buildAddressRowWithNavigate(BuildContext context, String address) {
+    return InkWell(
+      onTap: () async {
+        final url = Uri.parse(
+          'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(address)}',
+        );
+        if (await canLaunchUrl(url)) {
+          await launchUrl(url, mode: LaunchMode.externalApplication);
+        }
+      },
+      borderRadius: BorderRadius.circular(4),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Icon(Icons.location_on, size: 22, color: Colors.blue.shade700),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(address, style: TextStyle(fontSize: 15, color: Colors.grey.shade800)),
             ),
-          );
-          if (ok != true) return;
-          await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
-                taskId,
-                'in_progress',
-                startedAt: DateTime.now().toUtc(),
-              );
-        },
-        style: FilledButton.styleFrom(
-          backgroundColor: _primaryBlue,
-          foregroundColor: Colors.white,
-          padding: const EdgeInsets.symmetric(vertical: 16),
+            Icon(Icons.map_outlined, size: 20, color: Colors.blue.shade600),
+            const SizedBox(width: 4),
+            Text(
+              'worker.maps'.tr(),
+              style: TextStyle(fontSize: 13, color: Colors.blue.shade600, fontWeight: FontWeight.w500),
+            ),
+          ],
         ),
-        child: Text('worker.task_detail_start_work'.tr()),
       ),
     );
   }
@@ -338,38 +325,18 @@ class TransferTaskScreen extends ConsumerWidget {
     );
   }
 
-  /// AppBar: část PŘED dvojtečkou (např. „Transfer Z letiště“).
+  /// AppBar: část PŘED dvojtečkou (např. „Transfer Z letiště“) + referenční číslo.
   static String _appBarTitle(dynamic detail) {
     final raw = detail.title.isNotEmpty ? detail.title : (detail.apartmentName ?? '—');
-    return raw.split(':').first.trim();
+    final base = raw.split(':').first.trim();
+    final ref = detail.referenceNumber?.trim();
+    return (ref != null && ref.isNotEmpty) ? '$base • #$ref' : base;
   }
 
   /// Hlavní nadpis: část ZA dvojtečkou, nebo celý název (např. „Petr Sokol“).
   static String _mainHeading(dynamic detail) {
     final raw = detail.title.isNotEmpty ? detail.title : (detail.apartmentName ?? '—');
     return raw.contains(':') ? raw.split(':').sublist(1).join(':').trim() : raw;
-  }
-
-  /// Adresa s tlačítkem Navigovat – otevře Google Maps (spolehlivý formát pro iOS i Android).
-  Widget _buildAddressWithNavigate(BuildContext context, String? address) {
-    final addr = address?.trim() ?? '';
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          addr.isEmpty ? '—' : addr,
-          style: TextStyle(fontSize: 17, color: Colors.grey.shade800),
-        ),
-        if (addr.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          FilledButton.tonalIcon(
-            onPressed: () => _openMaps(context, addr),
-            icon: const Icon(Icons.map, size: 20),
-            label: Text('worker.task_detail_navigate'.tr()),
-          ),
-        ],
-      ],
-    );
   }
 
   /// Karta Instrukce / Informace o letu – description + custom_note (číslo letu, jméno klienta).
@@ -404,18 +371,40 @@ class TransferTaskScreen extends ConsumerWidget {
     );
   }
 
-  /// Otevře Google Maps – univerzální formát pro iOS i Android, Uri.encodeComponent zvládne mezery a diakritiku.
-  Future<void> _openMaps(BuildContext context, String address) async {
-    final query = address.trim();
-    if (query.isEmpty) return;
-    final url = Uri.parse('https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(query)}');
-    if (await canLaunchUrl(url)) {
-      await launchUrl(url, mode: LaunchMode.externalApplication);
-    }
+  /// Karta čísla letu s proklikem na FlightRadar24 – používá nativní detail.flightNumber.
+  /// PROČ: Řidič potřebuje sledovat zpoždění letu; URL formát FlightRadar24: /data/flights/{flightNumber}.
+  /// Zdroj: reservation_services.flight_number → tasks.metadata při vytvoření úkolu. Bez parsování [FLIGHT:XXX].
+  static List<Widget> _buildFlightInfo(BuildContext context, String? fn) {
+    final flight = fn?.trim();
+    if (flight == null || flight.isEmpty) return [];
+
+    return [
+      const SizedBox(height: 16),
+      Card(
+        margin: EdgeInsets.zero,
+        child: ListTile(
+          leading: Icon(Icons.flight_takeoff, color: Colors.blue.shade700, size: 28),
+          title: Text(
+            flight.toUpperCase(),
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.grey.shade800),
+          ),
+          subtitle: Text('tasks.track_flight'.tr()),
+          trailing: const Icon(Icons.open_in_new, color: Colors.blue),
+          onTap: () async {
+            final uri = Uri.parse('https://www.flightradar24.com/data/flights/${flight.toUpperCase()}');
+            try {
+              if (await canLaunchUrl(uri)) {
+                await launchUrl(uri, mode: LaunchMode.externalApplication);
+              }
+            } catch (_) {}
+          },
+        ),
+      ),
+    ];
   }
 
   /// Vykreslení metadat pro Transfer: obří banner na peníze (custom_note je již v kartě Instrukce).
-  List<Widget> _buildTransferMetadata(BuildContext context, Map<String, dynamic> meta) {
+  List<Widget> _buildTransferMetadata(BuildContext context, WidgetRef ref, Map<String, dynamic> meta) {
     final widgets = <Widget>[];
 
     // Vykreslení obřího banneru pro výběr hotovosti.
@@ -424,7 +413,7 @@ class TransferTaskScreen extends ConsumerWidget {
     if (amount != null && amount > 0) {
       widgets.addAll([
         const SizedBox(height: 16),
-        _buildAmountBanner(context, amount),
+        _buildAmountBanner(context, ref, amount),
       ]);
     }
 
@@ -432,9 +421,9 @@ class TransferTaskScreen extends ConsumerWidget {
   }
 
   /// Obří banner na částku k vybrání od hosta (amount_to_collect z metadat).
-  /// Dynamické formátování měny podle aktuálního jazyka uživatele (i18n).
-  Widget _buildAmountBanner(BuildContext context, num amount) {
-    final formatted = NumberFormat.currency(locale: context.locale.toString(), symbol: '€', decimalDigits: 2).format(amount);
+  /// Používá formatTaskAmount – měna dle tenanta, fallback profil uživatele.
+  Widget _buildAmountBanner(BuildContext context, WidgetRef ref, num amount) {
+    final formatted = formatTaskAmount(context, ref, amount);
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(

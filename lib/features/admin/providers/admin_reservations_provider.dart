@@ -1,9 +1,13 @@
+import 'package:collection/collection.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_repository.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
+import 'package:falconest/features/admin/providers/apartment_owners_provider.dart';
+import 'package:falconest/features/admin/providers/clients_provider.dart';
 
 /// Životní cyklus rezervace – hodnoty sloupce status v DB (výchozí 'new').
 const List<String> reservationStatusValues = ['new', 'confirmed', 'checked_in', 'checked_out', 'cancelled'];
@@ -27,6 +31,7 @@ class ReservationRow {
   const ReservationRow({
     required this.id,
     required this.apartmentId,
+    this.referenceNumber,
     this.guestName,
     this.guestPhone,
     this.reservationSource,
@@ -45,6 +50,8 @@ class ReservationRow {
 
   final String id;
   final String apartmentId;
+  /// Referenční číslo (např. RES-A8B3K9). Lidsky čitelný identifikátor pro podporu.
+  final String? referenceNumber;
   /// Jméno hosta – fallback prázdný řetězec
   final String? guestName;
   /// Telefon hosta (pro transfery a předání)
@@ -111,10 +118,13 @@ class ReservationRow {
         : null;
     final departureTime = _parseOptionalDateTime(raw['departure_time']);
     final internalNote = (raw['internal_note'] as String?)?.trim();
+    /// Referenční číslo (reference_number) – pro zobrazení v UI (#RES-xxx).
+    final refNum = (raw['reference_number'] as String?)?.trim();
 
     return ReservationRow(
       id: id,
       apartmentId: apartmentId,
+      referenceNumber: refNum != null && refNum.isNotEmpty ? refNum : null,
       guestName: guestName?.isNotEmpty == true ? guestName : null,
       guestPhone: guestPhone?.isNotEmpty == true ? guestPhone : null,
       reservationSource: reservationSource,
@@ -169,6 +179,7 @@ class ReservationRow {
   Map<String, dynamic> toMap({bool forInsert = false}) {
     final map = <String, dynamic>{
       'apartment_id': apartmentId,
+      'reference_number': referenceNumber?.trim().isEmpty == true ? null : referenceNumber,
       'guest_name': guestName?.trim().isEmpty == true ? null : guestName?.trim(),
       'guest_phone': guestPhone?.trim().isEmpty == true ? null : guestPhone?.trim(),
       'reservation_source': reservationSource ?? 'Other',
@@ -326,6 +337,47 @@ final adminReservationsProvider =
       rethrow;
     }
   }
+});
+
+/// Provider: rezervace související s klientem (parametr clientId).
+///
+/// LOGIKA: Tabulka [reservations] nemá přímo client_id. Pro majitele (owner) se
+/// rezervace vážou přes byty: client.profile_id → apartment_owners.owner_id →
+/// apartment_id → reservations.apartment_id. Pro externí/agency klienty vracíme
+/// prázdný seznam (není jak je propojit).
+///
+/// Načte klienta z clientsProvider, pokud je owner s profile_id, získá ID bytů
+/// z apartment_owners a načte rezervace těchto bytů. Seřazeno od nejbližších
+/// (start_date ASC). Soft delete: pouze deleted_at IS NULL.
+final clientReservationsProvider =
+    FutureProvider.family<List<ReservationRow>, String>((ref, clientId) async {
+  if (clientId.trim().isEmpty) return [];
+
+  final clients = await ref.watch(clientsProvider.future);
+  final client = clients.where((c) => c.id == clientId).firstOrNull;
+  if (client == null) return [];
+
+  final isOwner = (client.clientType?.toLowerCase() ?? '') == 'owner';
+  final profileId = client.profileId?.trim();
+  if (!isOwner || profileId == null || profileId.isEmpty) return [];
+
+  final apartments = await ref.watch(apartmentsForProfileProvider(profileId).future);
+  final apartmentIds = apartments.map((a) => a.id).where((id) => id.isNotEmpty).toList();
+  if (apartmentIds.isEmpty) return [];
+
+  final res = await SupabaseService.client
+      .from('reservations')
+      .select('id, apartment_id, reference_number, guest_name, guest_phone, reservation_source, '
+          'start_date, end_date, check_in, check_out, needs_transfer, status, '
+          'guest_adults, guest_children, arrival_time, departure_time, internal_note, deleted_at, '
+          'apartments(name)')
+      .inFilter('apartment_id', apartmentIds)
+      .isFilter('deleted_at', null)
+      .order('start_date', ascending: true);
+
+  return (res as List)
+      .map((r) => ReservationRow.fromJson(r as Map<String, dynamic>))
+      .toList();
 });
 
 /// Derive provider: srovnání Dnes vs. Včera pro příjezdy a odjezdy.

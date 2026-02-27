@@ -22,49 +22,54 @@ const ApartmentLocalSchema = CollectionSchema(
       name: r'address',
       type: IsarType.string,
     ),
-    r'keybox': PropertySchema(
+    r'code': PropertySchema(
       id: 1,
+      name: r'code',
+      type: IsarType.string,
+    ),
+    r'keybox': PropertySchema(
+      id: 2,
       name: r'keybox',
       type: IsarType.string,
     ),
     r'lastSyncedAt': PropertySchema(
-      id: 2,
+      id: 3,
       name: r'lastSyncedAt',
       type: IsarType.dateTime,
     ),
     r'lastUpdated': PropertySchema(
-      id: 3,
+      id: 4,
       name: r'lastUpdated',
       type: IsarType.dateTime,
     ),
     r'localUpdatedAt': PropertySchema(
-      id: 4,
+      id: 5,
       name: r'localUpdatedAt',
       type: IsarType.dateTime,
     ),
     r'name': PropertySchema(
-      id: 5,
+      id: 6,
       name: r'name',
       type: IsarType.string,
     ),
     r'ownerNotes': PropertySchema(
-      id: 6,
+      id: 7,
       name: r'ownerNotes',
       type: IsarType.string,
     ),
     r'supabaseId': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'supabaseId',
       type: IsarType.string,
     ),
     r'syncStatus': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'syncStatus',
       type: IsarType.byte,
       enumMap: _ApartmentLocalsyncStatusEnumValueMap,
     ),
     r'tenantId': PropertySchema(
-      id: 9,
+      id: 10,
       name: r'tenantId',
       type: IsarType.string,
     )
@@ -91,6 +96,12 @@ int _apartmentLocalEstimateSize(
   var bytesCount = offsets.last;
   {
     final value = object.address;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
+    final value = object.code;
     if (value != null) {
       bytesCount += 3 + value.length * 3;
     }
@@ -125,15 +136,16 @@ void _apartmentLocalSerialize(
   Map<Type, List<int>> allOffsets,
 ) {
   writer.writeString(offsets[0], object.address);
-  writer.writeString(offsets[1], object.keybox);
-  writer.writeDateTime(offsets[2], object.lastSyncedAt);
-  writer.writeDateTime(offsets[3], object.lastUpdated);
-  writer.writeDateTime(offsets[4], object.localUpdatedAt);
-  writer.writeString(offsets[5], object.name);
-  writer.writeString(offsets[6], object.ownerNotes);
-  writer.writeString(offsets[7], object.supabaseId);
-  writer.writeByte(offsets[8], object.syncStatus.index);
-  writer.writeString(offsets[9], object.tenantId);
+  writer.writeString(offsets[1], object.code);
+  writer.writeString(offsets[2], object.keybox);
+  writer.writeDateTime(offsets[3], object.lastSyncedAt);
+  writer.writeDateTime(offsets[4], object.lastUpdated);
+  writer.writeDateTime(offsets[5], object.localUpdatedAt);
+  writer.writeString(offsets[6], object.name);
+  writer.writeString(offsets[7], object.ownerNotes);
+  writer.writeString(offsets[8], object.supabaseId);
+  writer.writeByte(offsets[9], object.syncStatus.index);
+  writer.writeString(offsets[10], object.tenantId);
 }
 
 ApartmentLocal _apartmentLocalDeserialize(
@@ -144,18 +156,19 @@ ApartmentLocal _apartmentLocalDeserialize(
 ) {
   final object = ApartmentLocal();
   object.address = reader.readStringOrNull(offsets[0]);
+  object.code = reader.readStringOrNull(offsets[1]);
   object.id = id;
-  object.keybox = reader.readStringOrNull(offsets[1]);
-  object.lastSyncedAt = reader.readDateTimeOrNull(offsets[2]);
-  object.lastUpdated = reader.readDateTime(offsets[3]);
-  object.localUpdatedAt = reader.readDateTime(offsets[4]);
-  object.name = reader.readString(offsets[5]);
-  object.ownerNotes = reader.readStringOrNull(offsets[6]);
-  object.supabaseId = reader.readStringOrNull(offsets[7]);
+  object.keybox = reader.readStringOrNull(offsets[2]);
+  object.lastSyncedAt = reader.readDateTimeOrNull(offsets[3]);
+  object.lastUpdated = reader.readDateTime(offsets[4]);
+  object.localUpdatedAt = reader.readDateTime(offsets[5]);
+  object.name = reader.readString(offsets[6]);
+  object.ownerNotes = reader.readStringOrNull(offsets[7]);
+  object.supabaseId = reader.readStringOrNull(offsets[8]);
   object.syncStatus = _ApartmentLocalsyncStatusValueEnumMap[
-          reader.readByteOrNull(offsets[8])] ??
+          reader.readByteOrNull(offsets[9])] ??
       SyncStatus.synced;
-  object.tenantId = reader.readString(offsets[9]);
+  object.tenantId = reader.readString(offsets[10]);
   return object;
 }
 
@@ -171,22 +184,24 @@ P _apartmentLocalDeserializeProp<P>(
     case 1:
       return (reader.readStringOrNull(offset)) as P;
     case 2:
-      return (reader.readDateTimeOrNull(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 3:
-      return (reader.readDateTime(offset)) as P;
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 4:
       return (reader.readDateTime(offset)) as P;
     case 5:
-      return (reader.readString(offset)) as P;
+      return (reader.readDateTime(offset)) as P;
     case 6:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 7:
       return (reader.readStringOrNull(offset)) as P;
     case 8:
+      return (reader.readStringOrNull(offset)) as P;
+    case 9:
       return (_ApartmentLocalsyncStatusValueEnumMap[
               reader.readByteOrNull(offset)] ??
           SyncStatus.synced) as P;
-    case 9:
+    case 10:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -447,6 +462,160 @@ extension ApartmentLocalQueryFilter
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.greaterThan(
         property: r'address',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterFilterCondition>
+      codeIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'code',
+      ));
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterFilterCondition>
+      codeIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'code',
+      ));
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterFilterCondition>
+      codeEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'code',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterFilterCondition>
+      codeGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'code',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterFilterCondition>
+      codeLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'code',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterFilterCondition>
+      codeBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'code',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterFilterCondition>
+      codeStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'code',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterFilterCondition>
+      codeEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'code',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterFilterCondition>
+      codeContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'code',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterFilterCondition>
+      codeMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'code',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterFilterCondition>
+      codeIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'code',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterFilterCondition>
+      codeIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'code',
         value: '',
       ));
     });
@@ -1505,6 +1674,18 @@ extension ApartmentLocalQuerySortBy
     });
   }
 
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterSortBy> sortByCode() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'code', Sort.asc);
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterSortBy> sortByCodeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'code', Sort.desc);
+    });
+  }
+
   QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterSortBy> sortByKeybox() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'keybox', Sort.asc);
@@ -1640,6 +1821,18 @@ extension ApartmentLocalQuerySortThenBy
       thenByAddressDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'address', Sort.desc);
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterSortBy> thenByCode() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'code', Sort.asc);
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QAfterSortBy> thenByCodeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'code', Sort.desc);
     });
   }
 
@@ -1787,6 +1980,13 @@ extension ApartmentLocalQueryWhereDistinct
     });
   }
 
+  QueryBuilder<ApartmentLocal, ApartmentLocal, QDistinct> distinctByCode(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'code', caseSensitive: caseSensitive);
+    });
+  }
+
   QueryBuilder<ApartmentLocal, ApartmentLocal, QDistinct> distinctByKeybox(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
@@ -1862,6 +2062,12 @@ extension ApartmentLocalQueryProperty
   QueryBuilder<ApartmentLocal, String?, QQueryOperations> addressProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'address');
+    });
+  }
+
+  QueryBuilder<ApartmentLocal, String?, QQueryOperations> codeProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'code');
     });
   }
 

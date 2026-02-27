@@ -11,9 +11,10 @@ Future<Map<String, List<ReservationServiceRow>>> fetchByReservationIds(
   if (reservationIds.isEmpty || tenantId.trim().isEmpty) return {};
   final ids = reservationIds.where((id) => id.isNotEmpty).toSet().toList();
   if (ids.isEmpty) return {};
+  // PROČ explicitní select: zaručíme, že flight_number a payer_type (nativní sloupce) se vždy načtou.
   final res = await SupabaseService.client
       .from('reservation_services')
-      .select()
+      .select('id, tenant_id, reservation_id, apartment_service_id, charged_price, custom_note, flight_number, payer_type, requires_photo')
       .eq('tenant_id', tenantId)
       .inFilter('reservation_id', ids);
   final list = (res as List).cast<Map<String, dynamic>>();
@@ -33,9 +34,10 @@ Future<List<ReservationServiceRow>> fetchByReservationId(
   String tenantId,
 ) async {
   if (reservationId.isEmpty || tenantId.trim().isEmpty) return [];
+  // PROČ explicitní select: zaručíme načtení flight_number a payer_type (nativní sloupce pro transfery).
   final res = await SupabaseService.client
       .from('reservation_services')
-      .select()
+      .select('id, tenant_id, reservation_id, apartment_service_id, charged_price, custom_note, flight_number, payer_type, requires_photo')
       .eq('tenant_id', tenantId)
       .eq('reservation_id', reservationId);
   final list = res as List;
@@ -54,11 +56,14 @@ Future<void> saveForReservation({
   required Map<String, ReservationServiceEditState> states,
 }) async {
   final toInsert = states.values.where((s) => s.enabled).toList();
+  // SECURITY FIX: Explicitní defense-in-depth kontrola na tenant_id.
   await SupabaseService.client
       .from('reservation_services')
       .delete()
+      .eq('tenant_id', tenantId)
       .eq('reservation_id', reservationId);
   if (toInsert.isEmpty) return;
+  // Mapování: flight_number a payer_type jako nativní sloupce (bez [FLIGHT:XXX] v custom_note).
   for (final s in toInsert) {
     await SupabaseService.client.from('reservation_services').insert({
       'tenant_id': tenantId,
@@ -66,7 +71,9 @@ Future<void> saveForReservation({
       'apartment_service_id': s.apartmentServiceId,
       'charged_price': s.chargedPriceEur,
       'custom_note': s.customNote?.trim().isEmpty == true ? null : s.customNote?.trim(),
+      'flight_number': s.flightNumber?.trim().isEmpty == true ? null : s.flightNumber?.trim(),
       'payer_type': (s.payerType == 'owner' || s.payerType == 'guest') ? s.payerType : null,
+      'requires_photo': s.requiresPhoto,
     });
   }
 }

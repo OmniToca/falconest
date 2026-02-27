@@ -37,24 +37,29 @@ const ReservationLocalSchema = CollectionSchema(
       name: r'localUpdatedAt',
       type: IsarType.dateTime,
     ),
-    r'status': PropertySchema(
+    r'referenceNumber': PropertySchema(
       id: 4,
+      name: r'referenceNumber',
+      type: IsarType.string,
+    ),
+    r'status': PropertySchema(
+      id: 5,
       name: r'status',
       type: IsarType.string,
     ),
     r'supabaseId': PropertySchema(
-      id: 5,
+      id: 6,
       name: r'supabaseId',
       type: IsarType.string,
     ),
     r'syncStatus': PropertySchema(
-      id: 6,
+      id: 7,
       name: r'syncStatus',
       type: IsarType.byte,
       enumMap: _ReservationLocalsyncStatusEnumValueMap,
     ),
     r'tenantId': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'tenantId',
       type: IsarType.string,
     )
@@ -91,6 +96,12 @@ int _reservationLocalEstimateSize(
       bytesCount += 3 + value.length * 3;
     }
   }
+  {
+    final value = object.referenceNumber;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.status.length * 3;
   {
     final value = object.supabaseId;
@@ -112,10 +123,11 @@ void _reservationLocalSerialize(
   writer.writeString(offsets[1], object.guestPhone);
   writer.writeDateTime(offsets[2], object.lastUpdated);
   writer.writeDateTime(offsets[3], object.localUpdatedAt);
-  writer.writeString(offsets[4], object.status);
-  writer.writeString(offsets[5], object.supabaseId);
-  writer.writeByte(offsets[6], object.syncStatus.index);
-  writer.writeString(offsets[7], object.tenantId);
+  writer.writeString(offsets[4], object.referenceNumber);
+  writer.writeString(offsets[5], object.status);
+  writer.writeString(offsets[6], object.supabaseId);
+  writer.writeByte(offsets[7], object.syncStatus.index);
+  writer.writeString(offsets[8], object.tenantId);
 }
 
 ReservationLocal _reservationLocalDeserialize(
@@ -130,12 +142,13 @@ ReservationLocal _reservationLocalDeserialize(
   object.id = id;
   object.lastUpdated = reader.readDateTime(offsets[2]);
   object.localUpdatedAt = reader.readDateTime(offsets[3]);
-  object.status = reader.readString(offsets[4]);
-  object.supabaseId = reader.readStringOrNull(offsets[5]);
+  object.referenceNumber = reader.readStringOrNull(offsets[4]);
+  object.status = reader.readString(offsets[5]);
+  object.supabaseId = reader.readStringOrNull(offsets[6]);
   object.syncStatus = _ReservationLocalsyncStatusValueEnumMap[
-          reader.readByteOrNull(offsets[6])] ??
+          reader.readByteOrNull(offsets[7])] ??
       SyncStatus.synced;
-  object.tenantId = reader.readString(offsets[7]);
+  object.tenantId = reader.readString(offsets[8]);
   return object;
 }
 
@@ -155,14 +168,16 @@ P _reservationLocalDeserializeProp<P>(
     case 3:
       return (reader.readDateTime(offset)) as P;
     case 4:
-      return (reader.readString(offset)) as P;
-    case 5:
       return (reader.readStringOrNull(offset)) as P;
+    case 5:
+      return (reader.readString(offset)) as P;
     case 6:
+      return (reader.readStringOrNull(offset)) as P;
+    case 7:
       return (_ReservationLocalsyncStatusValueEnumMap[
               reader.readByteOrNull(offset)] ??
           SyncStatus.synced) as P;
-    case 7:
+    case 8:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -749,6 +764,160 @@ extension ReservationLocalQueryFilter
   }
 
   QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      referenceNumberIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'referenceNumber',
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      referenceNumberIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'referenceNumber',
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      referenceNumberEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'referenceNumber',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      referenceNumberGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'referenceNumber',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      referenceNumberLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'referenceNumber',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      referenceNumberBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'referenceNumber',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      referenceNumberStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'referenceNumber',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      referenceNumberEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'referenceNumber',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      referenceNumberContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'referenceNumber',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      referenceNumberMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'referenceNumber',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      referenceNumberIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'referenceNumber',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
+      referenceNumberIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'referenceNumber',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterFilterCondition>
       statusEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -1296,6 +1465,20 @@ extension ReservationLocalQuerySortBy
   }
 
   QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
+      sortByReferenceNumber() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'referenceNumber', Sort.asc);
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
+      sortByReferenceNumberDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'referenceNumber', Sort.desc);
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
       sortByStatus() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'status', Sort.asc);
@@ -1424,6 +1607,20 @@ extension ReservationLocalQuerySortThenBy
   }
 
   QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
+      thenByReferenceNumber() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'referenceNumber', Sort.asc);
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
+      thenByReferenceNumberDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'referenceNumber', Sort.desc);
+    });
+  }
+
+  QueryBuilder<ReservationLocal, ReservationLocal, QAfterSortBy>
       thenByStatus() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'status', Sort.asc);
@@ -1510,6 +1707,14 @@ extension ReservationLocalQueryWhereDistinct
     });
   }
 
+  QueryBuilder<ReservationLocal, ReservationLocal, QDistinct>
+      distinctByReferenceNumber({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'referenceNumber',
+          caseSensitive: caseSensitive);
+    });
+  }
+
   QueryBuilder<ReservationLocal, ReservationLocal, QDistinct> distinctByStatus(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
@@ -1572,6 +1777,13 @@ extension ReservationLocalQueryProperty
       localUpdatedAtProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'localUpdatedAt');
+    });
+  }
+
+  QueryBuilder<ReservationLocal, String?, QQueryOperations>
+      referenceNumberProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'referenceNumber');
     });
   }
 

@@ -6,6 +6,8 @@ part 'apartment_local.g.dart';
 
 /// Lokální Isar model reprezentující byt (apartment).
 ///
+/// POZNÁMKA: Po změně tohoto modelu je NUTNÉ spustit `dart run build_runner build`.
+///
 /// Offline-first: Data se primárně čtou z Isar, na pozadí se synchronizují
 /// s Supabase. Pole [supabaseId] slouží ke spárování záznamu s cloudovým
 /// záznamem při obousměrné synchronizaci.
@@ -37,6 +39,10 @@ class ApartmentLocal {
   /// Informace o schránce na klíče (volitelné)
   String? keybox;
 
+  /// Interní kód pro importy a podporu (např. SUN-01). Lidsky čitelný identifikátor.
+  /// Mapuje apartments.code.
+  String? code;
+
   /// Poznámky majitele – instrukce pro personál (mapuje apartments.owner_notes)
   String? ownerNotes;
 
@@ -58,7 +64,7 @@ class ApartmentLocal {
 
   /// Vytvoří ApartmentLocal z mapy (např. JSON odpověď ze Supabase).
   ///
-  /// Klíče: id, tenant_id, name, address, keybox, owner_notes.
+  /// Klíče: id, tenant_id, name, address, keybox, code, owner_notes.
   /// Pro vložení do Isar použij isar.apartmentLocals.put(obj) – id se přiřadí automaticky.
   factory ApartmentLocal.fromMap(Map<String, dynamic> map) {
     final now = DateTime.now().toUtc();
@@ -73,6 +79,9 @@ class ApartmentLocal {
       ..keybox = (map['keybox']?.toString() ?? '').trim().isEmpty
           ? null
           : (map['keybox']?.toString() ?? '').trim()
+      ..code = (map['code']?.toString() ?? '').trim().isEmpty
+          ? null
+          : (map['code']?.toString() ?? '').trim()
       ..ownerNotes = (map['owner_notes']?.toString() ?? '').trim().isEmpty
           ? null
           : (map['owner_notes']?.toString() ?? '').trim()

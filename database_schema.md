@@ -11,6 +11,15 @@
 | zones | name | text | NO |
 | zones | created_at | timestamp with time zone | YES |
 | zones | deleted_at | timestamp with time zone | YES – Soft delete; NULL = aktivní |
+| clients | id | uuid | NO |
+| clients | tenant_id | uuid | NO (FK → tenants) |
+| clients | name | text | NO |
+| clients | email | text | YES |
+| clients | phone | text | YES |
+| clients | client_type | text | YES – např. 'owner', 'external', 'agency' |
+| clients | profile_id | uuid | YES (FK → profiles ON DELETE SET NULL) – propojení CRM klienta s přihlašovacím profilem pro Klientský portál majitelů |
+| clients | created_at | timestamp with time zone | YES (default now()) |
+| clients | deleted_at | timestamp with time zone | YES – Soft delete; NULL = aktivní |
 | apartment_owners | id | uuid | NO |
 | apartment_owners | apartment_id | uuid | NO (FK → apartments ON DELETE CASCADE) |
 | apartment_owners | owner_id | uuid | NO (FK → profiles ON DELETE CASCADE) – pro PostgREST embed: profiles!apartment_owners_owner_id_fkey |
@@ -26,6 +35,7 @@
 | apartments | standard_cleaning_duration | integer | YES |
 | apartments | owner_notes | text | YES |
 | apartments | zone_id | uuid | YES (FK → zones) – oblast, do které apartmán patří |
+| apartments | code | text | YES – interní kód pro importy a podporu (např. SUN-01). Lidsky čitelný identifikátor. |
 | apartments | deleted_at | timestamp with time zone | YES |
 | app_super_admins | id | uuid | NO |
 | audit_logs | id | uuid | NO |
@@ -103,6 +113,7 @@
 | reservations | departure_time | timestamp with time zone | YES – předpokládaný čas odjezdu (pro Task Automator: úklid, transfer na letiště) |
 | reservations | internal_note | text | YES – interní poznámka manažera. Not synced to mobile app, for admin dashboard only. |
 | reservations | agency_collects_payment | boolean | YES (default false) – FEATURE: false = platbu řeší majitel, true = agentura vybere od hosta na místě |
+| reservations | reference_number | text | YES – automaticky generované referenční číslo (např. RES-A8B3K9). Lidsky čitelný identifikátor pro podporu a importy. |
 | staff_absences | id | uuid | NO |
 | staff_absences | profile_id | uuid | YES |
 | staff_absences | start_date | text | NO |
@@ -112,11 +123,15 @@
 | staff_absences | tenant_id | uuid | YES |
 | tasks | id | uuid | NO |
 | tasks | tenant_id | uuid | NO |
-| tasks | apartment_id | uuid | YES (NULL = úkol na úrovni agentury, např. alert z nepřítomnosti) |
+| tasks | apartment_id | uuid | YES (NULL = úkol na úrovni agentury nebo externí úkol bez bytu) |
+| tasks | client_id | uuid | YES (FK → clients ON DELETE SET NULL) – pro externí úkoly bez bytu (fakturace) |
+| tasks | custom_location | text | YES – adresa pro řidiče/personál u úkolů bez bytu |
+| tasks | custom_title | text | YES – název úkolu, např. "Transfer letiště", když nemáme název bytu |
 | tasks | assigned_user_id | uuid | YES |
 | tasks | scheduled_start | timestamp with time zone | NO |
 | tasks | status | text | NO |
 | tasks | photo_url | text | YES |
+| tasks | media_urls | text[] | YES (default '{}') – URL fotek v falconest_media/tasks/ (hlášení závad, check-in pasy, úklid) |
 | tasks | local_updated_at | timestamp with time zone | NO |
 | tasks | assigned_to | uuid | YES |
 | tasks | task_type | text | YES |
@@ -128,6 +143,8 @@
 | tasks | service_id | uuid | YES (FK → tenant_services ON DELETE SET NULL) – vazba na službu; pro scheduled úkoly a ochranný štít |
 | tasks | metadata | jsonb | NO (default '{}') – flexibilní data pro UI (částka k vybrání, poznámky z rezervace, číslo letu, trackování času) |
 | tasks | created_by | uuid | YES (FK → profiles) – profil tvůrce úkolu; NULL u systémově generovaných nebo starých záznamů |
+| tasks | invoiced_at | timestamp with time zone | YES (default NULL) – Soft-archivace pro fakturaci. NULL = aktivní úkol (zobrazuje se na Nástěnce/Plachtě), NOT NULL = vyfakturovaný (skrytý z aktivních pohledů) |
+| tasks | reference_number | text | YES – automaticky generované referenční číslo (např. TSK-X7M2P4). Lidsky čitelný identifikátor pro podporu a importy. |
 | tenant_modules | id | uuid | NO |
 | tenant_modules | tenant_id | uuid | YES |
 | tenant_modules | module_id | uuid | YES |
@@ -181,6 +198,7 @@
 | tenant_services | order_index | integer | YES (default 0) |
 | tenant_services | required_role | text | YES (default 'any') – požadovaná profese: any, cleaner, driver, maintenance, checkin_agent (pro Task Automator) |
 | tenant_services | duration_minutes | integer | YES (default 60) – časová náročnost / rezerva v minutách. U úklidu vata nad standardCleaningDuration, u transfer/extra fixní doba |
+| tenant_services | requires_photo | boolean | NO (default false) – vyžadovat fotodokumentaci při dokončení úkolu (stav apartmánu, pasy) |
 | apartment_services | id | uuid | NO |
 | apartment_services | tenant_id | uuid | NO |
 | apartment_services | apartment_id | uuid | NO |
@@ -197,6 +215,7 @@
 | reservation_services | apartment_service_id | uuid | NO (FK → apartment_services) |
 | reservation_services | custom_note | text | YES |
 | reservation_services | charged_price | numeric | YES |
+| reservation_services | flight_number | text | YES – číslo letu pro transfery (např. FR1495). Pro sledování na FlightRadar24. |
 | reservation_services | payer_type | text | YES (CHECK: 'owner', 'guest') – kdo platí u této rezervace (override) |
 | task_categories [GLOBAL DICTIONARY] | id | uuid | NO |
 | task_categories | code | text | NO – systémový klíč, UNIQUE, např. 'cleaning', 'transfer_in' |
@@ -226,6 +245,35 @@
 | notifications | type | text | YES – např. 'alert', 'system', 'task' |
 | notifications | is_read | boolean | NO (default false) |
 | notifications | created_at | timestamp with time zone | YES (default now()) |
+| user_devices | id | uuid | NO |
+| user_devices | tenant_id | uuid | NO (FK → tenants) |
+| user_devices | profile_id | uuid | NO (FK → profiles) – vazba na profil uživatele |
+| user_devices | fcm_token | text | NO (UNIQUE) – FCM token z Firebase SDK |
+| user_devices | device_type | text | NO (CHECK: 'ios', 'android', 'web') |
+| user_devices | last_active_at | timestamp with time zone | YES (default now()) |
+| notification_preferences | profile_id | uuid | NO (PK, FK → profiles) – jeden řádek na profil |
+| notification_preferences | tenant_id | uuid | NO (FK → tenants) |
+| notification_preferences | daily_summary_enabled | boolean | NO (default true) – ranní souhrn |
+| notification_preferences | upcoming_task_enabled | boolean | NO (default true) – upozornění před úkolem |
+| notification_preferences | new_task_assigned_enabled | boolean | NO (default true) – nový úkol přiřazen |
+
+---
+
+### Indexy pro výkonnostní optimalizaci (škálování)
+
+Pro Realtime streamy a časté filtry na `tenant_id` / `apartment_id` jsou zásadní následující indexy. Bez nich dochází u velkých tenantů (1000+ záznamů) k full table scan.
+
+| Tabulka | Index | Sloupec(y) | Účel |
+|---------|-------|------------|------|
+| tasks | idx_tasks_tenant_id | tenant_id | Admin Realtime stream – `inFilter('tenant_id', [tenantId])`. Zrychlení výběru úkolů tenanta. |
+| reservations | idx_reservations_apartment_id | apartment_id | Admin Realtime stream – `inFilter('apartment_id', apartmentIds)`. Zrychlení výběru rezervací dle bytů tenanta. |
+
+**SQL pro vytvoření (spustit v Supabase SQL Editoru):**
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_tasks_tenant_id ON public.tasks(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_reservations_apartment_id ON public.reservations(apartment_id);
+```
 
 ---
 
@@ -234,6 +282,18 @@
 Tabulka **notifications** slouží pro zobrazení oznámení v Top Baru (zvoneček). Každá notifikace je určena konkrétnímu uživateli (`profile_id`) a agentuře (`tenant_id`).
 
 **RLS:** Uživatel vidí a může upravovat (např. označit jako přečtené) pouze notifikace, kde `tenant_id` odpovídá jeho agentuře a `profile_id` odpovídá jeho profilu. Super Admin má plný přístup. Tabulka musí být přidána do Supabase Realtime publikace (Dashboard → Database → Replication), aby stream v aplikaci fungoval.
+
+---
+
+### Push Notifikace (FCM) – Fáze 1 – Infrastruktura
+
+**user_devices** – FCM tokeny zařízení pro doručení push notifikací. Každé zařízení (iOS, Android, Web) má unikátní `fcm_token`. Sloupec `last_active_at` slouží pro čištění neaktivních tokenů.
+
+**notification_preferences** – Nastavení preferencí notifikací na uživatele (1:1 s profilem). Povoluje/vypíná: ranní souhrn (`daily_summary_enabled`), upozornění před úkolem (`upcoming_task_enabled`), notifikace při přiřazení nového úkolu (`new_task_assigned_enabled`).
+
+**RLS:** Uživatel čte a zapisuje pouze své tokeny a preference (`profile_id` = vlastní profil). Super Admin má plný přístup. Edge Functions a budoucí `firebase_messaging` v aplikaci budou tyto tabulky využívat pro targeting.
+
+**Edge Function `daily-task-summary`:** Cíl pro cron job (např. pg_cron každé ráno v 6:00). Načte úkoly se `status` IN ('assigned','in_progress'), `scheduled_start` dnes, seskupí podle `assigned_to`, zkontroluje `notification_preferences.daily_summary_enabled` a rozešle FCM zprávy na tokeny z `user_devices`. Vyžaduje Supabase secrets: `FIREBASE_PROJECT_ID`, `FIREBASE_SERVICE_ACCOUNT_JSON`.
 
 ---
 
@@ -286,9 +346,19 @@ Tabulka **task_categories** je **platformový globální číselník** typů úk
 
 ---
 
+### Tabulka clients – CRM Klienti (Externí úkoly)
+
+Tabulka **clients** slouží pro zákazníky agentury – majitelé bytů (owner), externí klienti bez apartmánu (external) a agentury (agency). Umožňuje fakturaci externích úkolů (např. transfer pro cizího člověka bez rezervace) přes `tasks.client_id`.
+
+**Sloupce:** `id`, `tenant_id` (FK → tenants), `name` (povinné), `email`, `phone`, `client_type` (owner/external/agency), `created_at`, `deleted_at`.
+
+**RLS:** Uživatel vidí a upravuje pouze klienty svého `tenant_id`. Super Admin má plný přístup.
+
+---
+
 ### Soft delete (deleted_at)
 
-U tabulek **tasks**, **apartments**, **profiles**, **reservations**, **tenant_services**, **zones**, **apartment_owners**, **tenants** a **tenant_modules** sloupec **deleted_at** (timestamptz, nullable) znamená „měkké smazání“: místo fyzického DELETE se volá UPDATE s `deleted_at = now()`. Záznamy s `deleted_at IS NOT NULL` aplikace při načítání vynechává (filtr `.is_('deleted_at', null)`). Audit záznam (SOFT_DELETE) se zapisuje do `audit_logs`.
+U tabulek **tasks**, **apartments**, **profiles**, **reservations**, **tenant_services**, **zones**, **apartment_owners**, **clients**, **tenants** a **tenant_modules** sloupec **deleted_at** (timestamptz, nullable) znamená „měkké smazání“: místo fyzického DELETE se volá UPDATE s `deleted_at = now()`. Záznamy s `deleted_at IS NOT NULL` aplikace při načítání vynechává (filtr `.is_('deleted_at', null)`). Audit záznam (SOFT_DELETE) se zapisuje do `audit_logs`.
 
 ---
 
@@ -332,6 +402,7 @@ Služby jsou definovány na třech úrovních: **Katalog agentury** → **Ceník
 - **Cena:** Aplikace při zobrazení/účtování bere v pořadí: `reservation_services.charged_price` → pokud NULL, pak `apartment_services.custom_price` → pokud NULL, pak `tenant_services.default_price`.
 - **Popis obsahu služby:** Aplikace bere v pořadí: `apartment_services.custom_description` → pokud NULL, pak `tenant_services.description`. Pole `reservation_services.custom_note` je **pouze poznámka klienta** k této konkrétní službě u pobytu, ne přepis oficiálního popisu.
 - **Plátce služby (kdo platí):** Na úrovni bytu se nastaví výchozí `apartment_services.payer_type` (majitel vs. host). U konkrétní rezervace lze přepsat v `reservation_services.payer_type`; pokud je NULL, použije se hodnota z bytu.
+- **Číslo letu (transfery):** Nativní sloupec `reservation_services.flight_number` – např. FR1495 pro sledování na FlightRadar24. Dříve se ukládalo do `custom_note` s prefixem `[FLIGHT:XXX]`; nyní samostatný sloupec.
 
 **Poznámka k rezervacím:** Textové poznámky ke konkrétním službám (co klient chce u transferu, u úklidu atd.) se ukládají výhradně do **reservation_services.custom_note**. Do tabulky **reservations** se nepřidávají žádná další textová pole pro služby; rozšíření rezervace jsou sloupce **guest_adults**, **guest_children** (počty hostů) a **arrival_time** (předpokládaný čas příjezdu).
 

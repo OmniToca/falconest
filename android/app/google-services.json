@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "339673988370",
+    "project_id": "falconest-8d060",
+    "storage_bucket": "falconest-8d060.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:339673988370:android:1ce9079727e8b42c6d07cb",
+        "android_client_info": {
+          "package_name": "com.example.falconest"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAtlyfJjqX8JfUOsch9VUUFDQd3jJt5lbg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

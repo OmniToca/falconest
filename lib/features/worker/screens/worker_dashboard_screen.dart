@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/auth/pin_storage.dart';
 import 'package:falconest/core/providers/connectivity_provider.dart';
+import 'package:falconest/core/providers/ui_mode_provider.dart';
 import 'package:falconest/core/widgets/sync_status_icon.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/settings/providers/profile_provider.dart';
@@ -404,6 +405,16 @@ class _WorkerDrawer extends ConsumerWidget {
                 context.push('/worker/absences');
               },
             ),
+            // Přepínač na plnou administraci – POUZE pro Adminy a Manažery.
+            if (auth.role == 'admin' || auth.role == 'manager')
+              ListTile(
+                leading: const Icon(Icons.computer_outlined),
+                title: Text('common.switch_to_desktop'.tr()),
+                onTap: () async {
+                  Navigator.of(context).pop();
+                  await ref.read(uiModeNotifierProvider).setMode(AdminUiMode.forceDesktop);
+                },
+              ),
             if (hasPin && !kIsWeb)
               ListTile(
                 leading: const Icon(Icons.lock_outline),
@@ -570,13 +581,24 @@ class _TaskCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      timeStr,
-                      style: const TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black87,
-                      ),
+                    Row(
+                      children: [
+                        Text(
+                          timeStr,
+                          style: const TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
+                          ),
+                        ),
+                        if (task.referenceNumber != null && task.referenceNumber!.trim().isNotEmpty) ...[
+                          const SizedBox(width: 8),
+                          Text(
+                            '#${task.referenceNumber!.trim()}',
+                            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                          ),
+                        ],
+                      ],
                     ),
                     const SizedBox(height: 4),
                     Text(

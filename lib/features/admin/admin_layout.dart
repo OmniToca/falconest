@@ -4,8 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
-import 'package:falconest/core/models/notification_model.dart';
 import 'package:falconest/core/providers/notification_provider.dart';
+import 'package:falconest/core/providers/ui_mode_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/settings/providers/profile_provider.dart';
 import 'package:falconest/features/admin/admin_apartments_screen.dart';
@@ -14,6 +14,8 @@ import 'package:falconest/features/admin/admin_reservations_screen.dart';
 import 'package:falconest/features/admin/admin_tasks_screen.dart';
 import 'package:falconest/features/admin/admin_team_screen.dart';
 import 'package:falconest/features/admin/finance_dashboard_screen.dart';
+import 'package:falconest/features/admin/screens/admin_clients_screen.dart';
+import 'package:falconest/features/admin/screens/reports_screen.dart';
 import 'package:falconest/features/calendar/screens/planning_calendar_screen.dart';
 import 'package:falconest/features/admin/models/module_model.dart';
 import 'package:falconest/features/admin/providers/current_tenant_name_provider.dart';
@@ -32,6 +34,8 @@ const int adminTabIndexReservations = 3;
 const int adminTabIndexTasks = 4;
 const int adminTabIndexPlanningCalendar = 5;
 const int adminTabIndexFinance = 6;
+const int adminTabIndexReports = 7;
+const int adminTabIndexClients = 8;
 
 /// Umožňuje přepnutí záložky z vnořených obrazovek (např. z dashboardu po kliknutí na akci).
 class AdminTabScope extends InheritedWidget {
@@ -80,6 +84,8 @@ class _AdminLayoutState extends State<AdminLayout> {
     const AdminTasksScreen(),
     const PlanningCalendarScreen(),
     const FinanceDashboardScreen(),
+    const ReportsScreen(),
+    const AdminClientsScreen(),
   ];
 
   void _switchToTab(int index) {
@@ -241,10 +247,10 @@ class _ImpersonationBanner extends StatelessWidget {
   }
 }
 
-/// Zvoneček s Badge – poslouchá Realtime stream nepřečtených notifikací.
+/// Zvoneček s Badge – rozbalovací dropdown s nepřečtenými notifikacemi.
 ///
-/// PROČ: Zde posloucháme Realtime stream ze Supabase. Jakmile uklízečka v terénu
-/// vygeneruje alert, UI se okamžitě překreslí díky Riverpod streamu.
+/// PROČ: showGeneralDialog místo showMenu – vyhnutí se layout konfliktům (Flexible+shrinkWrap)
+/// a nekonečné smyčce. Dialog s průhledným pozadím, zarovnaný vpravo nahoře.
 class _NotificationsBell extends ConsumerWidget {
   const _NotificationsBell();
 
@@ -254,12 +260,13 @@ class _NotificationsBell extends ConsumerWidget {
     final notifications = unreadAsync.valueOrNull ?? [];
     final count = notifications.length;
 
-    Widget icon = Icon(Icons.notifications_none_outlined);
+    Widget icon = const Icon(Icons.notifications_none_outlined);
     if (count > 0) {
       icon = Badge(
+        backgroundColor: Colors.red.shade700,
         label: Text(
           count > 99 ? '99+' : count.toString(),
-          style: const TextStyle(fontSize: 10),
+          style: const TextStyle(fontSize: 10, color: Colors.white),
         ),
         child: icon,
       );
@@ -267,137 +274,192 @@ class _NotificationsBell extends ConsumerWidget {
 
     return IconButton(
       icon: icon,
-      onPressed: () => _NotificationsPanelDialog.show(context),
+      onPressed: () {
+        showGeneralDialog(
+          context: context,
+          barrierDismissible: true,
+          barrierLabel: 'Notifications',
+          barrierColor: Colors.transparent,
+          transitionDuration: const Duration(milliseconds: 200),
+          pageBuilder: (context, animation, secondaryAnimation) {
+            return Align(
+              alignment: Alignment.topRight,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 60, right: 24),
+                child: Material(
+                  elevation: 8,
+                  borderRadius: BorderRadius.circular(12),
+                  clipBehavior: Clip.antiAlias,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 350, maxHeight: 500),
+                    child: _NotificationsDropdownContent(
+                      onClose: () => Navigator.of(context).pop(),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+          transitionBuilder: (context, animation, secondaryAnimation, child) {
+            return FadeTransition(
+              opacity: animation,
+              child: SlideTransition(
+                position: Tween<Offset>(
+                  begin: const Offset(0, -0.05),
+                  end: Offset.zero,
+                ).animate(animation),
+                child: child,
+              ),
+            );
+          },
+        );
+      },
       tooltip: 'admin.topbar_notifications'.tr(),
     );
   }
 }
 
-/// Dialog s panelem nepřečtených notifikací – Realtime aktualizace při markAsRead.
+/// Obsah rozbalovacího menu notifikací – hlavička + seznam.
 ///
-/// Po kliknutí na položku se zavolá markAsRead(id), stream se aktualizuje a položka vizuálně zmizí.
-class _NotificationsPanelDialog extends ConsumerWidget {
-  const _NotificationsPanelDialog();
+/// PROČ: Column(min) + Flexible + ListView(shrinkWrap) – bezpečná kombinace pro showGeneralDialog.
+/// Položky inline (Row+InkWell), žádný separátní _NotificationTile kvůli layout stabilitě.
+class _NotificationsDropdownContent extends ConsumerWidget {
+  const _NotificationsDropdownContent({required this.onClose});
 
-  static void show(BuildContext context) {
-    showDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      builder: (context) => const _NotificationsPanelDialog(),
-    );
-  }
+  final VoidCallback onClose;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final unreadAsync = ref.watch(unreadNotificationsProvider);
-    final notifications = unreadAsync.valueOrNull ?? [];
+    final list = unreadAsync.valueOrNull ?? [];
     final repository = ref.read(notificationRepositoryProvider);
+    final profileId = ref.read(authNotifierProvider).state.profileId;
 
-    return AlertDialog(
-      title: Text('admin.notifications_title'.tr()),
-      content: SizedBox(
-        width: 340,
-        child: unreadAsync.isLoading
-            ? const Center(child: Padding(
-                padding: EdgeInsets.all(24),
-                child: CircularProgressIndicator(),
-              ))
-            : notifications.isEmpty
-                ? Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 24),
-                    child: Text(
-                      'admin.notifications_empty'.tr(),
-                      style: TextStyle(color: Colors.grey.shade600),
-                      textAlign: TextAlign.center,
-                    ),
-                  )
-                : ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 400),
-                    child: ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: notifications.length,
-                      itemBuilder: (context, index) {
-                        final n = notifications[index];
-                        return _NotificationTile(
-                          notification: n,
-                          onTap: () async {
-                            await repository.markAsRead(n.id);
-                          },
-                        );
-                      },
-                    ),
-                  ),
-      ),
-    );
-  }
-}
-
-/// Jedna položka v seznamu notifikací – title (tučně), message (šedě), čas.
-class _NotificationTile extends StatelessWidget {
-  const _NotificationTile({
-    required this.notification,
-    required this.onTap,
-  });
-
-  final NotificationModel notification;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final timeStr = notification.createdAt != null
-        ? DateFormat('d.M. HH:mm').format(notification.createdAt!.toLocal())
-        : '—';
-
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(8),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+          child: Row(
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Text(
-                      notification.title,
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    timeStr,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Colors.grey.shade600,
-                          fontSize: 11,
-                        ),
-                  ),
-                ],
-              ),
-              if (notification.message.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text(
-                  notification.message,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Colors.grey.shade600,
-                        fontSize: 13,
+              Expanded(
+                child: Text(
+                  'admin.notifications_title'.tr(),
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.grey.shade900,
                       ),
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
                 ),
-              ],
+              ),
+              if (list.isNotEmpty && profileId != null)
+                TextButton(
+                  onPressed: () async {
+                    await repository.markAllAsRead(profileId);
+                    if (context.mounted) onClose();
+                  },
+                  child: Text('admin.notifications_mark_all_read'.tr()),
+                ),
             ],
           ),
         ),
-      ),
+        const Divider(height: 1),
+        Flexible(
+          child: unreadAsync.isLoading
+              ? const Padding(
+                  padding: EdgeInsets.all(32.0),
+                  child: Center(child: CircularProgressIndicator()),
+                )
+              : list.isEmpty
+                  ? Padding(
+                      padding: const EdgeInsets.all(32.0),
+                      child: Center(
+                        child: Text(
+                          'admin.notifications_empty'.tr(),
+                          style: TextStyle(color: Colors.grey.shade600),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    )
+                  : ListView.builder(
+                      shrinkWrap: true,
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      itemCount: list.length,
+                      itemBuilder: (context, index) {
+                        final n = list[index];
+                        final timeStr = n.createdAt != null
+                            ? DateFormat('d.M. HH:mm').format(n.createdAt!.toLocal())
+                            : '—';
+
+                        IconData iconType = Icons.notifications_outlined;
+                        Color iconColor = Theme.of(context).colorScheme.primary;
+                        if (n.type == 'finance') {
+                          iconType = Icons.account_balance_wallet_outlined;
+                          iconColor = Colors.green.shade700;
+                        } else if (n.type == 'system') {
+                          iconType = Icons.info_outline;
+                        } else if (n.type == 'task') {
+                          iconType = Icons.task_alt_outlined;
+                        }
+
+                        return Material(
+                          color: n.isRead ? Colors.transparent : Colors.blue.shade50,
+                          child: InkWell(
+                            onTap: () async {
+                              await repository.markAsRead(n.id);
+                              if (context.mounted) onClose();
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Icon(iconType, color: iconColor, size: 24),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          n.title,
+                                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                                fontWeight: n.isRead ? FontWeight.w500 : FontWeight.bold,
+                                              ),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        if (n.message.isNotEmpty) ...[
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            n.message,
+                                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                                  color: Colors.grey.shade600,
+                                                  fontSize: 12,
+                                                ),
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ],
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          timeStr,
+                                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                                color: Colors.grey.shade500,
+                                                fontSize: 11,
+                                              ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+        ),
+      ],
     );
   }
 }
@@ -499,6 +561,16 @@ class _AdminTopBar extends ConsumerWidget {
               ),
               itemBuilder: (context) => [
                 PopupMenuItem<String>(
+                  value: 'switch_mobile',
+                  child: Row(
+                    children: [
+                      Icon(Icons.smartphone, size: 20, color: Colors.grey.shade700),
+                      const SizedBox(width: 12),
+                      Text('common.switch_to_mobile'.tr()),
+                    ],
+                  ),
+                ),
+                PopupMenuItem<String>(
                   value: 'settings',
                   child: Row(
                     children: [
@@ -536,7 +608,9 @@ class _AdminTopBar extends ConsumerWidget {
                 ),
               ],
               onSelected: (value) async {
-                if (value == 'settings') {
+                if (value == 'switch_mobile') {
+                  await ref.read(uiModeNotifierProvider).setMode(AdminUiMode.forceMobile);
+                } else if (value == 'settings') {
                   SettingsModal.show(context);
                 } else if (value == 'back') {
                   await auth.stopImpersonating();
@@ -738,9 +812,11 @@ class _AdminSidebar extends ConsumerWidget {
         ? _fallbackModules()
         : rawModules;
     final financeActive = isModuleActive(ref, 'finance');
+    final reportsActive = isModuleActive(ref, 'reports');
     final visibleModules = allModules.where((m) {
       if (!m.showInMenu) return false;
       if (m.key == 'finance' && !financeActive) return false;
+      if (m.key == 'reports' && !reportsActive) return false;
       return true;
     }).toList();
 
@@ -813,7 +889,7 @@ class _AdminSidebar extends ConsumerWidget {
                       Navigator.of(context).pop();
                     }
                     if (tabIndex != null) {
-                      onIndexChanged(tabIndex.clamp(0, adminTabIndexFinance));
+                      onIndexChanged(tabIndex.clamp(0, adminTabIndexClients));
                     } else {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
@@ -835,6 +911,21 @@ class _AdminSidebar extends ConsumerWidget {
                 );
               }),
             const Spacer(),
+            // Přepínač na mobilní zobrazení – dostupný v Sidebar i Drawer (úzké obrazovky).
+            const Divider(color: Colors.white24, height: 1),
+            ListTile(
+              leading: Icon(Icons.smartphone, size: 20, color: Colors.white70),
+              title: Text(
+                'common.switch_to_mobile'.tr(),
+                style: TextStyle(fontSize: 13, color: Colors.white70),
+              ),
+              onTap: () async {
+                if (isDrawer && context.mounted && Scaffold.maybeOf(context)?.isDrawerOpen == true) {
+                  Navigator.of(context).pop();
+                }
+                await ref.read(uiModeNotifierProvider).setMode(AdminUiMode.forceMobile);
+              },
+            ),
           ],
         ),
       ),

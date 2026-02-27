@@ -5,6 +5,7 @@
 /// [orderIndex] určuje pořadí v seznamu (0 = první). [serviceType] = cleaning | transfer | maintenance | extra.
 /// [requiredRole] určuje, kdo službu vykonává (any, cleaner, driver, maintenance, checkin_agent) – pro Task Automator.
 /// [durationMinutes] – časová náročnost / rezerva v minutách. U úklidu vata nad standardCleaningDuration, u ostatních fixní doba.
+/// [requiresPhoto] – pracovník musí při dokončení úkolu nahrát fotku (stav apartmánu, pasy). Propaguje se do tasks.metadata.
 class TenantServiceModel {
   const TenantServiceModel({
     required this.id,
@@ -18,6 +19,7 @@ class TenantServiceModel {
     this.orderIndex = 0,
     this.requiredRole,
     this.durationMinutes,
+    this.requiresPhoto = false,
   });
 
   final String id;
@@ -33,6 +35,8 @@ class TenantServiceModel {
   final String? requiredRole;
   /// Časová náročnost / rezerva v minutách. U úklidu vata nad standardCleaningDuration, u transfer/maintenance/extra fixní doba.
   final int? durationMinutes;
+  /// Vyžadovat fotodokumentaci při dokončení úkolu (např. stav apartmánu, ofocené pasy).
+  final bool requiresPhoto;
 
   factory TenantServiceModel.fromJson(Map<String, dynamic> json) {
     final rawPrice = json['default_price'];
@@ -71,6 +75,8 @@ class TenantServiceModel {
         durationMinutes = rawDuration.toInt();
       }
     }
+    final rawRequiresPhoto = json['requires_photo'];
+    final requiresPhoto = rawRequiresPhoto == true || rawRequiresPhoto == 1;
     return TenantServiceModel(
       id: json['id'] as String? ?? '',
       tenantId: json['tenant_id'] as String? ?? '',
@@ -86,6 +92,7 @@ class TenantServiceModel {
       orderIndex: order,
       requiredRole: requiredRole,
       durationMinutes: durationMinutes,
+      requiresPhoto: requiresPhoto,
     );
   }
 
@@ -99,5 +106,6 @@ class TenantServiceModel {
         'order_index': orderIndex,
         if (requiredRole != null && requiredRole!.isNotEmpty) 'required_role': requiredRole,
         if (durationMinutes != null) 'duration_minutes': durationMinutes,
+        'requires_photo': requiresPhoto,
       };
 }

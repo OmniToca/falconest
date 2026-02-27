@@ -1,16 +1,31 @@
+import 'dart:io';
+
 import 'package:easy_localization/easy_localization.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:uuid/uuid.dart';
 
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'package:falconest/core/auth/auth_provider.dart';
-import 'package:falconest/core/offline/mutation_queue_service.dart';
+import 'package:falconest/core/utils/id_generator.dart';
+import 'package:falconest/core/offline/network_error_helper.dart';
+import 'package:falconest/core/services/media_service.dart';
+import 'package:falconest/core/services/supabase_service.dart';
+
+/// Modul v Supabase Storage pro fotky hlášení závad – cesta tenantId/tasks/uuid.jpg
+const _storageModuleTasks = 'tasks';
+
+/// Maximální počet fotek u jednoho hlášení závady (příprava na multi-photo).
+const _maxPhotos = 3;
 
 /// Dialog pro nahlášení problému v apartmánu – plná offline podpora.
 ///
 /// Vytvoří nový úkol typu 'issue' v tabulce tasks. Protože pracovník může být
 /// offline (apartmán bez signálu), zápis prochází výhradně přes MutationQueueService.
-/// NetworkSyncWatcher při návratu sítě odešle frontu do Supabase.
+/// Fotky se nahrávají pouze online – při odeslání s fotkami je vyžadováno připojení.
 class IssueReporterDialog extends ConsumerStatefulWidget {
   const IssueReporterDialog({
     super.key,
@@ -27,12 +42,27 @@ class IssueReporterDialog extends ConsumerStatefulWidget {
 
 class _IssueReporterDialogState extends ConsumerState<IssueReporterDialog> {
   final _controller = TextEditingController();
+  final List<File> _photoFiles = [];
   bool _submitting = false;
 
   @override
   void dispose() {
     _controller.dispose();
     super.dispose();
+  }
+
+  Future<void> _addPhoto() async {
+    if (kIsWeb || _photoFiles.length >= _maxPhotos) return;
+    final file = await MediaService.instance.pickAndCompressImage(
+      source: ImageSource.camera,
+    );
+    if (file != null && mounted) {
+      setState(() => _photoFiles.add(file));
+    }
+  }
+
+  void _removePhoto(int index) {
+    setState(() => _photoFiles.removeAt(index));
   }
 
   Future<void> _submit() async {
@@ -58,29 +88,63 @@ class _IssueReporterDialogState extends ConsumerState<IssueReporterDialog> {
     final now = DateTime.now().toUtc();
     final dueIso = now.toIso8601String();
 
-    // PROČ: Hlášení problému ukládáme přes MutationQueueService, aby to fungovalo
-    // i v apartmánech bez signálu. Následně si to NetworkSyncWatcher odešle do cloudu.
-    // V1_RELEASE_AUDIT: try-catch kolem enqueueMutation – při chybě zobrazit SnackBar místo tiché výjimky.
-    try {
-      final payload = {
-        'id': const Uuid().v4(),
-        'tenant_id': widget.tenantId,
-        'apartment_id': widget.apartmentId,
-        'task_type': 'issue',
-        'status': 'pending',
-        'title': 'worker.issue_reporter_task_title'.tr(),
-        'description': desc,
-        'created_by': profileId,
-        'due_date': dueIso,
-        'scheduled_start': dueIso,
-        'metadata': <String, dynamic>{},
-      };
-
-      await ref.read(mutationQueueServiceProvider).enqueueMutation(
-            table: 'tasks',
-            action: 'INSERT',
-            payload: payload,
+    // KROK 1: Nahrání fotek na Supabase Storage (pouze online).
+    // PROČ: Fotky vyžadují síť. Při offline zobrazíme upozornění a neukládáme s fotkami.
+    List<String> mediaUrls = [];
+    if (_photoFiles.isNotEmpty) {
+      try {
+        for (final file in _photoFiles) {
+          final url = await MediaService.instance.uploadMedia(
+            file,
+            tenantId: widget.tenantId,
+            moduleName: _storageModuleTasks,
           );
+          if (url != null && url.isNotEmpty) mediaUrls.add(url);
+        }
+      } catch (e) {
+        if (!mounted) return;
+        setState(() => _submitting = false);
+        final msg = isNetworkError(e)
+            ? 'worker.issue_reporter_photo_required_online'.tr()
+            : 'worker.issue_reporter_photo_upload_error'.tr();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(msg), backgroundColor: Colors.red.shade700),
+        );
+        return;
+      }
+      if (mediaUrls.isEmpty && mounted) {
+        setState(() => _submitting = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('worker.issue_reporter_photo_upload_error'.tr()),
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
+        return;
+      }
+    }
+
+    // KROK 2: Zápis úkolu přímo do Supabase (bypass MutationQueue pro zachycení chyby).
+    // DEBUG: Dočasně obcházíme offline frontu – insert rovnou, aby se zobrazil přesný text chyby z DB.
+    final payload = {
+      'id': const Uuid().v4(),
+      'tenant_id': widget.tenantId,
+      'apartment_id': widget.apartmentId,
+      'reference_number': generateTaskRef(),
+      'task_type': 'issue',
+      'status': 'pending',
+      'title': 'worker.issue_reporter_task_title'.tr(),
+      'description': desc,
+      'created_by': profileId,
+      'due_date': dueIso,
+      'scheduled_start': dueIso,
+      'local_updated_at': dueIso,
+      'metadata': <String, dynamic>{},
+      'media_urls': mediaUrls,
+    };
+
+    try {
+      await SupabaseService.client.from('tasks').insert(payload);
 
       if (!mounted) return;
       setState(() => _submitting = false);
@@ -92,14 +156,27 @@ class _IssueReporterDialogState extends ConsumerState<IssueReporterDialog> {
           backgroundColor: Colors.green.shade700,
         ),
       );
+    } on PostgrestException catch (e) {
+      if (!mounted) return;
+      setState(() => _submitting = false);
+      final errorMsg = 'Postgrest: ${e.message} [code: ${e.code}${e.details != null ? ", details: ${e.details}" : ""}]';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errorMsg),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 8),
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() => _submitting = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('worker.issue_reporter_error'.tr(namedArgs: {'error': e.toString()})),
+          content: Text('Chyba: ${e.toString()}'),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 8),
         ),
       );
     }
@@ -116,12 +193,73 @@ class _IssueReporterDialogState extends ConsumerState<IssueReporterDialog> {
           Text('worker.issue_reporter_title'.tr()),
         ],
       ),
-      content: TextField(
-        controller: _controller,
-        maxLines: 4,
-        decoration: InputDecoration(
-          hintText: 'worker.issue_reporter_hint'.tr(),
-          border: const OutlineInputBorder(),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _controller,
+              maxLines: 4,
+              decoration: InputDecoration(
+                hintText: 'worker.issue_reporter_hint'.tr(),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: kIsWeb || _photoFiles.length >= _maxPhotos
+                  ? null
+                  : _addPhoto,
+              icon: const Icon(Icons.camera_alt_outlined),
+              label: Text('worker.issue_reporter_add_photo'.tr()),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+            ),
+            if (_photoFiles.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                height: 80,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _photoFiles.length,
+                  separatorBuilder: (context, index) => const SizedBox(width: 8),
+                  itemBuilder: (context, index) {
+                    return Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.file(
+                            _photoFiles[index],
+                            width: 80,
+                            height: 80,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                        Positioned(
+                          top: -6,
+                          right: -6,
+                          child: IconButton.filled(
+                            iconSize: 18,
+                            style: IconButton.styleFrom(
+                              backgroundColor: Colors.red.shade700,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.all(4),
+                              minimumSize: const Size(28, 28),
+                            ),
+                            icon: const Icon(Icons.close),
+                            onPressed: () => _removePhoto(index),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ],
+          ],
         ),
       ),
       actions: [

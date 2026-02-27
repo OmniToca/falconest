@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 
 import 'package:falconest/core/offline/mutation_queue_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/supabase_stream_helper.dart';
 
 /// Řádek peněženky zaměstnance – pro seznam v admin UI.
 class EmployeeCashWalletRow {
@@ -287,73 +288,93 @@ class CashWalletRepository {
   /// a dispečinkem (Supabase WebSockets). Výběr hotovosti uklízečkou se v administraci
   /// projeví bez nutnosti F5.
   ///
+  /// PROČ resilientSupabaseStream: Chyby WebSocketu (Code 1000) se nikdy nepropagují do
+  /// Riverpodu – UI zůstane stabilní, reconnect proběhne tiše na pozadí.
+  ///
   /// OMEZENÍ: Stream vrací surové řádky bez JOIN na profiles – obohacení o jméno
   /// provede provider (nameByProfileId z adminTeamProvider).
+  /// PROČ: Bezpečnostní limit 500 záznamů, aby nedošlo k zahlcení paměti u velkých agentur.
   Stream<List<Map<String, dynamic>>> watchWalletsRaw(String tenantId) {
     if (tenantId.isEmpty) return Stream.value([]);
-
-    return SupabaseService.client
-        .from('employee_cash_wallets')
-        .stream(primaryKey: ['id'])
-        .inFilter('tenant_id', [tenantId])
-        .map((List<Map<String, dynamic>> rows) {
-          rows.sort((a, b) {
-            final aBal = _toDouble(a['balance']) ?? 0;
-            final bBal = _toDouble(b['balance']) ?? 0;
-            if (bBal > 0 && aBal <= 0) return 1;
-            if (aBal > 0 && bBal <= 0) return -1;
-            return (bBal - aBal).sign.toInt();
-          });
-          return rows;
-        });
+    return resilientSupabaseStream<List<Map<String, dynamic>>>(
+      streamBuilder: () => SupabaseService.client
+          .from('employee_cash_wallets')
+          .stream(primaryKey: ['id'])
+          .inFilter('tenant_id', [tenantId])
+          .order('updated_at', ascending: false)
+          .limit(500)
+          .map((List<Map<String, dynamic>> rows) {
+            rows.sort((a, b) {
+              final aBal = _toDouble(a['balance']) ?? 0;
+              final bBal = _toDouble(b['balance']) ?? 0;
+              if (bBal > 0 && aBal <= 0) return 1;
+              if (aBal > 0 && bBal <= 0) return -1;
+              return (bBal - aBal).sign.toInt();
+            });
+            return rows;
+          }),
+      debugLabel: 'CashWalletRepository.watchWalletsRaw',
+    );
   }
 
   /// Realtime stream transakcí (výběry, odevzdání) pro daného tenanta.
   ///
   /// PROČ: Realtime stream pro okamžitou synchronizaci stavu peněženky mezi terénem
   /// a dispečinkem (Supabase WebSockets). Pro historii transakcí v budoucím UI.
+  /// PROČ resilientSupabaseStream: Chyby WebSocketu (Code 1000) se nikdy nepropagují do Riverpodu.
+  /// PROČ: Bezpečnostní limit 500 záznamů, aby nedošlo k zahlcení paměti u velkých agentur.
   Stream<List<Map<String, dynamic>>> watchTransactionsRaw(String tenantId) {
     if (tenantId.isEmpty) return Stream.value([]);
-
-    return SupabaseService.client
-        .from('employee_cash_transactions')
-        .stream(primaryKey: ['id'])
-        .inFilter('tenant_id', [tenantId])
-        .map((List<Map<String, dynamic>> rows) {
-          rows.sort((a, b) {
-            final aT = a['created_at']?.toString() ?? '';
-            final bT = b['created_at']?.toString() ?? '';
-            return bT.compareTo(aT);
-          });
-          return rows;
-        });
+    return resilientSupabaseStream<List<Map<String, dynamic>>>(
+      streamBuilder: () => SupabaseService.client
+          .from('employee_cash_transactions')
+          .stream(primaryKey: ['id'])
+          .inFilter('tenant_id', [tenantId])
+          .order('created_at', ascending: false)
+          .limit(500)
+          .map((List<Map<String, dynamic>> rows) {
+            rows.sort((a, b) {
+              final aT = a['created_at']?.toString() ?? '';
+              final bT = b['created_at']?.toString() ?? '';
+              return bT.compareTo(aT);
+            });
+            return rows;
+          }),
+      debugLabel: 'CashWalletRepository.watchTransactionsRaw',
+    );
   }
 
   /// Realtime stream transakcí pro konkrétní peněženku zaměstnance.
   ///
   /// PROČ: Detail peněženky v Admin UI – historie výběrů, odevzdání a firemních výdajů.
   /// Nové transakce z terénu se zobrazí okamžitě bez refreshe.
+  /// PROČ resilientSupabaseStream: Chyby WebSocketu (Code 1000) se nikdy nepropagují do Riverpodu.
   /// Filtrujeme podle wallet_id v map – stream API podporuje jen jeden inFilter.
+  /// PROČ: Bezpečnostní limit 200 záznamů, aby nedošlo k zahlcení paměti u velkých agentur.
   Stream<List<Map<String, dynamic>>> watchTransactionsRawForWallet(
     String tenantId,
     String walletId,
   ) {
     if (tenantId.isEmpty || walletId.isEmpty) return Stream.value([]);
-
-    return SupabaseService.client
-        .from('employee_cash_transactions')
-        .stream(primaryKey: ['id'])
-        .inFilter('tenant_id', [tenantId])
-        .map((List<Map<String, dynamic>> rows) {
-          final filtered =
-              rows.where((r) => (r['wallet_id']?.toString() ?? '') == walletId).toList();
-          filtered.sort((a, b) {
-            final aT = a['created_at']?.toString() ?? '';
-            final bT = b['created_at']?.toString() ?? '';
-            return bT.compareTo(aT);
-          });
-          return filtered;
-        });
+    return resilientSupabaseStream<List<Map<String, dynamic>>>(
+      streamBuilder: () => SupabaseService.client
+          .from('employee_cash_transactions')
+          .stream(primaryKey: ['id'])
+          .inFilter('tenant_id', [tenantId])
+          .order('created_at', ascending: false)
+          .limit(200)
+          .map((List<Map<String, dynamic>> rows) {
+            final filtered =
+                rows.where((r) => (r['wallet_id']?.toString() ?? '') == walletId).toList();
+            filtered.sort((a, b) {
+              final aT = a['created_at']?.toString() ?? '';
+              final bT = b['created_at']?.toString() ?? '';
+              return bT.compareTo(aT);
+            });
+            return filtered;
+          }),
+      debugLabel: 'CashWalletRepository.watchTransactionsRawForWallet',
+    );
   }
 
   double? _toDouble(dynamic v) {

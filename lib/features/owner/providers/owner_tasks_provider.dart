@@ -28,6 +28,7 @@ final ownerTasksProvider = FutureProvider<List<TaskRow>>((ref) async {
     // BUGFIX: Dvojitá ochrana – explicitní stažení úkolů POUZE pro byty vlastněné tímto uživatelem.
     // SECURITY: Klientský portál nikdy nestahuje tasks bez parametru apartment_id omezeného na vlastněné byty.
     // Vynecháme JOIN na profiles (assigned_to) – ochrana soukromí, jména personálu nenačítáme.
+    // PROČ: Archivace. Vyfakturované úkoly (invoiced_at != null) schováváme z aktivních pohledů.
     final tasksResponse = await SupabaseService.client
         .from('tasks')
         .select(
@@ -39,6 +40,7 @@ final ownerTasksProvider = FutureProvider<List<TaskRow>>((ref) async {
         )
         .inFilter('apartment_id', ownedApartmentIds)
         .isFilter('deleted_at', null)
+        .isFilter('invoiced_at', null)
         .order('due_date', ascending: true);
 
     final list = tasksResponse as List;

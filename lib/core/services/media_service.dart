@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:image_picker/image_picker.dart';
@@ -81,6 +82,46 @@ class MediaService {
       // PROČ: Zabraňuje pádu aplikace, pokud dojde k chybě při nahrávání na Supabase
       // Storage, a umožní logování. Volající může zachytit výjimku, zalogovat ji
       // a zobrazit uživateli smysluplnou hlášku.
+      rethrow;
+    }
+  }
+
+  /// Nahraje binární data do Supabase Storage – pro web, kde dart:io File neexistuje.
+  ///
+  /// PROČ: Na webu nemáme přístup k souborovému systému (File z dart:io). file_picker
+  /// vrací PlatformFile s bytes (Uint8List) při withData: true. Tato metoda přijímá
+  /// přímo bytes a použije Supabase uploadBinary(), což funguje napříč platformami.
+  ///
+  /// Cesta: `tenantId/moduleName/web_$fileName` – konzistence s mobilním uploadem,
+  /// prefix „web_“ odlišuje soubory nahrané z administrace od mobilních.
+  ///
+  /// [fileName] – původní název souboru (např. letenka.pdf). Bude sanizován pro cestu
+  /// (odstranění path separatorů, nebezpečných znaků).
+  /// Vrací veřejnou URL nahraného souboru, nebo null při chybě.
+  Future<String?> uploadMediaBytes(
+    Uint8List bytes, {
+    required String fileName,
+    required String tenantId,
+    required String moduleName,
+  }) async {
+    if (tenantId.isEmpty || moduleName.isEmpty) return null;
+    if (bytes.isEmpty) return null;
+
+    // Sanizace názvu – odstranit path separátory a nebezpečné znaky.
+    final safeName = fileName
+        .replaceAll(RegExp(r'[/\\]'), '')
+        .replaceAll(RegExp(r'[^\w\-\.]'), '_');
+    final baseName = safeName.isNotEmpty ? safeName : 'file';
+    // UUID zamezí kolizi při opakovaném nahrání stejného souboru.
+    final path = '$tenantId/$moduleName/web_${_uuid.v4()}_$baseName';
+
+    try {
+      await SupabaseService.client.storage.from(_bucket).uploadBinary(
+            path,
+            bytes,
+          );
+      return SupabaseService.client.storage.from(_bucket).getPublicUrl(path);
+    } catch (e) {
       rethrow;
     }
   }

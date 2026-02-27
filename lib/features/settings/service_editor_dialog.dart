@@ -36,6 +36,7 @@ class _ServiceEditorDialogState extends ConsumerState<ServiceEditorDialog> {
   String _serviceType = 'cleaning';
   String _requiredRole = 'any';
   bool _isActive = true;
+  bool _requiresPhoto = false;
   bool _isSaving = false;
   /// Zda už byl do pole ceny nastaven přepočet z EUR na lokální měnu (pouze při editaci).
   bool _initialPriceSet = false;
@@ -62,6 +63,7 @@ class _ServiceEditorDialogState extends ConsumerState<ServiceEditorDialog> {
         ? s.requiredRole!
         : 'any';
     _isActive = s?.isActive ?? true;
+    _requiresPhoto = s?.requiresPhoto ?? false;
   }
 
   @override
@@ -150,6 +152,7 @@ class _ServiceEditorDialogState extends ConsumerState<ServiceEditorDialog> {
       orderIndex: orderIndex,
       requiredRole: _requiredRole == 'any' ? null : _requiredRole,
       durationMinutes: durationMinutes,
+      requiresPhoto: _requiresPhoto,
     );
     try {
       if (_isEditing) {
@@ -301,6 +304,18 @@ class _ServiceEditorDialogState extends ConsumerState<ServiceEditorDialog> {
                     hintText: '60',
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                   ),
+                ),
+                const SizedBox(height: 16),
+                SwitchListTile(
+                  title: Text('settings.field_requires_photo'.tr()),
+                  subtitle: Text(
+                    'settings.field_requires_photo_hint'.tr(),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                  ),
+                  value: _requiresPhoto,
+                  onChanged: (v) => setState(() => _requiresPhoto = v),
                 ),
                 const SizedBox(height: 16),
                 Row(

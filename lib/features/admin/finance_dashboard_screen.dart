@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/presentation/widgets/app_card.dart';
 import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
-import 'package:falconest/features/admin/finance_billing_screen.dart';
+import 'package:falconest/features/admin/screens/finance_billing_screen.dart';
 import 'package:falconest/features/admin/premium_upsell_dialog.dart';
 import 'package:falconest/features/admin/providers/finance_cash_provider.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
@@ -71,6 +71,13 @@ class FinanceDashboardScreen extends ConsumerWidget {
                         },
                         icon: Icon(hasExport ? Icons.receipt_long : Icons.lock_outline, size: 20),
                         label: Text('admin.finance.billing_btn'.tr()),
+                        style: hasExport
+                            ? null
+                            : FilledButton.styleFrom(
+                                backgroundColor: Colors.grey.shade200,
+                                foregroundColor: Colors.grey.shade600,
+                                elevation: 0,
+                              ),
                       ),
                     ],
                   ),

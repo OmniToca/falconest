@@ -325,12 +325,14 @@ final planningCalendarAllTasksProvider =
   final weekEnd = start.add(const Duration(days: 7));
 
   try {
+    // PROČ: Archivace. Vyfakturované úkoly (invoiced_at != null) schováváme z aktivních pohledů.
     final res = await SupabaseService.client
         .from('tasks')
         .select(
             'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, apartment_id, metadata, profiles!tasks_assigned_to_fkey(first_name, last_name, name), apartments(name)')
         .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
+        .isFilter('invoiced_at', null)
         .gte('scheduled_start', start.toUtc().toIso8601String())
         .lt('scheduled_start', weekEnd.toUtc().toIso8601String())
         .order('scheduled_start', ascending: true);
@@ -355,12 +357,14 @@ final planningCalendarAllTasksForMonthProvider =
   final end = DateTime(dayInMonth.year, dayInMonth.month + 1, 1);
 
   try {
+    // PROČ: Archivace. Vyfakturované úkoly (invoiced_at != null) schováváme z aktivních pohledů.
     final res = await SupabaseService.client
         .from('tasks')
         .select(
             'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, apartment_id, metadata, profiles!tasks_assigned_to_fkey(first_name, last_name, name), apartments(name)')
         .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
+        .isFilter('invoiced_at', null)
         .gte('scheduled_start', start.toUtc().toIso8601String())
         .lt('scheduled_start', end.toUtc().toIso8601String())
         .order('scheduled_start', ascending: true);

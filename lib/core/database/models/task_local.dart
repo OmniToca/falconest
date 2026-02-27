@@ -26,13 +26,27 @@ class TaskLocal {
 
   /// Supabase UUID bytu, ke kterému úkol patří.
   /// Pro lokální zobrazení lze vyhledat ApartmentLocal podle supabaseId.
+  /// Null u externích úkolů bez bytu.
   String? apartmentSupabaseId;
+
+  /// Supabase UUID klienta – pro externí úkoly bez bytu (fakturace). FK → clients.
+  String? clientSupabaseId;
+
+  /// Adresa pro řidiče/personál u úkolů bez bytu (mapuje tasks.custom_location).
+  String? customLocation;
+
+  /// Název úkolu pro externí úkoly – např. "Transfer letiště" (mapuje tasks.custom_title).
+  String? customTitle;
 
   /// Supabase UUID rezervace – vazba na reservations. Pro automatický update statusu při Check-inu.
   String? reservationSupabaseId;
 
   /// Supabase UUID přiřazeného uživatele (profil). Null = nepřiřazeno.
   String? assignedUserSupabaseId;
+
+  /// Referenční číslo úkolu (např. TSK-X7M2P4). Lidsky čitelný identifikátor pro podporu.
+  /// Mapuje tasks.reference_number.
+  String? referenceNumber;
 
   /// Název úkolu – mapuje tasks.title
   String title = '';
@@ -68,6 +82,7 @@ class TaskLocal {
   late DateTime lastUpdated;
 
   /// Flexibilní metadata (JSONB z Supabase) – Isar nepodporuje Map, ukládáme jako JSON string.
+  /// Obsahuje např. flight_number (z reservation_services, nativní sloupec), amount_to_collect, custom_note.
   /// Při čtení: jsonDecode(metadataJson) pro Map. Při zápisu: jsonEncode(map).
   String? metadataJson;
 
@@ -77,13 +92,17 @@ class TaskLocal {
   /// Reálný čas dokončení úkolu (UTC) – nastaví se při přechodu na completed.
   DateTime? completedAt;
 
+  /// Soft-archivace pro fakturaci: NULL = aktivní úkol, NOT NULL = vyfakturovaný (nepatří do mobilu).
+  DateTime? invoicedAt;
+
   /// Implicitní konstruktor – potřebný pro Isar deserializaci a factory.
   TaskLocal();
 
   /// Vytvoří TaskLocal z mapy (např. JSON odpověď ze Supabase).
   ///
-  /// Klíče: id, tenant_id, apartment_id, assigned_to, title, description,
-  /// task_type, scheduled_start, status, photo_url, metadata, started_at, completed_at.
+  /// Klíče: id, tenant_id, apartment_id, client_id, custom_location, custom_title,
+  /// assigned_to, title, description, task_type, scheduled_start, status, photo_url,
+  /// metadata, started_at, completed_at, invoiced_at, reference_number.
   /// metadata (JSONB) se serializuje do metadataJson.
   /// Pro vložení do Isar použij isar.taskLocals.put(obj) – id se přiřadí automaticky.
   factory TaskLocal.fromMap(Map<String, dynamic> map) {
@@ -104,12 +123,24 @@ class TaskLocal {
       ..apartmentSupabaseId = (map['apartment_id']?.toString() ?? '').trim().isEmpty
           ? null
           : (map['apartment_id']?.toString() ?? '').trim()
+      ..clientSupabaseId = (map['client_id']?.toString() ?? '').trim().isEmpty
+          ? null
+          : (map['client_id']?.toString() ?? '').trim()
+      ..customLocation = (map['custom_location']?.toString() ?? '').trim().isEmpty
+          ? null
+          : (map['custom_location']?.toString() ?? '').trim()
+      ..customTitle = (map['custom_title']?.toString() ?? '').trim().isEmpty
+          ? null
+          : (map['custom_title']?.toString() ?? '').trim()
       ..reservationSupabaseId = (map['reservation_id']?.toString() ?? '').trim().isEmpty
           ? null
           : (map['reservation_id']?.toString() ?? '').trim()
       ..assignedUserSupabaseId = (map['assigned_to']?.toString() ?? '').trim().isEmpty
           ? null
           : (map['assigned_to']?.toString() ?? '').trim()
+      ..referenceNumber = (map['reference_number']?.toString() ?? '').trim().isEmpty
+          ? null
+          : (map['reference_number']?.toString() ?? '').trim()
       ..title = (map['title']?.toString() ?? '').trim()
       ..description = (map['description']?.toString() ?? '').trim()
       ..taskType = (map['task_type']?.toString() ?? 'Jiné').trim()
@@ -124,7 +155,8 @@ class TaskLocal {
       ..lastUpdated = now
       ..metadataJson = _encodeMetadata(map['metadata'])
       ..startedAt = _parseOptionalDateTime(map['started_at'])
-      ..completedAt = _parseOptionalDateTime(map['completed_at']);
+      ..completedAt = _parseOptionalDateTime(map['completed_at'])
+      ..invoicedAt = _parseOptionalDateTime(map['invoiced_at']);
   }
 
   /// Parsuje volitelné časové razítko z Supabase (timestamptz).

@@ -6,13 +6,12 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/currency_service.dart';
-import 'package:falconest/core/widgets/task_header_widget.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
 import 'package:falconest/features/worker/widgets/task_countdown_timer.dart';
+import 'package:falconest/features/worker/widgets/worker_task_shared_header.dart';
 import 'package:falconest/features/worker/utils/cash_collection_dialog.dart';
 import 'package:falconest/features/worker/widgets/issue_reporter_dialog.dart';
-
-const _primaryBlue = Color(0xFF1565C0);
+import 'package:falconest/features/worker/widgets/task_complete_with_photo_section.dart';
 
 /// MVP obrazovka pro úkoly typu Check-in.
 /// Jednoduché zobrazení dat a tlačítko Dokončit.
@@ -70,15 +69,10 @@ class CheckinTaskScreen extends ConsumerWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        TaskHeaderWidget(
+                        WorkerTaskSharedHeader(
                           title: _mainHeading(detail),
                           scheduledStart: detail.scheduledStart,
-                        ),
-                        const SizedBox(height: 16),
-                        _buildAddressWithNavigate(context, detail.apartmentAddress),
-                        const SizedBox(height: 16),
-                        // PROČ: Živý odpočet času při aktivním check-inu – agent vidí zbývající čas či zpoždění.
-                        TaskCountdownTimer(
+                          apartmentAddress: detail.apartmentAddress,
                           startedAt: detail.startedAt,
                           completedAt: detail.completedAt,
                           estimatedMinutes: parseTaskEstimateMinutes(
@@ -99,7 +93,23 @@ class CheckinTaskScreen extends ConsumerWidget {
                   ),
                 ),
                 const SizedBox(height: 16),
-                _buildActionButton(context, ref, taskId, detail, 'worker.task_detail_finish'),
+                TaskCompleteWithPhotoSection(
+                  taskId: taskId,
+                  detail: detail,
+                  finishKey: 'worker.task_detail_finish',
+                  beforeComplete: (ctx, ref, mediaUrls) =>
+                      maybeShowCashCollectionDialog(
+                    ctx,
+                    ref,
+                    detail,
+                    taskId: taskId,
+                    onCompleted: () {
+                      ref.invalidate(workerTaskDetailProvider(taskId));
+                      if (ctx.mounted) ctx.pop();
+                    },
+                    mediaUrls: mediaUrls.isEmpty ? null : mediaUrls,
+                  ),
+                ),
               ],
             ),
           ),
@@ -108,119 +118,6 @@ class CheckinTaskScreen extends ConsumerWidget {
       loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
       error: (_, __) => Scaffold(
         body: Center(child: Text('worker.task_detail_not_found'.tr())),
-      ),
-    );
-  }
-
-  // Dvoufázové odpracování: Nejprve Zahájit (in_progress), poté Dokončit (completed).
-  // Uložení přesného UTC času pro sledování reálné doby práce.
-  Widget _buildActionButton(BuildContext context, WidgetRef ref, String taskId, dynamic detail, String finishKey) {
-    final status = detail?.status ?? '';
-    final s = status.trim().toLowerCase();
-    final isInProgress = s == 'in_progress' || s == 'probíhá';
-    final isCompleted = s == 'completed' || s == 'done' || s == 'dokončeno' || s == 'hotovo';
-
-    if (isCompleted) {
-      return SizedBox(
-        width: double.infinity,
-        child: FilledButton(
-          onPressed: () => context.pop(),
-          style: FilledButton.styleFrom(
-            backgroundColor: Colors.grey,
-            foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(vertical: 16),
-          ),
-          child: Text('common.back'.tr()),
-        ),
-      );
-    }
-    if (isInProgress) {
-      return SizedBox(
-        width: double.infinity,
-        child: FilledButton(
-          onPressed: () async {
-            final result = await maybeShowCashCollectionDialog(
-              context,
-              ref,
-              detail,
-              taskId: taskId,
-              onCompleted: () {
-                ref.invalidate(workerTaskDetailProvider(taskId));
-                if (context.mounted) context.pop();
-              },
-            );
-            // Když Cash dialog nebyl zobrazen – potvrzovací dialog zabrání překlikům.
-            if (result == null) {
-              final ok = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: Text('worker.confirm_finish_title'.tr()),
-                  content: Text('worker.confirm_finish_message'.tr()),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.of(ctx).pop(false),
-                      child: Text('common.cancel'.tr()),
-                    ),
-                    FilledButton(
-                      onPressed: () => Navigator.of(ctx).pop(true),
-                      child: Text('common.ok'.tr()),
-                    ),
-                  ],
-                ),
-              );
-              if (ok != true || !context.mounted) return;
-              await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
-                    taskId,
-                    'completed',
-                    completedAt: DateTime.now().toUtc(),
-                  );
-              if (context.mounted) context.pop();
-            }
-          },
-          style: FilledButton.styleFrom(
-            backgroundColor: _primaryBlue,
-            foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(vertical: 16),
-          ),
-          child: Text(finishKey.tr()),
-        ),
-      );
-    }
-    // PROČ: Potvrzovací dialog zabrání překlikům v kapse při zahájení.
-    return SizedBox(
-      width: double.infinity,
-      child: FilledButton(
-        onPressed: () async {
-          final ok = await showDialog<bool>(
-            context: context,
-            builder: (ctx) => AlertDialog(
-              title: Text('worker.confirm_start_title'.tr()),
-              content: Text('worker.confirm_start_message'.tr()),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  child: Text('common.cancel'.tr()),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  child: Text('common.ok'.tr()),
-                ),
-              ],
-            ),
-          );
-          if (ok != true) return;
-          await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
-                taskId,
-                'in_progress',
-                startedAt: DateTime.now().toUtc(),
-              );
-        },
-        style: FilledButton.styleFrom(
-          backgroundColor: _primaryBlue,
-          foregroundColor: Colors.white,
-          padding: const EdgeInsets.symmetric(vertical: 16),
-        ),
-        child: Text('worker.task_detail_start_work'.tr()),
       ),
     );
   }
@@ -344,7 +241,9 @@ class CheckinTaskScreen extends ConsumerWidget {
 
   static String _appBarTitle(dynamic detail) {
     final raw = detail.title.isNotEmpty ? detail.title : (detail.apartmentName ?? '—');
-    return raw.split(':').first.trim();
+    final base = raw.split(':').first.trim();
+    final ref = detail.referenceNumber?.trim();
+    return (ref != null && ref.isNotEmpty) ? '$base • #$ref' : base;
   }
 
   static String _mainHeading(dynamic detail) {
@@ -352,38 +251,8 @@ class CheckinTaskScreen extends ConsumerWidget {
     return raw.contains(':') ? raw.split(':').sublist(1).join(':').trim() : raw;
   }
 
-  Widget _buildAddressWithNavigate(BuildContext context, String? address) {
-    final addr = address?.trim() ?? '';
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          addr.isEmpty ? '—' : addr,
-          style: TextStyle(fontSize: 17, color: Colors.grey.shade800),
-        ),
-        if (addr.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          FilledButton.tonalIcon(
-            onPressed: () => _openMaps(context, addr),
-            icon: const Icon(Icons.map, size: 20),
-            label: Text('worker.task_detail_navigate'.tr()),
-          ),
-        ],
-      ],
-    );
-  }
-
-  Future<void> _openMaps(BuildContext context, String address) async {
-    final query = address.trim();
-    if (query.isEmpty) return;
-    final url = Uri.parse('https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(query)}');
-    if (await canLaunchUrl(url)) {
-      await launchUrl(url, mode: LaunchMode.externalApplication);
-    }
-  }
-
   /// Vykreslení metadat pro Check-in: custom_note (instrukce k předání klíčů), banner na peníze, rozpad platby.
-  /// [ref] – pro preferredCurrency a CurrencyService (V1_RELEASE_AUDIT: dynamické měny místo hardcoded €).
+  /// [ref] – pro formatTaskAmount (měna dle tenanta, fallback profil).
   List<Widget> _buildCheckinMetadata(BuildContext context, WidgetRef ref, Map<String, dynamic> meta) {
     final widgets = <Widget>[];
 
@@ -412,7 +281,7 @@ class CheckinTaskScreen extends ConsumerWidget {
     if (breakdown is Map && breakdown.isNotEmpty) {
       widgets.addAll([
         const SizedBox(height: 12),
-        _buildBreakdownCard(ref, breakdown),
+        _buildBreakdownCard(context, ref, breakdown),
       ]);
     }
 
@@ -450,13 +319,9 @@ class CheckinTaskScreen extends ConsumerWidget {
     );
   }
 
-  /// V1_RELEASE_AUDIT: Místo hardcoded € používá preferredCurrency a CurrencyService.
+  /// Sjednocené formátování přes formatTaskAmount – měna dle tenanta, fallback profil uživatele.
   Widget _buildAmountBanner(BuildContext context, WidgetRef ref, num amount) {
-    final currencies = ref.watch(currenciesProvider).valueOrNull ?? [];
-    final preferredCurrency = ref.watch(authNotifierProvider).state.preferredCurrency ?? 'EUR';
-    final formatted = currencies.isNotEmpty
-        ? CurrencyService.formatPrice(amount.toDouble(), preferredCurrency, currencies)
-        : NumberFormat.currency(locale: context.locale.toString(), symbol: '€', decimalDigits: 2).format(amount);
+    final formatted = formatTaskAmount(context, ref, amount);
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -480,19 +345,15 @@ class CheckinTaskScreen extends ConsumerWidget {
     );
   }
 
-  /// V1_RELEASE_AUDIT: Částky formátovány podle preferredCurrency místo hardcoded €.
-  Widget _buildBreakdownCard(WidgetRef ref, Map<dynamic, dynamic> map) {
-    final currencies = ref.watch(currenciesProvider).valueOrNull ?? [];
-    final preferredCurrency = ref.watch(authNotifierProvider).state.preferredCurrency ?? 'EUR';
+  /// Sjednocené formátování přes formatTaskAmount – měna dle tenanta, fallback profil uživatele.
+  Widget _buildBreakdownCard(BuildContext context, WidgetRef ref, Map<dynamic, dynamic> map) {
     final parts = <Widget>[];
     for (final e in map.entries) {
       final key = e.key.toString().toLowerCase().replaceAll('-', '_');
       final label = _translateTaskTypeKey(key);
       final v = e.value;
       final amountEur = (v is num) ? v.toDouble() : (double.tryParse(v?.toString() ?? '0') ?? 0);
-      final formatted = currencies.isNotEmpty
-          ? CurrencyService.formatPrice(amountEur, preferredCurrency, currencies)
-          : '${amountEur.toStringAsFixed(2)} €';
+      final formatted = formatTaskAmount(context, ref, amountEur);
       parts.add(Padding(
         padding: const EdgeInsets.only(bottom: 4),
         child: Row(

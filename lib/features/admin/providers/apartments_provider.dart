@@ -13,6 +13,7 @@ class ApartmentRow {
     required this.name,
     this.address,
     this.keybox,
+    this.code,
     required this.tenantId,
     this.zoneId,
     this.status,
@@ -27,6 +28,8 @@ class ApartmentRow {
   final String name;
   final String? address;
   final String? keybox;
+  /// Interní kód pro importy a podporu (např. SUN-01). Lidsky čitelný identifikátor.
+  final String? code;
   final String tenantId;
   /// Oblast (zóna), do které byt patří – FK na zones.id
   final String? zoneId;
@@ -62,11 +65,13 @@ class ApartmentRow {
     final checkOut = (json['check_out_time'] as String?)?.trim();
     final zoneRaw = json['zone_id'];
     final zoneId = (zoneRaw != null && zoneRaw.toString().trim().isNotEmpty) ? zoneRaw.toString().trim() : null;
+    final codeRaw = (json['code'] as String?)?.trim();
     return ApartmentRow(
       id: json['id'] as String,
       name: (json['name'] as String?)?.trim() ?? '',
       address: (addr == null || addr.isEmpty) ? null : addr,
       keybox: (kb == null || kb.isEmpty) ? null : kb,
+      code: (codeRaw == null || codeRaw.isEmpty) ? null : codeRaw,
       tenantId: json['tenant_id'] as String? ?? '',
       zoneId: zoneId,
       status: _parseStatus(json['status']),
@@ -101,6 +106,7 @@ class ApartmentRow {
       'zone_id': zoneId,
       'address': address,
       'keybox': keybox,
+      'code': code,
       'status': status ?? _statusFallback,
       'check_in_time': checkInTime ?? '15:00',
       'check_out_time': checkOutTime ?? '10:00',
@@ -118,6 +124,7 @@ class ApartmentRow {
     String? name,
     String? address,
     String? keybox,
+    String? code,
     String? tenantId,
     String? zoneId,
     String? status,
@@ -132,6 +139,7 @@ class ApartmentRow {
         name: name ?? this.name,
         address: address ?? this.address,
         keybox: keybox ?? this.keybox,
+        code: code ?? this.code,
         tenantId: tenantId ?? this.tenantId,
         zoneId: zoneId ?? this.zoneId,
         status: status ?? this.status,
@@ -155,7 +163,7 @@ final apartmentsProvider = FutureProvider<List<ApartmentRow>>((ref) async {
   final response = await SupabaseService.client
       .from('apartments')
       .select(
-        'id, name, address, keybox, tenant_id, zone_id, status, '
+        'id, name, address, keybox, code, tenant_id, zone_id, status, '
         'check_in_time, check_out_time, standard_cleaning_duration, owner_notes',
       )
       .eq('tenant_id', tenantId)

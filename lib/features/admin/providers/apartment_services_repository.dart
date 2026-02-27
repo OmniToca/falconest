@@ -41,6 +41,7 @@ Future<void> saveForApartment({
       'schedule_interval': s.scheduleInterval?.trim().isEmpty == true ? null : s.scheduleInterval?.trim(),
       'is_mandatory': s.isMandatory,
       'payer_type': s.payerType,
+      'requires_photo': s.requiresPhoto,
     });
   }
 }

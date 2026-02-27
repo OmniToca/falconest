@@ -9,9 +9,11 @@ import 'package:isar/isar.dart';
 
 import 'package:falconest/core/database/isar_service.dart';
 import 'package:falconest/core/database/models/apartment_local.dart';
+import 'package:falconest/core/database/models/client_local.dart';
 import 'package:falconest/core/database/models/reservation_local.dart';
 import 'package:falconest/core/database/models/sync_status.dart';
 import 'package:falconest/core/database/models/task_local.dart';
+import 'package:falconest/core/database/models/tenant_local.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
 class WorkerSyncService {
@@ -27,43 +29,53 @@ class WorkerSyncService {
 
       await pushPendingUpdates(tenantId, onSyncError: onSyncError);
 
+      // PROČ: Stahujeme měnu tenanta do Isaru – Worker UI ji potřebuje offline (formátování hotovosti).
+      await _syncTenantToIsar(tenantId);
+
       final now = DateTime.now().toUtc();
       final pastLimit = now.subtract(const Duration(days: 7)).toIso8601String();
       final futureLimit = now.add(const Duration(days: 14)).toIso8601String();
 
       // Kritická pojistka: Pracovník nesmí do mobilu stáhnout úkoly ve stavu 'pending' (návrhy).
+      // PROČ: Do mobilu stahujeme pouze aktivní úkoly. Vyfakturované (archivované) úkoly pracovníkům
+      // do lokální Isar databáze nepatří, šetříme místo a data.
+      // PROČ: client_id, custom_location, custom_title – pro zobrazení jména a adresy u ručních externích úkolů (transfer).
       final tasksData = await SupabaseService.client
           .from('tasks')
-          .select('id, tenant_id, apartment_id, reservation_id, assigned_to, title, description, task_type, scheduled_start, status, photo_url, metadata, started_at, completed_at')
+          .select('id, tenant_id, apartment_id, client_id, custom_location, custom_title, reference_number, reservation_id, assigned_to, title, description, task_type, scheduled_start, status, photo_url, metadata, started_at, completed_at, invoiced_at')
           .eq('tenant_id', tenantId)
           .eq('assigned_to', workerId)
           .neq('status', 'pending')
           .isFilter('deleted_at', null)
+          .isFilter('invoiced_at', null)
           .gte('scheduled_start', pastLimit)
           .lte('scheduled_start', futureLimit)
           .order('scheduled_start', ascending: true);
 
       final tasksList = tasksData is List ? List<dynamic>.from(tasksData) : <dynamic>[];
       if (tasksList.isEmpty) {
-        await _clearWorkerTasksAndWrite(tenantId, workerId, [], [], []);
+        await _clearWorkerTasksAndWrite(tenantId, workerId, [], [], [], []);
         return;
       }
 
       final apartmentIds = <String>{};
       final reservationIds = <String>{};
+      final clientIds = <String>{};
       for (final t in tasksList) {
         final map = t is Map<String, dynamic> ? Map<String, dynamic>.from(t) : <String, dynamic>{};
         final aptId = map['apartment_id']?.toString().trim();
         if (aptId != null && aptId.isNotEmpty) apartmentIds.add(aptId);
         final resId = map['reservation_id']?.toString().trim();
         if (resId != null && resId.isNotEmpty) reservationIds.add(resId);
+        final cId = map['client_id']?.toString().trim();
+        if (cId != null && cId.isNotEmpty) clientIds.add(cId);
       }
 
       List<dynamic> apartmentsData = [];
       if (apartmentIds.isNotEmpty) {
         apartmentsData = await SupabaseService.client
             .from('apartments')
-            .select('id, tenant_id, name, address, keybox, owner_notes')
+            .select('id, tenant_id, name, address, code, keybox, owner_notes')
             .inFilter('id', apartmentIds.toList())
             .isFilter('deleted_at', null);
         apartmentsData = apartmentsData is List ? List<dynamic>.from(apartmentsData) : [];
@@ -74,13 +86,24 @@ class WorkerSyncService {
       if (reservationIds.isNotEmpty) {
         reservationsData = await SupabaseService.client
             .from('reservations')
-            .select('id, tenant_id, status, guest_name, guest_phone')
+            .select('id, tenant_id, reference_number, status, guest_name, guest_phone')
             .inFilter('id', reservationIds.toList())
             .isFilter('deleted_at', null);
         reservationsData = reservationsData is List ? List<dynamic>.from(reservationsData) : [];
       }
 
-      await _clearWorkerTasksAndWrite(tenantId, workerId, tasksList, apartmentsData, reservationsData);
+      // PROČ: Stahujeme klienty pro externí úkoly – řidič vidí jméno klienta offline.
+      List<dynamic> clientsData = [];
+      if (clientIds.isNotEmpty) {
+        clientsData = await SupabaseService.client
+            .from('clients')
+            .select('id, tenant_id, name, phone')
+            .inFilter('id', clientIds.toList())
+            .isFilter('deleted_at', null);
+        clientsData = clientsData is List ? List<dynamic>.from(clientsData) : [];
+      }
+
+      await _clearWorkerTasksAndWrite(tenantId, workerId, tasksList, apartmentsData, reservationsData, clientsData);
     } catch (e, st) {
       onSyncError?.call(e.toString());
       if (kDebugMode) {
@@ -92,12 +115,48 @@ class WorkerSyncService {
     }
   }
 
+  /// Stáhne tenant (id, currency) ze Supabase a uloží do Isaru.
+  /// PROČ: currentTenantCurrencyProvider čte měnu z Isaru při offline – Worker UI zobrazí správnou měnu firmy.
+  static Future<void> _syncTenantToIsar(String tenantId) async {
+    if (tenantId.isEmpty) return;
+    try {
+      final tenantRes = await SupabaseService.client
+          .from('tenants')
+          .select('id, currency')
+          .eq('id', tenantId)
+          .maybeSingle();
+      if (tenantRes == null || tenantRes is! Map) return;
+      final map = Map<String, dynamic>.from(tenantRes as Map);
+      if (map.isEmpty) return;
+
+      final tenant = TenantLocal.fromMap(map);
+      if (tenant.supabaseId.isEmpty) return;
+
+      Isar isar;
+      try {
+        isar = IsarService.instance;
+      } on StateError {
+        return;
+      }
+
+      await isar.writeTxn(() async {
+        final existing = await isar.tenantLocals
+            .filter()
+            .supabaseIdEqualTo(tenant.supabaseId)
+            .findFirst();
+        if (existing != null) tenant.id = existing.id;
+        await isar.tenantLocals.put(tenant);
+      });
+    } catch (_) {}
+  }
+
   static Future<void> _clearWorkerTasksAndWrite(
     String tenantId,
     String workerId,
     List<dynamic> tasksList,
     List<dynamic> apartmentsData,
     List<dynamic> reservationsData,
+    List<dynamic> clientsData,
   ) async {
     Isar isar;
     try {
@@ -150,6 +209,16 @@ class WorkerSyncService {
         if (existing != null) res.id = existing.id;
         res.syncStatus = SyncStatus.synced;
         await isar.reservationLocals.put(res);
+      }
+
+      for (final c in clientsData) {
+        final map = c is Map<String, dynamic> ? Map<String, dynamic>.from(c) : <String, dynamic>{};
+        if (map.isEmpty) continue;
+        final client = ClientLocal.fromMap(map);
+        if (client.supabaseId == null || client.supabaseId!.isEmpty) continue;
+        final existing = await isar.clientLocals.filter().supabaseIdEqualTo(client.supabaseId!).findFirst();
+        if (existing != null) client.id = existing.id;
+        await isar.clientLocals.put(client);
       }
 
       for (final t in tasksList) {

@@ -5,6 +5,8 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'app.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart'; // Tento soubor se nám právě vytvořil
 
 // Podmíněný import: na webu žádný Isar (64-bit int crash), na mobilu plná Isar inicializace.
 import 'package:falconest/core/database/database_init_stub.dart'
@@ -24,6 +26,11 @@ import 'package:falconest/core/database/database_init_stub.dart'
 /// (místo bílého obrazu v Release módu na iOS).
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // TOTO PŘIDEJ: Inicializace Firebase
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
 
   Object? initError;
   try {

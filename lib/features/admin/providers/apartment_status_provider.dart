@@ -3,10 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 
-/// Hodnoty dynamicky vypočítaného stavu apartmánu – odpovídají klíčům v _statusKeys.
-const String apartmentStatusOccupied = 'Obsazeno hosty';
-const String apartmentStatusNeedsCleaning = 'K úklidu';
-const String apartmentStatusClean = 'Uklizeno';
+/// Hodnoty dynamicky vypočítaného stavu apartmánu – vracíme i18n klíče (ne české texty).
+/// Volající má použít status.tr() pro lokalizovaný výstup.
+const String apartmentStatusOccupied = 'apartments.status.occupied';
+const String apartmentStatusNeedsCleaning = 'apartments.status.to_clean';
+const String apartmentStatusClean = 'apartments.status.clean';
 
 /// Parsuje datum z formátu DD.MM.YYYY nebo DD.MM.YYYY HH:mm na DateTime (pouze datum).
 DateTime? _parseReservationDate(String? s) {
@@ -38,18 +39,30 @@ bool _isTodayWithinReservation(String? checkIn, String? checkOut) {
   return !today.isBefore(startDay) && !today.isAfter(endDay);
 }
 
-/// KROK B: Existuje úkol typu úklid se statusem jiným než Hotovo?
+/// KROK B: Existuje úkol typu úklid se statusem jiným než dokončený?
+///
+/// DŮLEŽITÉ: DB ukládá anglické stavy (completed, done, in_progress, assigned, pending).
+/// Záměrně porovnáváme proti anglickým DB hodnotám – nikoli proti českému 'Hotovo',
+/// které by nikdy nesedělo a způsobilo by chybný stav „K úklidu“ i pro dokončené úkoly.
 bool _hasOpenCleaningTask(List<TaskRow> tasks, String apartmentId) {
   for (final t in tasks) {
     if (t.apartmentId != apartmentId) continue;
-    final type = (t.taskType).toLowerCase();
-    final isCleaning = type == 'cleaning' || type.contains('úklid');
+    final type = (t.taskType).toLowerCase().trim();
+    final isCleaning = type == 'cleaning' || type.contains('cleaning') || type.contains('úklid');
     if (!isCleaning) continue;
-    final status = t.status;
-    if (status == 'Hotovo') continue; // hotový úklid = nepotřebujeme
-    return true; // Návrh, Nový, Zadáno, Probíhá
+    final s = (t.status).toLowerCase().trim();
+    if (_isCompletedStatus(s)) continue;
+    return true;
   }
   return false;
+}
+
+/// Vrací true, pokud status znamená dokončený úkol (anglické DB hodnoty + legacy).
+bool _isCompletedStatus(String status) {
+  return status == 'completed' ||
+      status == 'done' ||
+      status == 'hotovo' ||
+      status == 'dokončeno';
 }
 
 /// Vrátí dynamický stav apartmánu pro dnešek z předaných seznamů rezervací a úkolů.
@@ -76,12 +89,12 @@ String getApartmentStatusForToday(
 /// Provider dynamického stavu apartmánu – počítá se z Rezervací a Úkolů v reálném čase.
 ///
 /// KROK A (Hosté): Existuje rezervace, kde dnešní datum spadá do [checkIn, checkOut]
-/// a status není 'cancelled'? → Obsazeno hosty.
+/// a status není 'cancelled'? → apartments.status.occupied.
 ///
 /// KROK B (Úklid): Pokud není obsazeno, existuje úkol typu cleaning se statusem
-/// jiným než Hotovo? → K úklidu.
+/// jiným než completed/done? → apartments.status.to_clean.
 ///
-/// KROK C: Jinak → Uklizeno (Volno).
+/// KROK C: Jinak → apartments.status.clean (Volno).
 final apartmentStatusProvider =
     Provider.family<String, String>((ref, apartmentId) {
   final reservations = ref.watch(adminReservationsProvider);

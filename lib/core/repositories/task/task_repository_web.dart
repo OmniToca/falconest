@@ -12,14 +12,16 @@ class TaskRepositoryWeb implements ITaskRepository {
     final pastLimit = now.subtract(const Duration(days: 7)).toIso8601String();
     final futureLimit = now.add(const Duration(days: 14)).toIso8601String();
 
+    // PROČ: Archivace. Vyfakturované úkoly (invoiced_at != null) schováváme z aktivních pohledů.
     final tasksData = await SupabaseService.client
         .from('tasks')
         .select(
-          'id, tenant_id, apartment_id, assigned_to, title, description, task_type, scheduled_start, status, photo_url',
+          'id, tenant_id, apartment_id, assigned_to, title, description, task_type, scheduled_start, status, photo_url, reference_number',
         )
         .eq('tenant_id', tenantId)
         .eq('assigned_to', workerId)
         .isFilter('deleted_at', null)
+        .isFilter('invoiced_at', null)
         .gte('scheduled_start', pastLimit)
         .lte('scheduled_start', futureLimit)
         .order('scheduled_start', ascending: true);
@@ -75,6 +77,7 @@ class TaskRepositoryWeb implements ITaskRepository {
         scheduledStart = DateTime.now();
       }
 
+      final refNum = (map['reference_number'] as String?)?.trim();
       result.add(WorkerTask(
         id: id,
         title: (map['title'] as String?)?.trim() ?? '',
@@ -83,6 +86,7 @@ class TaskRepositoryWeb implements ITaskRepository {
         scheduledStart: scheduledStart.toLocal(),
         status: status,
         apartmentId: aptId,
+        referenceNumber: (refNum != null && refNum.isNotEmpty) ? refNum : null,
         apartmentName: apt?.name,
         apartmentAddress: apt?.address,
       ));
@@ -96,7 +100,7 @@ class TaskRepositoryWeb implements ITaskRepository {
     try {
       final res = await SupabaseService.client
           .from('tasks')
-          .select('id, title, description, task_type, scheduled_start, status, apartment_id, reservation_id, photo_url, metadata, started_at, completed_at')
+          .select('id, title, description, task_type, scheduled_start, status, apartment_id, client_id, custom_location, custom_title, reservation_id, photo_url, metadata, media_urls, started_at, completed_at, reference_number')
           .eq('tenant_id', tenantId)
           .eq('id', taskId)
           .maybeSingle();
@@ -120,6 +124,20 @@ class TaskRepositoryWeb implements ITaskRepository {
           aptAddress = (a['address'] as String?)?.trim();
           keybox = (a['keybox'] as String?)?.trim();
           ownerNotes = (a['owner_notes'] as String?)?.trim();
+        }
+      }
+      String? clientName;
+      final clientId = map['client_id']?.toString().trim();
+      if (clientId != null && clientId.isNotEmpty) {
+        final clientRes = await SupabaseService.client
+            .from('clients')
+            .select('name')
+            .eq('id', clientId)
+            .isFilter('deleted_at', null)
+            .maybeSingle();
+        if (clientRes != null && clientRes is Map) {
+          final n = (clientRes['name'] as String?)?.trim();
+          if (n != null && n.isNotEmpty) clientName = n;
         }
       }
       String? guestName;
@@ -152,10 +170,16 @@ class TaskRepositoryWeb implements ITaskRepository {
       if (rawMeta != null && rawMeta is Map) {
         metadata = Map<String, dynamic>.from(rawMeta);
       }
+      final mediaUrls = _parseMediaUrls(map['media_urls']);
 
+      final customLoc = (map['custom_location'] as String?)?.trim();
+      final customTtl = (map['custom_title'] as String?)?.trim();
+
+      final refNum = (map['reference_number'] as String?)?.trim();
       return WorkerTaskDetail(
         id: taskId,
         title: (map['title'] as String?)?.trim() ?? '',
+        referenceNumber: (refNum != null && refNum.isNotEmpty) ? refNum : null,
         description: (map['description'] as String?)?.trim() ?? '',
         taskType: (map['task_type'] as String?)?.trim() ?? '',
         scheduledStart: start.toLocal(),
@@ -163,11 +187,15 @@ class TaskRepositoryWeb implements ITaskRepository {
         apartmentId: aptId ?? '',
         apartmentName: aptName,
         apartmentAddress: aptAddress,
+        customLocation: customLoc?.isEmpty ?? true ? null : customLoc,
+        customTitle: customTtl?.isEmpty ?? true ? null : customTtl,
+        clientName: clientName,
         keybox: keybox?.isEmpty ?? true ? null : keybox,
         ownerNotes: ownerNotes?.isEmpty ?? true ? null : ownerNotes,
         guestName: guestName,
         guestPhone: guestPhone,
         photoUrl: (map['photo_url'] as String?)?.trim().isEmpty ?? true ? null : (map['photo_url'] as String?)?.trim(),
+        mediaUrls: mediaUrls,
         metadata: metadata,
         startedAt: _parseOptDateTime(map['started_at']),
         completedAt: _parseOptDateTime(map['completed_at']),
@@ -185,10 +213,12 @@ class TaskRepositoryWeb implements ITaskRepository {
     DateTime? startedAt,
     DateTime? completedAt,
     Map<String, dynamic>? metadataOverlay,
+    List<String>? mediaUrls,
   }) async {
     final updates = <String, dynamic>{'status': status};
     if (startedAt != null) updates['started_at'] = startedAt.toUtc().toIso8601String();
     if (completedAt != null) updates['completed_at'] = completedAt.toUtc().toIso8601String();
+    if (mediaUrls != null) updates['media_urls'] = mediaUrls;
 
     if (metadataOverlay != null && metadataOverlay.isNotEmpty) {
       final res = await SupabaseService.client
@@ -216,6 +246,18 @@ class TaskRepositoryWeb implements ITaskRepository {
     if (raw is DateTime) return raw;
     if (raw is String) return DateTime.tryParse(raw);
     return null;
+  }
+
+  static List<String> _parseMediaUrls(dynamic raw) {
+    if (raw == null) return const [];
+    if (raw is List) {
+      return raw
+          .map((e) => e?.toString().trim())
+          .where((s) => s != null && s!.isNotEmpty)
+          .cast<String>()
+          .toList();
+    }
+    return const [];
   }
 }
 

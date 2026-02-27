@@ -3,10 +3,12 @@ import 'package:isar/isar.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'models/apartment_local.dart';
+import 'models/client_local.dart';
 import 'models/pending_audit_action.dart';
 import 'models/pending_mutation_local.dart';
 import 'models/reservation_local.dart';
 import 'models/task_local.dart';
+import 'models/tenant_local.dart';
 
 /// Služba pro inicializaci a přístup k Isar lokální databázi.
 ///
@@ -41,8 +43,10 @@ class IsarService {
     _instance = await Isar.open(
       [
         ApartmentLocalSchema,
+        ClientLocalSchema,
         TaskLocalSchema,
         ReservationLocalSchema,
+        TenantLocalSchema,
         PendingAuditActionSchema,
         PendingMutationLocalSchema,
       ],

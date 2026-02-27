@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/utils/id_generator.dart';
 import 'package:falconest/core/offline/mutation_queue_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/settings/providers/profile_provider.dart';
@@ -84,6 +85,7 @@ class _AddAbsenceDialogState extends ConsumerState<AddAbsenceDialog> {
     return {
       'id': const Uuid().v4(),
       'tenant_id': tenantId,
+      'reference_number': generateTaskRef(),
       'task_type': 'other',
       'status': 'pending',
       'title': title,

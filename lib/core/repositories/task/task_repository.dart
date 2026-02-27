@@ -14,6 +14,7 @@ class WorkerTask {
     required this.scheduledStart,
     required this.status,
     required this.apartmentId,
+    this.referenceNumber,
     this.apartmentName,
     this.apartmentAddress,
   });
@@ -25,16 +26,22 @@ class WorkerTask {
   final DateTime scheduledStart;
   final String status;
   final String apartmentId;
+  /// Referenční číslo úkolu (např. TSK-X7M2P4). Pro zobrazení v UI.
+  final String? referenceNumber;
   final String? apartmentName;
   final String? apartmentAddress;
 }
 
 /// Detail úkolu pro Worker Task Detail Screen (keybox, ownerNotes, photoUrl, metadata, časová razítka).
 /// [guestName] a [guestPhone] – z propojené rezervace pro check-in/transfer (kontakt na hosta).
+/// [customLocation] a [customTitle] – pro externí úkoly bez bytu (ruční transfer).
+/// [clientName] – z tabulky clients pro externí úkoly s client_id.
+/// [mediaUrls] – pole URL fotek z tasks.media_urls (requires_photo, hlášení závad).
 class WorkerTaskDetail {
   const WorkerTaskDetail({
     required this.id,
     required this.title,
+    this.referenceNumber,
     required this.description,
     required this.taskType,
     required this.scheduledStart,
@@ -42,11 +49,15 @@ class WorkerTaskDetail {
     required this.apartmentId,
     this.apartmentName,
     this.apartmentAddress,
+    this.customLocation,
+    this.customTitle,
+    this.clientName,
     this.keybox,
     this.ownerNotes,
     this.guestName,
     this.guestPhone,
     this.photoUrl,
+    this.mediaUrls = const [],
     this.metadata,
     this.startedAt,
     this.completedAt,
@@ -54,6 +65,8 @@ class WorkerTaskDetail {
 
   final String id;
   final String title;
+  /// Referenční číslo úkolu (např. TSK-X7M2P4). Pro zobrazení v AppBar detailu.
+  final String? referenceNumber;
   final String description;
   final String taskType;
   final DateTime scheduledStart;
@@ -61,6 +74,12 @@ class WorkerTaskDetail {
   final String apartmentId;
   final String? apartmentName;
   final String? apartmentAddress;
+  /// Adresa/lokace pro externí úkoly (tasks.custom_location) – když nemáme byt.
+  final String? customLocation;
+  /// Název pro externí úkoly (tasks.custom_title) – např. "Transfer letiště".
+  final String? customTitle;
+  /// Jméno klienta z tabulky clients – pro externí úkoly s client_id.
+  final String? clientName;
   final String? keybox;
   final String? ownerNotes;
   /// Jméno hosta z propojené rezervace (Check-in, Transfer).
@@ -68,12 +87,37 @@ class WorkerTaskDetail {
   /// Telefon hosta z propojené rezervace – pro tel: link.
   final String? guestPhone;
   final String? photoUrl;
-  /// JSONB metadata z tasks (amount_to_collect, custom_note, expected_audit_total, collection_breakdown).
+  /// URL fotek z tasks.media_urls – pro zobrazení existujících a requires_photo.
+  final List<String> mediaUrls;
+  /// JSONB metadata z tasks (amount_to_collect, custom_note, flight_number, expected_audit_total, collection_breakdown).
+  /// flight_number = nativní sloupec reservation_services, propašovaný do tasks.metadata při vytvoření úkolu.
   final Map<String, dynamic>? metadata;
+
+  /// Číslo letu pro transfery – z metadata['flight_number']. Pochází z reservation_services.flight_number.
+  String? get flightNumber {
+    final v = metadata?['flight_number'];
+    if (v == null) return null;
+    final s = v.toString().trim();
+    return s.isEmpty ? null : s;
+  }
   /// Reálný čas zahájení práce (UTC).
   final DateTime? startedAt;
   /// Reálný čas dokončení úkolu (UTC).
   final DateTime? completedAt;
+
+  /// Chytrá priorita adresy pro UI: byt → custom_location → prázdno.
+  /// PROČ: U úkolů s bytem používáme přesnou adresu apartmánu; u externích custom_location.
+  String get displayAddress => (apartmentAddress?.trim().isNotEmpty == true)
+      ? apartmentAddress!
+      : (customLocation?.trim().isNotEmpty == true ? customLocation! : '');
+
+  /// Chytrá priorita jména pro UI: host z rezervace → klient → custom_title → prázdno.
+  /// PROČ: Rezervace má hosta, externí úkol klienta; custom_title je fallback (např. "Transfer pro XY").
+  String get displayName => (guestName?.trim().isNotEmpty == true)
+      ? guestName!
+      : (clientName?.trim().isNotEmpty == true)
+          ? clientName!
+          : (customTitle?.trim().isNotEmpty == true ? customTitle! : '');
 }
 
 /// Repozitář pro čtení úkolů přiřazených pracovníkovi.
@@ -90,6 +134,7 @@ abstract class ITaskRepository {
   /// [startedAt] – nastaví se při přechodu do in_progress (Time Tracking).
   /// [completedAt] – nastaví se při přechodu do completed (Time Tracking).
   /// [metadataOverlay] – volitelně sloučí dodatečné klíče do metadata (např. cash_collection_failed).
+  /// [mediaUrls] – URL fotek z Supabase Storage (např. pro úkoly s requires_photo). Nahrání volá klient před voláním.
   Future<void> updateTaskStatus(
     String tenantId,
     String taskId,
@@ -97,5 +142,6 @@ abstract class ITaskRepository {
     DateTime? startedAt,
     DateTime? completedAt,
     Map<String, dynamic>? metadataOverlay,
+    List<String>? mediaUrls,
   });
 }

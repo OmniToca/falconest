@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:falconest/core/auth/profile_cache_service.dart';
+import 'package:falconest/core/services/push_notification_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
 /// Stav přihlášeného uživatele (efektivní „profile model“) – role a tenant_id z profiles.
@@ -298,6 +299,8 @@ class AuthNotifier extends ChangeNotifier {
       _isProfileLoading = false;
       _selectedTenantId = null;
       _state = const AppAuthState(isImpersonating: false, isTenantActive: null, paidUntil: null, preferredCurrency: null);
+      // Push notifikace: zrušit listener na obnovu tokenu – uživatel není přihlášen.
+      PushNotificationService.instance.dispose();
       // OFFLINE-FIRST: Při odhlášení vymazat cachovaný profil – nesmí zůstat data předchozího uživatele.
       ProfileCacheService.clear();
       notifyListeners();
@@ -498,6 +501,23 @@ class AuthNotifier extends ChangeNotifier {
         languageCode: languageCodeStr,
         preferredCurrency: preferredCurrencyStr,
       );
+
+      // Push notifikace: zaregistrovat FCM token zařízení do user_devices.
+      // Pouze pro uživatele s tenantem (Worker, Admin) – Super Admin bez tenanta přeskočíme.
+      // Fire-and-forget – neblokuje přihlášení při chybě (např. Firebase není nakonfigurován).
+      if (profileIdStr != null &&
+          profileIdStr.isNotEmpty &&
+          tenantIdStr != null &&
+          tenantIdStr.isNotEmpty) {
+        PushNotificationService.instance
+            .initialize(profileIdStr, tenantIdStr)
+            .catchError((e) {
+          if (kDebugMode) {
+            // ignore: avoid_print
+            print('FCM token registration failed: $e');
+          }
+        });
+      }
 
       // OFFLINE-FIRST: Uložit profil do lokální cache. Při příštím startu bez sítě
       // (letadlo, sklep, horší signál) AuthNotifier načte z cache místo chybové obrazovky.

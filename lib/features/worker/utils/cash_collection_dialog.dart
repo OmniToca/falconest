@@ -1,9 +1,9 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
 
@@ -27,6 +27,7 @@ Future<bool?> maybeShowCashCollectionDialog(
   required VoidCallback onCompleted,
   bool forceShowForExtraOnly = false,
   bool completeTaskOnConfirm = true,
+  List<String>? mediaUrls,
 }) async {
   final meta = detail?.metadata;
   if (meta == null || meta is! Map) {
@@ -40,11 +41,7 @@ Future<bool?> maybeShowCashCollectionDialog(
 
   if (plannedAmount <= 0 && !forceShowForExtraOnly) return null;
 
-  final formatted = NumberFormat.currency(
-    locale: context.locale.toString(),
-    symbol: '€',
-    decimalDigits: 2,
-  ).format(plannedAmount);
+  final formatted = formatTaskAmount(context, ref, plannedAmount);
 
   return showDialog<bool>(
     context: context,
@@ -57,6 +54,7 @@ Future<bool?> maybeShowCashCollectionDialog(
       ref: ref,
       onCompleted: onCompleted,
       completeTaskOnConfirm: completeTaskOnConfirm,
+      mediaUrls: mediaUrls,
     ),
   );
 }
@@ -71,6 +69,7 @@ class _CashCollectionDialogContent extends StatefulWidget {
     required this.ref,
     required this.onCompleted,
     this.completeTaskOnConfirm = true,
+    this.mediaUrls,
   });
 
   final double plannedAmount;
@@ -80,6 +79,7 @@ class _CashCollectionDialogContent extends StatefulWidget {
   final WidgetRef ref;
   final VoidCallback onCompleted;
   final bool completeTaskOnConfirm;
+  final List<String>? mediaUrls;
 
   @override
   State<_CashCollectionDialogContent> createState() => _CashCollectionDialogContentState();
@@ -130,6 +130,7 @@ class _CashCollectionDialogContentState extends State<_CashCollectionDialogConte
               widget.taskId,
               'completed',
               completedAt: DateTime.now().toUtc(),
+              mediaUrls: widget.mediaUrls,
             );
       }
       if (mounted) Navigator.of(context).pop(true);

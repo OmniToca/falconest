@@ -30,6 +30,10 @@ class ReservationLocal {
   /// Telefon hosta – pro přímé volání při zpoždění nebo předání (tel: link).
   String? guestPhone;
 
+  /// Referenční číslo rezervace (např. RES-A8B3K9). Lidsky čitelný identifikátor pro podporu.
+  /// Mapuje reservations.reference_number.
+  String? referenceNumber;
+
   /// Čas poslední lokální úpravy v UTC. Klíčové pro Timestamp Merging.
   late DateTime localUpdatedAt;
 
@@ -48,12 +52,14 @@ class ReservationLocal {
     final idRaw = map['id']?.toString().trim();
     final gName = (map['guest_name'] as String?)?.trim();
     final gPhone = (map['guest_phone'] as String?)?.trim();
+    final refNum = (map['reference_number']?.toString() ?? '').trim();
     return ReservationLocal()
       ..supabaseId = (idRaw != null && idRaw.isNotEmpty) ? idRaw : null
       ..tenantId = (map['tenant_id']?.toString() ?? '').trim()
       ..status = (map['status']?.toString() ?? 'new').trim()
       ..guestName = (gName != null && gName.isNotEmpty) ? gName : null
       ..guestPhone = (gPhone != null && gPhone.isNotEmpty) ? gPhone : null
+      ..referenceNumber = (refNum.isNotEmpty) ? refNum : null
       ..syncStatus = SyncStatus.synced
       ..localUpdatedAt = now
       ..lastUpdated = now;

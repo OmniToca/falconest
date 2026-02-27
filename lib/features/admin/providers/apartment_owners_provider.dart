@@ -1,7 +1,9 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/models/client_model.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/features/admin/providers/apartments_provider.dart';
 
 /// Model majitele přiřazeného k apartmánu – pro zobrazení v UI.
 ///
@@ -86,6 +88,54 @@ List<ApartmentOwnerRow> _parseOwnerRows(List<dynamic> raw) {
   }
   return result;
 }
+
+/// Provider: agregovaný počet apartmánů na majitele (owner_id → count).
+///
+/// Jeden dotaz na apartment_owners pro celý tenant. Slouží pro zobrazení
+/// "Počet apartmánů: X" na kartě majitele v modulu Klienti bez rizika N+1.
+/// Tenant izolace: JOIN s apartments!inner(tenant_id).
+final ownerApartmentCountsProvider = FutureProvider<Map<String, int>>((ref) async {
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return {};
+
+  final res = await SupabaseService.client
+      .from('apartment_owners')
+      .select('owner_id, apartments!inner(tenant_id)')
+      .eq('apartments.tenant_id', tenantId)
+      .isFilter('deleted_at', null);
+
+  final map = <String, int>{};
+  for (final item in (res as List)) {
+    final ownerId = (item as Map<String, dynamic>)['owner_id']?.toString().trim();
+    if (ownerId == null || ownerId.isEmpty) continue;
+    map[ownerId] = (map[ownerId] ?? 0) + 1;
+  }
+  return map;
+});
+
+/// Provider: apartmány přiřazené majiteli (profileId = owner_id v apartment_owners).
+///
+/// Lazy-loaded dotaz – načte se až při otevření tabu Apartmány v detailu klienta.
+/// SELECT apartments s inner join apartment_owners WHERE owner_id = profileId.
+final apartmentsForProfileProvider =
+    FutureProvider.family<List<ApartmentRow>, String>((ref, profileId) async {
+  if (profileId.trim().isEmpty) return [];
+
+  final res = await SupabaseService.client
+      .from('apartments')
+      .select(
+        'id, name, address, keybox, tenant_id, zone_id, status, '
+        'check_in_time, check_out_time, standard_cleaning_duration, owner_notes, '
+        'apartment_owners!inner(owner_id)',
+      )
+      .eq('apartment_owners.owner_id', profileId)
+      .isFilter('deleted_at', null)
+      .order('name');
+
+  return (res as List)
+      .map((e) => ApartmentRow.fromJson(e as Map<String, dynamic>))
+      .toList();
+});
 
 /// Provider: seznam všech profilů s rolí property_owner v aktuálním tenantovi.
 ///
@@ -174,6 +224,97 @@ class PropertyOwnerOption {
 /// Repozitář pro CRUD operace nad apartment_owners.
 class ApartmentOwnersRepository {
   ApartmentOwnersRepository._();
+
+  /// Přiřadí CRM klienta (majitele) k apartmánu. Pokud klient nemá profile_id,
+  /// automaticky vytvoří ghost profil, pozvánku a uloží profile_id do clients.
+  ///
+  /// FLOW:
+  /// a) client.profileId != null → použij jako targetProfileId, pozvánkový odkaz nevracíme
+  ///    (majitel už má přístup nebo byl dříve pozván).
+  /// b) client.profileId == null → vytvoř ghost profil (profiles) s role=property_owner,
+  ///    vytvoř záznam v invitations, ulož profile_id do clients, vrať pozvánkový odkaz
+  ///    pro WhatsApp/sdílení.
+  /// c) INSERT do apartment_owners (apartment_id, owner_id=targetProfileId).
+  ///
+  /// [baseOrigin] – základ URL aplikace pro pozvánkový odkaz (např. Uri.base.origin na webu).
+  /// Pokud null, použije se Uri.base.origin.
+  static Future<String?> assignClientToApartment({
+  required String apartmentId,
+  required String tenantId,
+  required ClientModel client,
+  String? baseOrigin,
+}) async {
+  String targetProfileId;
+  String? inviteLink;
+  final origin = baseOrigin ?? Uri.base.origin;
+
+  if (client.profileId != null && client.profileId!.trim().isNotEmpty) {
+    targetProfileId = client.profileId!.trim();
+  } else {
+    final email = client.email?.trim() ?? '';
+    if (email.isEmpty) {
+      throw ArgumentError(
+        'Klient musí mít vyplněný e-mail pro vytvoření pozvánky do Klientského portálu.',
+      );
+    }
+    var displayName = client.name.trim();
+    if (displayName.isEmpty) displayName = email.split('@').first;
+    if (displayName.isEmpty) displayName = email;
+
+    final parts = displayName.split(RegExp(r'\s+'));
+    final firstName = parts.isNotEmpty ? parts.first : '';
+    final lastName = parts.length > 1 ? parts.sublist(1).join(' ') : ' ';
+
+    final profilePayload = <String, dynamic>{
+      'tenant_id': tenantId,
+      'email': email,
+      'first_name': firstName,
+      'last_name': lastName.isEmpty ? ' ' : lastName,
+      'name': displayName,
+      'status': 'pending',
+      'role': 'property_owner',
+      'roles': [],
+    };
+    final profileRes = await SupabaseService.client
+        .from('profiles')
+        .insert(profilePayload)
+        .select('id')
+        .single();
+    final newProfileId = (profileRes as Map)['id']?.toString();
+    if (newProfileId == null || newProfileId.isEmpty) {
+      throw StateError('Profil majitele nebyl vytvořen.');
+    }
+
+    final invPayload = <String, dynamic>{
+      'tenant_id': tenantId,
+      'profile_id': newProfileId,
+      'email': email,
+      'first_name': firstName,
+      'last_name': lastName,
+      'role': 'property_owner',
+      'roles': [],
+    };
+    await SupabaseService.client.from('invitations').insert(invPayload);
+
+    await SupabaseService.client
+        .from('clients')
+        .update({'profile_id': newProfileId})
+        .eq('id', client.id)
+        .eq('tenant_id', tenantId);
+
+    targetProfileId = newProfileId;
+    inviteLink = origin.trim().isNotEmpty
+        ? '$origin/#/invite?token=$newProfileId'
+        : null;
+  }
+
+  await SupabaseService.client.from('apartment_owners').insert({
+    'apartment_id': apartmentId,
+    'owner_id': targetProfileId,
+  });
+
+  return inviteLink;
+}
 
   /// Přidá propojení majitel–byt. Volá admin; RLS kontroluje tenant_id.
   static Future<void> addOwner({

@@ -27,6 +27,7 @@ final ownerPlanningCalendarTasksProvider =
   try {
     // BUGFIX: Dvojitá ochrana – úkoly POUZE pro vlastněné byty.
     // Nestahujeme profiles – ochrana soukromí personálu.
+    // PROČ: Archivace. Vyfakturované úkoly (invoiced_at != null) schováváme z aktivních pohledů.
     final res = await SupabaseService.client
         .from('tasks')
         .select(
@@ -35,6 +36,7 @@ final ownerPlanningCalendarTasksProvider =
         )
         .inFilter('apartment_id', ownedApartmentIds)
         .isFilter('deleted_at', null)
+        .isFilter('invoiced_at', null)
         .gte('scheduled_start', start.toUtc().toIso8601String())
         .lt('scheduled_start', weekEnd.toUtc().toIso8601String())
         .order('scheduled_start', ascending: true);

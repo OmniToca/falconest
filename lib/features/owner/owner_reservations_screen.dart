@@ -4,7 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:falconest/core/services/supabase_service.dart';
-import 'package:falconest/features/admin/models/reservation_service_model.dart';
+import 'package:falconest/core/utils/id_generator.dart';
+import 'package:falconest/features/admin/models/reservation_service_model.dart'
+    show parseFlightFromCustomNote, ApartmentServiceOption, ReservationServiceEditState;
 import 'package:falconest/features/admin/providers/reservation_services_repository.dart';
 import 'package:falconest/features/owner/providers/owner_apartment_services_provider.dart';
 import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
@@ -604,6 +606,7 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
             .insert({
               'apartment_id': _selectedApartmentId,
               'tenant_id': tenantId,
+              'reference_number': generateReservationRef(),
               'start_date': _formatDate(_dateFrom!),
               'end_date': _formatDate(_dateTo!),
               'guest_name': guestNameOrNull,
@@ -660,6 +663,7 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
             enabled: o.isMandatory,
             chargedPriceEur: o.defaultPriceEur,
             customNote: null,
+            flightNumber: null,
             payerType: o.payerType,
           ),
       };
@@ -691,13 +695,18 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
           o.apartmentServiceId: () {
             final existing = byApartmentServiceId[o.apartmentServiceId];
             if (existing != null) {
+              final flight = existing.flightNumber ?? (parseFlightFromCustomNote(existing.customNote).$1);
+              final noteRest = existing.flightNumber != null && existing.flightNumber!.isNotEmpty
+                  ? existing.customNote
+                  : (parseFlightFromCustomNote(existing.customNote).$2);
               return ReservationServiceEditState(
                 apartmentServiceId: o.apartmentServiceId,
                 serviceName: o.serviceName,
                 defaultPriceEur: o.defaultPriceEur,
                 enabled: true,
                 chargedPriceEur: existing.chargedPrice?.toDouble() ?? o.defaultPriceEur,
-                customNote: existing.customNote,
+                customNote: noteRest,
+                flightNumber: flight,
                 payerType: (existing.payerType == 'owner' || existing.payerType == 'guest')
                     ? existing.payerType!
                     : o.payerType,
@@ -710,6 +719,7 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
               enabled: o.isMandatory,
               chargedPriceEur: o.defaultPriceEur,
               customNote: null,
+              flightNumber: null,
               payerType: o.payerType,
             );
           }(),
@@ -994,6 +1004,7 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
                               enabled: o.isMandatory,
                               chargedPriceEur: o.defaultPriceEur,
                               customNote: null,
+                              flightNumber: null,
                               payerType: o.payerType,
                             );
                         final effectiveEnabled = state.enabled || o.isMandatory;

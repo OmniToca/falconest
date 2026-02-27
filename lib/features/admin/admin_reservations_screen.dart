@@ -1,4 +1,5 @@
 import 'package:easy_localization/easy_localization.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -12,6 +13,9 @@ import 'package:falconest/features/admin/admin_reservation_utils.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
+import 'package:falconest/core/utils/download_helper/download_helper.dart';
+import 'package:falconest/core/utils/read_file_bytes/read_file_bytes.dart';
+import 'package:falconest/features/admin/services/reservation_import_service.dart';
 import 'package:falconest/features/calendar/providers/planning_calendar_provider.dart';
 
 /// Barva Chipu podle životního cyklu: modrá, zelená, šedá, červená.
@@ -60,6 +64,26 @@ class AdminReservationsScreen extends ConsumerStatefulWidget {
   @override
   ConsumerState<AdminReservationsScreen> createState() =>
       _AdminReservationsScreenState();
+
+  /// Veřejná metoda pro otevření dialogu přidání rezervace.
+  /// [initialApartmentId] – předvyplní apartmán (např. z kontextu Detailu klienta-majitele).
+  static void showAddReservationDialog(
+    BuildContext context,
+    WidgetRef ref, {
+    String? initialApartmentId,
+    String? initialCheckIn,
+    VoidCallback? onSaved,
+  }) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AddReservationDialog(
+        ref: ref,
+        onSaved: onSaved ?? () => ref.invalidate(adminReservationsProvider),
+        initialApartmentId: initialApartmentId,
+        initialCheckIn: initialCheckIn,
+      ),
+    );
+  }
 
   /// Veřejná metoda pro otevření dialogu úpravy rezervace.
   /// Voláno např. z kontextu úkolu (odkaz na rezervaci v task editoru).
@@ -124,6 +148,8 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
                   searchController: _searchController,
                   onSearchChanged: () => setState(() {}),
                   onAdd: () => _showAddDialog(context, ref),
+                  onDownloadTemplate: () => _downloadCsvTemplate(context),
+                  onImportCsv: () => _importCsv(context, ref),
                 ),
                 Material(
                   color: Colors.white,
@@ -391,19 +417,123 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
       );
     }
   }
+
+  /// Stáhne vzorový XLSX soubor – na webu Blob, na mobilu FilePicker dialog.
+  Future<void> _downloadCsvTemplate(BuildContext context) async {
+    try {
+      final auth = ref.read(authNotifierProvider);
+      final tenantId = auth.tenantIdForData ?? '';
+      if (tenantId.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('admin.import_no_tenant'.tr())),
+          );
+        }
+        return;
+      }
+      final bytes = await ReservationImportService.generateExcelTemplate(tenantId);
+      await downloadBytesAsFile(bytes, 'reservations_template.xlsx');
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('admin.import_template_downloaded'.tr())),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('admin.import_error'.tr(namedArgs: {'error': e.toString()}))),
+        );
+      }
+    }
+  }
+
+  /// Otevře FilePicker, načte XLSX a předá do processImport.
+  Future<void> _importCsv(BuildContext context, WidgetRef ref) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['xlsx'],
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) return;
+      List<int> bytes = result.files.single.bytes?.toList() ?? [];
+      if (bytes.isEmpty && result.files.single.path != null) {
+        final path = result.files.single.path!;
+        bytes = await readFileBytes(path);
+      }
+      if (bytes.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('admin.import_empty_csv'.tr())),
+          );
+        }
+        return;
+      }
+      final auth = ref.read(authNotifierProvider);
+      final tenantId = auth.tenantIdForData ?? '';
+      if (tenantId.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('admin.import_no_tenant'.tr())),
+          );
+        }
+        return;
+      }
+      final apartments = await ref.read(apartmentsProvider.future);
+      final codeToApartmentId = <String, String>{};
+      for (final a in apartments) {
+        if (a.code != null && a.code!.trim().isNotEmpty) {
+          codeToApartmentId[a.code!.trim()] = a.id;
+        }
+      }
+      final importResult = await ReservationImportService.processImport(
+        bytes,
+        tenantId,
+        codeToApartmentId,
+      );
+      if (context.mounted) {
+        ref.invalidate(adminReservationsProvider);
+        final msg = 'admin.import_report'.tr(namedArgs: {
+          'success': '${importResult.successCount}',
+          'warnings': '${importResult.warningCount}',
+          'errors': '${importResult.errorCount}',
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(msg), duration: const Duration(seconds: 4)),
+        );
+      }
+    } on ArgumentError catch (e) {
+      if (context.mounted) {
+        final key = e.message?.toString() ?? 'admin.import_error';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(key.startsWith('admin.') ? key.tr() : key)),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('admin.import_error'.tr(namedArgs: {'error': e.toString()}))),
+        );
+      }
+    }
+  }
 }
 
-/// Top Action Bar – titulek, vyhledávání, tlačítko Přidat.
+/// Top Action Bar – titulek, vyhledávání, tlačítko Přidat a menu CSV importu.
 class _TopActionBar extends StatelessWidget {
   const _TopActionBar({
     required this.searchController,
     required this.onSearchChanged,
     required this.onAdd,
+    required this.onDownloadTemplate,
+    required this.onImportCsv,
   });
 
   final TextEditingController searchController;
   final VoidCallback onSearchChanged;
   final VoidCallback onAdd;
+  final VoidCallback onDownloadTemplate;
+  final VoidCallback onImportCsv;
 
   @override
   Widget build(BuildContext context) {
@@ -438,6 +568,37 @@ class _TopActionBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 16),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.upload_file),
+            tooltip: 'admin.import_reservations'.tr(),
+            onSelected: (value) {
+              if (value == 'download') onDownloadTemplate();
+              if (value == 'import') onImportCsv();
+            },
+            itemBuilder: (ctx) => [
+              PopupMenuItem(
+                value: 'download',
+                child: Row(
+                  children: [
+                    const Icon(Icons.download, size: 20),
+                    const SizedBox(width: 8),
+                    Text('admin.download_csv_template'.tr()),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                value: 'import',
+                child: Row(
+                  children: [
+                    const Icon(Icons.upload_file, size: 20),
+                    const SizedBox(width: 8),
+                    Text('admin.import_reservations'.tr()),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(width: 8),
           FilledButton.icon(
             onPressed: onAdd,
             icon: const Icon(Icons.add, size: 20),
@@ -986,15 +1147,26 @@ class _ReservationTimelineBlock extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    guestName,
-                    overflow: TextOverflow.ellipsis,
-                    maxLines: 1,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.black87,
-                    ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          guestName,
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.black87,
+                          ),
+                        ),
+                      ),
+                      if (reservation.referenceNumber != null && reservation.referenceNumber!.trim().isNotEmpty)
+                        Text(
+                          '#${reservation.referenceNumber!.trim()}',
+                          style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
+                        ),
+                    ],
                   ),
                   // Responzivní druhý řádek: ikonky hostů/transfer/poznámky jen pro širší bloky (1 noc ≈ 85 px → ořezává se text)
                   if (width > 120) ...[
@@ -1379,7 +1551,7 @@ class _KanbanCardContent extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 4),
-                // 2. řádek – hlavní nadpis: jméno hosta + drobné ikony (transfer, poznámka)
+                // 2. řádek – hlavní nadpis: jméno hosta + referenční číslo + drobné ikony (transfer, poznámka)
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
@@ -1395,6 +1567,13 @@ class _KanbanCardContent extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
+                    if (reservation.referenceNumber != null && reservation.referenceNumber!.trim().isNotEmpty) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        '#${reservation.referenceNumber!.trim()}',
+                        style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                      ),
+                    ],
                     if (reservation.needsTransfer == true) ...[
                       const SizedBox(width: 6),
                       Icon(Icons.flight_land, size: 14, color: Colors.blue.shade600),

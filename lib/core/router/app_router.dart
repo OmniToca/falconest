@@ -5,9 +5,10 @@ import 'package:go_router/go_router.dart';
 
 import 'package:falconest/core/auth/auth_notifier.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
-import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/core/auth/pin_storage.dart';
 import 'package:falconest/core/auth/pin_unlock_provider.dart';
+import 'package:falconest/core/providers/ui_mode_provider.dart';
+import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/admin_layout.dart';
 import 'package:falconest/features/auth/auth_loading_screen.dart';
 import 'package:falconest/features/auth/invite_screen.dart';
@@ -45,14 +46,22 @@ import 'package:falconest/shared/widgets/placeholder_screen.dart';
 final goRouterProvider = Provider<GoRouter>((ref) {
   final authNotifier = ref.watch(authNotifierProvider);
   final pinUnlocked = ref.watch(pinUnlockedProvider);
+  final uiModeNotifier = ref.watch(uiModeNotifierProvider);
 
   return GoRouter(
-    refreshListenable: authNotifier,
+    refreshListenable: Listenable.merge([authNotifier, uiModeNotifier]),
     initialLocation: '/',
     // BUGFIX: Oprava definice rout pro klientský portál (zamezení fallback redirectu).
     debugLogDiagnostics: kDebugMode,
     redirect: (context, state) async {
-      return _redirectLogic(context, state, authNotifier, pinUnlocked);
+      final uiMode = ref.read(uiModeNotifierProvider).mode;
+      return _redirectLogic(
+        context,
+        state,
+        authNotifier,
+        pinUnlocked,
+        uiMode,
+      );
     },
     routes: [
       GoRoute(
@@ -242,7 +251,8 @@ final goRouterProvider = Provider<GoRouter>((ref) {
 ///
 /// 1. role == super_admin → vždy /super-admin (nebo /admin při převtělení). Na tenant_id se NEKOUKÁ.
 /// 2. tenant_id == null (u ne‑super_admin) → čekárna
-/// 3. role == admin → admin dashboard
+/// 3. role == admin/manager → podle [uiMode]: forceMobile→/worker, forceDesktop→/admin,
+///    auto→nativní mobil→/worker, web→/admin
 /// 4. default → worker
 ///
 /// Důsledek: Super Admin s tenant_id == null v DB nikdy neskončí na čekárně ani odhlášen.
@@ -251,6 +261,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
 Future<String?> _getRedirectTargetForRole(
   AuthNotifier authNotifier,
   bool pinUnlocked,
+  AdminUiMode uiMode,
 ) async {
   final role = authNotifier.state.role;
   final tenantId = authNotifier.state.tenantId;
@@ -269,7 +280,21 @@ Future<String?> _getRedirectTargetForRole(
     return '/super-admin';
   }
   if (tenantId == null) return '/waiting-room';
-  if (role == 'admin' || role == 'manager') return '/admin';
+
+  // Admin a Manager: přepínač Web vs. Mobil podle [uiMode].
+  // forceMobile = vždy /worker (mobilní UI), forceDesktop = vždy /admin (desktopová administrace).
+  // auto = nativní mobil (!kIsWeb) → /worker, web (prohlížeč) → /admin.
+  if (role == 'admin' || role == 'manager') {
+    switch (uiMode) {
+      case AdminUiMode.forceMobile:
+        return '/worker';
+      case AdminUiMode.forceDesktop:
+        return '/admin';
+      case AdminUiMode.auto:
+        return !kIsWeb ? '/worker' : '/admin';
+    }
+  }
+
   if (role == 'property_owner') return '/owner';
   // Worker a personál (cleaner, driver, maintenance) → dashboard personálu
   return '/worker';
@@ -288,6 +313,7 @@ Future<String?> _redirectLogic(
   GoRouterState state,
   AuthNotifier authNotifier,
   bool pinUnlocked,
+  AdminUiMode uiMode,
 ) async {
   final location = state.matchedLocation;
   final uri = state.uri;
@@ -367,13 +393,13 @@ Future<String?> _redirectLogic(
       return '/payment-required';
     }
     if (location == '/payment-required' && (endOfPaidDay == null || !now.isAfter(endOfPaidDay))) {
-      return _getRedirectTargetForRole(authNotifier, pinUnlocked);
+      return _getRedirectTargetForRole(authNotifier, pinUnlocked, uiMode);
     }
   }
 
   // Pravidlo 1a: Přihlášený na /auth-loading – profil už načten, přesměruj podle role
   if (location == '/auth-loading') {
-    return _getRedirectTargetForRole(authNotifier, pinUnlocked);
+    return _getRedirectTargetForRole(authNotifier, pinUnlocked, uiMode);
   }
 
   // Pravidlo 1b: Přihlášený na /update-password nebo /set-password – povolit
@@ -401,7 +427,7 @@ Future<String?> _redirectLogic(
 
   // Pravidlo 2b: Přihlášený na / nebo /register – kam přesměrovat
   if (location == '/' || location == '/register') {
-    return _getRedirectTargetForRole(authNotifier, pinUnlocked);
+    return _getRedirectTargetForRole(authNotifier, pinUnlocked, uiMode);
   }
 
   // Pravidlo 2b2: Nastavení – přístup pro všechny přihlášené (bez přesměrování)
@@ -420,6 +446,16 @@ Future<String?> _redirectLogic(
     }
     if (location.startsWith('/worker') || location.startsWith('/owner')) {
       return '/super-admin';
+    }
+  }
+
+  // Pravidlo 2d: Admin/Manager – přepínač Web vs. Mobil. Při změně uiMode přesměruj.
+  if (role == 'admin' || role == 'manager') {
+    if (uiMode == AdminUiMode.forceMobile && location.startsWith('/admin')) {
+      return '/worker';
+    }
+    if (uiMode == AdminUiMode.forceDesktop && location.startsWith('/worker')) {
+      return '/admin';
     }
   }
 

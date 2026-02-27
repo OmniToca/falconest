@@ -1,6 +1,7 @@
 /// Model záznamu tabulky [apartment_services] – přiřazení služby z katalogu k bytu (Override Pattern úroveň 2).
 ///
 /// [customPrice] a [customDescription] přepisují výchozí hodnoty z tenant_services.
+/// [requiresPhoto] – null = dědit z katalogu, true/false = override pro tento byt.
 /// Ceny v DB jsou v EUR; v UI se přepočítávají podle preferované měny uživatele.
 class ApartmentServiceRow {
   const ApartmentServiceRow({
@@ -14,6 +15,7 @@ class ApartmentServiceRow {
     this.scheduleInterval,
     this.isMandatory = false,
     this.payerType = 'guest',
+    this.requiresPhoto,
   });
 
   final String id;
@@ -28,6 +30,8 @@ class ApartmentServiceRow {
   final bool isMandatory;
   /// Kdo platí službu: 'owner' (majitel – faktura) nebo 'guest' (host – na místě).
   final String payerType;
+  /// Override focení: null = dědit z katalogu, true = vždy vyžadovat, false = nevyžadovat.
+  final bool? requiresPhoto;
 
   factory ApartmentServiceRow.fromJson(Map<String, dynamic> json) {
     final rawPrice = json['custom_price'];
@@ -70,7 +74,20 @@ class ApartmentServiceRow {
         final v = (json['payer_type'] as String?)?.trim();
         return (v == 'owner' || v == 'guest') ? v! : 'guest';
       }(),
+      requiresPhoto: _parseBoolNullable(json['requires_photo']),
     );
+  }
+
+  static bool? _parseBoolNullable(dynamic v) {
+    if (v == null) return null;
+    if (v is bool) return v;
+    if (v is int) return v == 1;
+    if (v is String) {
+      final l = v.toLowerCase();
+      if (l == 'true' || l == '1') return true;
+      if (l == 'false' || l == '0') return false;
+    }
+    return null;
   }
 }
 
@@ -88,6 +105,7 @@ class ApartmentServiceEditState {
     this.scheduleInterval,
     this.isMandatory = false,
     this.payerType = 'guest',
+    this.requiresPhoto,
   });
 
   final String serviceId;
@@ -102,6 +120,8 @@ class ApartmentServiceEditState {
   final bool isMandatory;
   /// Kdo platí službu: 'owner' (majitel) nebo 'guest' (host).
   final String payerType;
+  /// Override focení: null = dědit z katalogu, true = vždy vyžadovat, false = nevyžadovat.
+  final bool? requiresPhoto;
 
   ApartmentServiceEditState copyWith({
     bool? enabled,
@@ -111,6 +131,8 @@ class ApartmentServiceEditState {
     String? scheduleInterval,
     bool? isMandatory,
     String? payerType,
+    bool? requiresPhoto,
+    bool clearRequiresPhoto = false,
   }) {
     return ApartmentServiceEditState(
       serviceId: serviceId,
@@ -123,6 +145,7 @@ class ApartmentServiceEditState {
       scheduleInterval: scheduleInterval ?? this.scheduleInterval,
       isMandatory: isMandatory ?? this.isMandatory,
       payerType: payerType ?? this.payerType,
+      requiresPhoto: clearRequiresPhoto ? null : (requiresPhoto ?? this.requiresPhoto),
     );
   }
 }

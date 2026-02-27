@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/id_generator.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
@@ -290,6 +291,7 @@ class _AddAgencyDialogState extends State<_AddAgencyDialog> {
           final guestName = 'super_admin.demo_guest_name'.tr();
           await SupabaseService.client.from('reservations').insert({
             'apartment_id': apartmentId,
+            'reference_number': generateReservationRef(),
             'guest_name': guestName,
             'start_date': today.toIso8601String(),
             'end_date': endDate.toIso8601String(),
@@ -299,6 +301,7 @@ class _AddAgencyDialogState extends State<_AddAgencyDialog> {
           await SupabaseService.client.from('tasks').insert({
             'tenant_id': tenantId,
             'apartment_id': apartmentId,
+            'reference_number': generateTaskRef(),
             'title': 'super_admin.demo_task_title'.tr(),
             'description': 'super_admin.demo_task_description'.tr(),
             'status': 'Nový',

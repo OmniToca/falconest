@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/utils/id_generator.dart';
 import 'package:falconest/core/presentation/widgets/modern_admin_panel.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
@@ -16,6 +17,12 @@ import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/apartment_services_options_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/reservation_services_repository.dart';
+
+/// Zda je typ služby transfer – pro zobrazení pole Číslo letu v rezervaci.
+bool _isTransferServiceType(String? type) {
+  if (type == null || type.trim().isEmpty) return false;
+  return ['transfer_in', 'transfer_out', 'transfer'].contains(type.trim().toLowerCase());
+}
 
 /// Dialog pro přidání nové rezervace. [initialApartmentId] a [initialCheckIn] předvyplní formulář (např. z Plachty).
 class AddReservationDialog extends ConsumerStatefulWidget {
@@ -225,6 +232,7 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
       final payload = <String, dynamic>{
         'tenant_id': tenantId,
         'apartment_id': _selectedApartmentId,
+        'reference_number': generateReservationRef(),
         'start_date': startDate,
         'end_date': endDate,
         'status': 'new',
@@ -243,8 +251,6 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
             ? null
             : _internalNoteController.text.trim(),
       };
-      // ignore: avoid_print
-      print('DEBUG RESERVATION PAYLOAD: $payload');
 
       final res = await SupabaseService.client
           .from('reservations')
@@ -310,7 +316,7 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Chyba při ukládání: ${e.message}',
+            'admin.reservations_save_error'.tr(namedArgs: {'error': e.message}),
           ),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
@@ -324,7 +330,7 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Chyba při ukládání: $e',
+            'admin.reservations_save_error'.tr(namedArgs: {'error': e.toString()}),
           ),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
@@ -659,6 +665,7 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
                     chargedPriceEur: o.defaultPriceEur,
                     customNote: null,
                     payerType: o.payerType,
+                    requiresPhoto: null,
                   ),
               };
             });
@@ -703,6 +710,7 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
                   chargedPriceEur: o.defaultPriceEur,
                   customNote: null,
                   payerType: o.payerType,
+                  requiresPhoto: null,
                 );
             final effectiveEnabled = state.enabled || o.isMandatory;
             final eurBase = (state.chargedPriceEur ?? state.defaultPriceEur);
@@ -840,6 +848,28 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
                                 },
                               ),
                             ),
+                            if (_isTransferServiceType(o.serviceType))
+                              Container(
+                                margin: const EdgeInsets.only(bottom: 24.0),
+                                child: TextFormField(
+                                  initialValue: state.flightNumber ?? '',
+                                  decoration: InputDecoration(
+                                    prefixIcon: Icon(Icons.flight_takeoff_outlined, color: Colors.grey.shade500),
+                                    labelText: 'tasks.flight_number_label'.tr(),
+                                    hintText: 'tasks.flight_number_hint'.tr(),
+                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
+                                    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
+                                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Theme.of(context).colorScheme.primary)),
+                                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                  ),
+                                  onChanged: (v) {
+                                    setState(() {
+                                      _servicesState[o.apartmentServiceId] =
+                                          state.copyWith(flightNumber: v.trim().isEmpty ? null : v.trim());
+                                    });
+                                  },
+                                ),
+                              ),
                           ],
                         ),
                       ),
@@ -1086,7 +1116,29 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
           .maybeSingle();
       tenantId = aptRes?['tenant_id']?.toString();
     }
-    if (tenantId == null || tenantId.isEmpty) return;
+    if (tenantId == null || tenantId.isEmpty) {
+      // PROČ: Bez tenantId nelze načíst reservation_services. Nastavíme _servicesLoaded = true
+      // a vyplníme _servicesState z options, aby se neukazovalo nekonečné kolečko.
+      if (!mounted) return;
+      setState(() {
+        _servicesState = {
+          for (final o in options)
+            o.apartmentServiceId: ReservationServiceEditState(
+              apartmentServiceId: o.apartmentServiceId,
+              serviceName: o.serviceName,
+              defaultPriceEur: o.defaultPriceEur,
+              enabled: o.isMandatory,
+              chargedPriceEur: o.defaultPriceEur,
+              customNote: null,
+              flightNumber: null,
+              payerType: o.payerType,
+              requiresPhoto: null,
+            ),
+        };
+        _servicesLoaded = true;
+      });
+      return;
+    }
     final rows = await fetchByReservationId(widget.reservation.id, tenantId);
     final byApartmentServiceId = {for (final row in rows) row.apartmentServiceId: row};
     if (!mounted) return;
@@ -1103,20 +1155,29 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                 enabled: o.isMandatory,
                 chargedPriceEur: o.defaultPriceEur,
                 customNote: null,
+                flightNumber: null,
                 payerType: o.payerType,
+                requiresPhoto: null,
               );
             }
             final payerType = (row.payerType == 'owner' || row.payerType == 'guest')
                 ? row.payerType!
                 : o.payerType;
+            final (parsedFlight, parsedNoteRest) = parseFlightFromCustomNote(row.customNote);
+            final flight = row.flightNumber ?? parsedFlight;
+            final noteRest = row.flightNumber != null && row.flightNumber!.isNotEmpty
+                ? row.customNote
+                : parsedNoteRest;
             return ReservationServiceEditState(
               apartmentServiceId: o.apartmentServiceId,
               serviceName: o.serviceName,
               defaultPriceEur: o.defaultPriceEur,
               enabled: true,
               chargedPriceEur: row.chargedPrice?.toDouble(),
-              customNote: row.customNote,
+              customNote: noteRest,
+              flightNumber: flight,
               payerType: payerType,
+              requiresPhoto: row.requiresPhoto,
             );
           }(),
       };
@@ -1357,7 +1418,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Chyba při ukládání: ${e.message}',
+            'admin.reservations_save_error'.tr(namedArgs: {'error': e.message}),
           ),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
@@ -1371,7 +1432,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Chyba při ukládání: $e',
+            'admin.reservations_save_error'.tr(namedArgs: {'error': e.toString()}),
           ),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
@@ -1623,12 +1684,46 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
         const SizedBox(height: 20),
         const Divider(),
         const SizedBox(height: 8),
-        Text(
-          'admin.reservations_related_tasks'.tr(),
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                color: Colors.grey.shade700,
-                fontWeight: FontWeight.w600,
-              ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'admin.reservations_related_tasks'.tr(),
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    color: Colors.grey.shade700,
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            TextButton.icon(
+              onPressed: () {
+                final r = widget.reservation;
+                final guest = r.guestName?.trim().isNotEmpty == true
+                    ? r.guestName!.trim()
+                    : '?';
+                final start = parseReservationCheckIn(r.checkIn);
+                final end = parseReservationCheckOut(r.checkOut);
+                String? reservationInfo;
+                if (start != null && end != null) {
+                  reservationInfo = '$guest (${formatReservationDateRangeDisplay(DateTimeRange(start: start, end: end))})';
+                } else {
+                  reservationInfo = guest;
+                }
+                AdminTasksScreen.showAddTaskDialog(
+                  context,
+                  ref,
+                  initialApartmentId: r.apartmentId,
+                  initialReservationId: r.id,
+                  initialReservationInfo: reservationInfo,
+                  onSaved: () {
+                    ref.invalidate(adminTasksProvider);
+                    ref.invalidate(adminTasksStreamProvider);
+                  },
+                );
+              },
+              icon: const Icon(Icons.add, size: 18),
+              label: Text('admin.add_related_task'.tr()),
+            ),
+          ],
         ),
         const SizedBox(height: 8),
         RelatedTasksList(
@@ -1683,6 +1778,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                   chargedPriceEur: o.defaultPriceEur,
                   customNote: null,
                   payerType: o.payerType,
+                  requiresPhoto: null,
                 );
             final effectiveEnabled = state.enabled || o.isMandatory;
             final eurBase = (state.chargedPriceEur ?? state.defaultPriceEur);
@@ -1842,8 +1938,12 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
     final apartmentsAsync = ref.watch(apartmentsProvider);
     final tasksAsync = ref.watch(adminTasksStreamProvider);
 
+    final refNum = widget.reservation.referenceNumber?.trim();
+    final title = refNum != null && refNum.isNotEmpty
+        ? '${'admin.reservations_edit'.tr()} • #$refNum'
+        : 'admin.reservations_edit'.tr();
     return ModernAdminPanel(
-      title: 'admin.reservations_edit'.tr(),
+      title: title,
       maxWidth: 800,
       content: Form(
         key: _formKey,

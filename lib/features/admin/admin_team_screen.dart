@@ -1884,19 +1884,6 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
                       title: Text('admin.system_role_worker'.tr()),
                     ),
                   ),
-                  Expanded(
-                    child: RadioListTile<String>(
-                      value: 'property_owner',
-                      groupValue: _systemRole,
-                      onChanged: (v) => setState(() {
-                        _systemRole = v ?? 'worker';
-                        if (_systemRole == 'property_owner') {
-                          _selectedRoles.clear();
-                        }
-                      }),
-                      title: Text('admin.team_role_owner'.tr()),
-                    ),
-                  ),
                 ],
               ),
               if (_systemRole != 'property_owner') ...[

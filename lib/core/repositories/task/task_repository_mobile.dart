@@ -6,8 +6,10 @@ import 'dart:convert';
 
 import 'package:isar/isar.dart';
 
+import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/core/database/isar_service.dart';
 import 'package:falconest/core/database/models/apartment_local.dart';
+import 'package:falconest/core/database/models/client_local.dart';
 import 'package:falconest/core/database/models/reservation_local.dart';
 import 'package:falconest/core/database/models/sync_status.dart';
 import 'package:falconest/core/database/models/task_local.dart';
@@ -54,6 +56,7 @@ class TaskRepositoryMobile implements ITaskRepository {
         }
       }
 
+      final refNum = t.referenceNumber?.trim();
       result.add(WorkerTask(
         id: idStr,
         title: t.title.trim(),
@@ -62,6 +65,7 @@ class TaskRepositoryMobile implements ITaskRepository {
         scheduledStart: t.scheduledStart.toLocal(),
         status: t.status.trim(),
         apartmentId: t.apartmentSupabaseId?.trim() ?? '',
+        referenceNumber: (refNum != null && refNum.isNotEmpty) ? refNum : null,
         apartmentName: aptName,
         apartmentAddress: aptAddress,
       ));
@@ -99,9 +103,23 @@ class TaskRepositoryMobile implements ITaskRepository {
         guestPhone = res.guestPhone?.trim().isEmpty == true ? null : res.guestPhone?.trim();
       }
     }
+    // PROČ: Načtení jména klienta z ClientLocal pro externí úkoly (ruční transfer bez rezervace).
+    String? clientName;
+    if (task.clientSupabaseId != null && task.clientSupabaseId!.trim().isNotEmpty) {
+      final client = isar.clientLocals
+          .filter()
+          .tenantIdEqualTo(tenantId)
+          .supabaseIdEqualTo(task.clientSupabaseId!)
+          .findFirstSync();
+      if (client != null && client.name.trim().isNotEmpty) {
+        clientName = client.name.trim();
+      }
+    }
+    final refNum = task.referenceNumber?.trim();
     return WorkerTaskDetail(
       id: task.supabaseId ?? taskId,
       title: task.title.trim(),
+      referenceNumber: (refNum != null && refNum.isNotEmpty) ? refNum : null,
       description: task.description.trim(),
       taskType: task.taskType.trim(),
       scheduledStart: task.scheduledStart.toLocal(),
@@ -109,11 +127,15 @@ class TaskRepositoryMobile implements ITaskRepository {
       apartmentId: task.apartmentSupabaseId?.trim() ?? '',
       apartmentName: apt != null && apt.name.trim().isNotEmpty ? apt.name.trim() : null,
       apartmentAddress: apt != null && (apt.address?.trim().isEmpty ?? true) == false ? apt.address!.trim() : null,
+      customLocation: (task.customLocation?.trim().isEmpty ?? true) ? null : task.customLocation!.trim(),
+      customTitle: (task.customTitle?.trim().isEmpty ?? true) ? null : task.customTitle!.trim(),
+      clientName: clientName,
       keybox: apt != null && (apt.keybox?.trim().isEmpty ?? true) == false ? apt.keybox!.trim() : null,
       ownerNotes: apt != null && (apt.ownerNotes?.trim().isEmpty ?? true) == false ? apt.ownerNotes!.trim() : null,
       guestName: guestName,
       guestPhone: guestPhone,
       photoUrl: (task.photoUrl?.trim().isEmpty ?? true) ? null : task.photoUrl,
+      mediaUrls: const [], // Isar TaskLocal nemá media_urls – získá se při pull ze Supabase
       metadata: _parseMetadata(task.metadataJson),
       startedAt: task.startedAt,
       completedAt: task.completedAt,
@@ -138,6 +160,7 @@ class TaskRepositoryMobile implements ITaskRepository {
     DateTime? startedAt,
     DateTime? completedAt,
     Map<String, dynamic>? metadataOverlay,
+    List<String>? mediaUrls,
   }) async {
     final isar = IsarService.instance;
     final task = isar.taskLocals
@@ -146,6 +169,52 @@ class TaskRepositoryMobile implements ITaskRepository {
         .supabaseIdEqualTo(taskId)
         .findFirstSync();
     if (task == null) return;
+
+    // PROČ: Dokončení s fotkami vyžaduje síť (upload). Provedeme přímý Supabase update
+    // včetně media_urls, aby se nevyužila Isar sync fronta (nemá media_urls).
+    if (mediaUrls != null && mediaUrls.isNotEmpty) {
+      final updates = <String, dynamic>{
+        'status': status,
+        'media_urls': mediaUrls,
+      };
+      if (startedAt != null) updates['started_at'] = startedAt.toUtc().toIso8601String();
+      if (completedAt != null) updates['completed_at'] = completedAt.toUtc().toIso8601String();
+      if (metadataOverlay != null && metadataOverlay.isNotEmpty) {
+        final res = await SupabaseService.client
+            .from('tasks')
+            .select('metadata')
+            .eq('id', taskId)
+            .eq('tenant_id', tenantId)
+            .maybeSingle();
+        final existing = res != null && res is Map
+            ? (res['metadata'] is Map ? Map<String, dynamic>.from(res['metadata'] as Map) : <String, dynamic>{})
+            : <String, dynamic>{};
+        updates['metadata'] = {...existing, ...metadataOverlay};
+      }
+      await SupabaseService.client
+          .from('tasks')
+          .update(updates)
+          .eq('id', taskId)
+          .eq('tenant_id', tenantId);
+      // Aktualizace lokálního Isar záznamu – syncStatus=synced, aby sync znovu neposílal.
+      isar.writeTxnSync(() {
+        task.status = status.trim();
+        task.localUpdatedAt = DateTime.now().toUtc();
+        task.lastUpdated = DateTime.now().toUtc();
+        task.lastSyncedAt = DateTime.now().toUtc();
+        task.syncStatus = SyncStatus.synced;
+        if (startedAt != null) task.startedAt = startedAt.toUtc();
+        if (completedAt != null) task.completedAt = completedAt.toUtc();
+        if (metadataOverlay != null && metadataOverlay.isNotEmpty) {
+          final existing = _parseMetadata(task.metadataJson) ?? {};
+          task.metadataJson = jsonEncode({...existing, ...metadataOverlay});
+        }
+        _applyReservationStatusOnComplete(isar, tenantId, task, status);
+        isar.taskLocals.putSync(task);
+      });
+      return;
+    }
+
     isar.writeTxnSync(() {
       task.status = status.trim();
       task.localUpdatedAt = DateTime.now().toUtc();
@@ -159,9 +228,19 @@ class TaskRepositoryMobile implements ITaskRepository {
         final merged = Map<String, dynamic>.from(existing)..addAll(metadataOverlay);
         task.metadataJson = jsonEncode(merged);
       }
+      _applyReservationStatusOnComplete(isar, tenantId, task, status);
       isar.taskLocals.putSync(task);
+    });
+  }
 
-      // Byznysové pravidlo: Jakmile pracovník fyzicky dokončí Check-in úkol, automaticky posouváme
+  /// Sdílená logika: změna statusu rezervace při dokončení Check-in/Check-out.
+  static void _applyReservationStatusOnComplete(
+    Isar isar,
+    String tenantId,
+    dynamic task,
+    String status,
+  ) {
+    // Byznysové pravidlo: Jakmile pracovník fyzicky dokončí Check-in úkol, automaticky posouváme
       // celou rezervaci do stavu checked_in. Řešeno offline-first.
       final isCheckInComplete =
           status.trim().toLowerCase() == 'completed' &&
@@ -204,7 +283,6 @@ class TaskRepositoryMobile implements ITaskRepository {
           isar.reservationLocals.putSync(res);
         }
       }
-    });
   }
 }
 

@@ -54,6 +54,7 @@ class TenantServicesRepository {
     payload['default_price'] = model.defaultPrice;
     payload['required_role'] = model.requiredRole ?? 'any';
     payload['duration_minutes'] = model.durationMinutes;
+    payload['requires_photo'] = model.requiresPhoto;
     await SupabaseService.client.from('tenant_services').update(payload).eq('id', model.id);
   }
 

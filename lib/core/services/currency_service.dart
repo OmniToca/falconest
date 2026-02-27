@@ -1,5 +1,9 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/providers/tenant_currency_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
 /// Jeden záznam z tabulky [public.currencies] – kód, symbol, kurz vůči EUR, název.
@@ -151,6 +155,32 @@ class CurrencyService {
     });
   }
 }
+
+/// Sjednocený helper pro formátování částek v kontextu úkolů (Transfer, Check-in, Cash Collection).
+/// BYZNYS PRAVIDLO: Měna pro výběr hotovosti se primárně řídí nastavením celé Agentury (Tenanta).
+/// Profil uživatele je pouze fallback. Všechna UI zobrazující částky k vybrání od hosta musí volat tuto funkci.
+String formatTaskAmount(BuildContext context, WidgetRef ref, num amountEur) {
+  // Měna tenanta (agentury) má přednost.
+  final tenantCurrency = ref.watch(currentTenantCurrencyProvider).valueOrNull;
+  final preferredCurrency = ref.watch(authNotifierProvider).state.preferredCurrency;
+  // Fallback: Tenant -> Profil uživatele -> EUR.
+  final effectiveCurrency = (tenantCurrency?.isNotEmpty == true
+          ? tenantCurrency
+          : (preferredCurrency?.trim().isNotEmpty == true ? preferredCurrency!.trim().toUpperCase() : null)) ??
+      'EUR';
+
+  final currencies = ref.watch(currenciesProvider).valueOrNull ?? [];
+  if (currencies.isNotEmpty) {
+    return CurrencyService.formatPrice(amountEur.toDouble(), effectiveCurrency, currencies);
+  }
+  // Fallback při prázdném kurzovním lístku.
+  return NumberFormat.currency(
+    locale: Localizations.localeOf(context).toString(),
+    symbol: '€',
+    decimalDigits: 2,
+  ).format(amountEur);
+}
+
 
 /// Cache kurzů z DB. Invaliduj při změně v Nastavení (Kurzovní lístek).
 final currenciesProvider = FutureProvider<List<CurrencyRow>>((ref) async {
