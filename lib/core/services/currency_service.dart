@@ -173,12 +173,41 @@ String formatTaskAmount(BuildContext context, WidgetRef ref, num amountEur) {
   if (currencies.isNotEmpty) {
     return CurrencyService.formatPrice(amountEur.toDouble(), effectiveCurrency, currencies);
   }
-  // Fallback při prázdném kurzovním lístku.
+  // Fallback při prázdném kurzovním lístku – měna dle tenanta/profilu.
   return NumberFormat.currency(
     locale: Localizations.localeOf(context).toString(),
-    symbol: '€',
+    symbol: effectiveCurrency,
     decimalDigits: 2,
   ).format(amountEur);
+}
+
+/// Formátuje částku v měně tenanta pro modul Pokladna.
+/// Částka je již v cílové měně (balance, transakce) – bez přepočtu z EUR.
+String formatWalletAmount(BuildContext context, WidgetRef ref, double amount) {
+  final tenantCurrency = ref.watch(currentTenantCurrencyProvider).valueOrNull;
+  final preferredCurrency = ref.watch(authNotifierProvider).state.preferredCurrency;
+  final effectiveCurrency = (tenantCurrency?.isNotEmpty == true
+          ? tenantCurrency!.trim().toUpperCase()
+          : (preferredCurrency?.trim().isNotEmpty == true ? preferredCurrency!.trim().toUpperCase() : null)) ??
+      'EUR';
+
+  final currencies = ref.watch(currenciesProvider).valueOrNull ?? [];
+  if (currencies.isNotEmpty) {
+    return CurrencyService.formatAmountInTargetCurrency(amount, effectiveCurrency, currencies);
+  }
+  return '${amount.toStringAsFixed(2)} $effectiveCurrency';
+}
+
+/// Formátování data transakce – lokalizované dle locale uživatele.
+String formatTransactionDate(BuildContext context, DateTime date) {
+  final locale = Localizations.localeOf(context).toString();
+  return DateFormat.yMd(locale).add_Hm().format(date.toLocal());
+}
+
+/// Formátování data s časem – krátký formát (M/d HH:mm) lokalizovaně.
+String formatTransactionDateShort(BuildContext context, DateTime date) {
+  final locale = Localizations.localeOf(context).toString();
+  return DateFormat.Md(locale).add_Hm().format(date.toLocal());
 }
 
 

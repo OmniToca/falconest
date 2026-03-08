@@ -6,24 +6,40 @@
 
 | Tabulka | Sloupec | Typ dat | Může být NULL? |
 |---------|---------|---------|----------------|
-| zones | id | uuid | NO |
-| zones | tenant_id | uuid | NO (FK → tenants) |
-| zones | name | text | NO |
-| zones | created_at | timestamp with time zone | YES |
-| zones | deleted_at | timestamp with time zone | YES – Soft delete; NULL = aktivní |
-| clients | id | uuid | NO |
-| clients | tenant_id | uuid | NO (FK → tenants) |
-| clients | name | text | NO |
-| clients | email | text | YES |
-| clients | phone | text | YES |
-| clients | client_type | text | YES – např. 'owner', 'external', 'agency' |
-| clients | profile_id | uuid | YES (FK → profiles ON DELETE SET NULL) – propojení CRM klienta s přihlašovacím profilem pro Klientský portál majitelů |
-| clients | created_at | timestamp with time zone | YES (default now()) |
-| clients | deleted_at | timestamp with time zone | YES – Soft delete; NULL = aktivní |
+| agency_management_settlements | id | uuid | NO |
+| agency_management_settlements | profile_id | uuid | NO |
+| agency_management_settlements | tenant_id | uuid | NO |
+| agency_management_settlements | settlement_period | date | NO |
+| agency_management_settlements | role_type | text | NO |
+| agency_management_settlements | amount | numeric | NO |
+| agency_management_settlements | status | text | NO |
+| agency_management_settlements | approved_by | uuid | YES |
+| agency_management_settlements | approved_at | timestamp with time zone | YES |
+| agency_management_settlements | created_at | timestamp with time zone | NO |
+| agency_management_settlements | updated_at | timestamp with time zone | NO |
+| apartment_ical_sources | id | uuid | NO |
+| apartment_ical_sources | tenant_id | uuid | NO |
+| apartment_ical_sources | apartment_id | uuid | NO |
+| apartment_ical_sources | ical_url | text | NO |
+| apartment_ical_sources | source_label | text | NO |
+| apartment_ical_sources | last_synced_at | timestamp with time zone | YES |
+| apartment_ical_sources | created_at | timestamp with time zone | YES |
+| apartment_ical_sources | updated_at | timestamp with time zone | YES |
 | apartment_owners | id | uuid | NO |
-| apartment_owners | apartment_id | uuid | NO (FK → apartments ON DELETE CASCADE) |
-| apartment_owners | owner_id | uuid | NO (FK → profiles ON DELETE CASCADE) – pro PostgREST embed: profiles!apartment_owners_owner_id_fkey |
+| apartment_owners | apartment_id | uuid | NO |
+| apartment_owners | owner_id | uuid | NO |
 | apartment_owners | deleted_at | timestamp with time zone | YES – Soft delete; NULL = aktivní |
+| apartment_services | id | uuid | NO |
+| apartment_services | tenant_id | uuid | NO |
+| apartment_services | apartment_id | uuid | NO |
+| apartment_services | service_id | uuid | NO |
+| apartment_services | custom_price | numeric | YES |
+| apartment_services | custom_description | text | YES |
+| apartment_services | trigger_type | text | NO |
+| apartment_services | schedule_interval | text | YES |
+| apartment_services | is_mandatory | boolean | NO |
+| apartment_services | payer_type | text | NO |
+| apartment_services | requires_photo | boolean | YES |
 | apartments | id | uuid | NO |
 | apartments | tenant_id | uuid | NO |
 | apartments | name | text | NO |
@@ -34,9 +50,9 @@
 | apartments | check_out_time | text | YES |
 | apartments | standard_cleaning_duration | integer | YES |
 | apartments | owner_notes | text | YES |
-| apartments | zone_id | uuid | YES (FK → zones) – oblast, do které apartmán patří |
-| apartments | code | text | YES – interní kód pro importy a podporu (např. SUN-01). Lidsky čitelný identifikátor. |
 | apartments | deleted_at | timestamp with time zone | YES |
+| apartments | zone_id | uuid | YES |
+| apartments | code | text | YES |
 | app_super_admins | id | uuid | NO |
 | audit_logs | id | uuid | NO |
 | audit_logs | tenant_id | uuid | YES |
@@ -46,14 +62,70 @@
 | audit_logs | record_id | text | YES |
 | audit_logs | details | jsonb | YES |
 | audit_logs | created_at | timestamp with time zone | NO |
+| billing_snapshots | id | uuid | NO |
+| billing_snapshots | tenant_id | uuid | NO |
+| billing_snapshots | client_id | uuid | NO |
+| billing_snapshots | billing_period | date | NO |
+| billing_snapshots | snapshot_data | jsonb | NO |
+| billing_snapshots | locked_at | timestamp with time zone | NO |
+| billing_snapshots | locked_by | uuid | NO |
+| client_addresses | id | uuid | NO |
+| client_addresses | tenant_id | uuid | NO |
+| client_addresses | client_id | uuid | NO |
+| client_addresses | label | text | NO |
+| client_addresses | address | text | NO |
+| client_addresses | created_at | timestamp with time zone | YES |
+| client_addresses | updated_at | timestamp with time zone | YES |
+| client_addresses | deleted_at | timestamp with time zone | YES – Soft delete; NULL = aktivní |
+| clients | id | uuid | NO |
+| clients | tenant_id | uuid | NO |
+| clients | name | text | NO |
+| clients | email | text | YES |
+| clients | phone | text | YES |
+| clients | client_type | text | YES |
+| clients | created_at | timestamp with time zone | YES |
+| clients | deleted_at | timestamp with time zone | YES – Soft delete; NULL = aktivní |
+| clients | profile_id | uuid | YES |
+| clients | agency_id | uuid | YES |
+| cron_edge_config | key | text | NO |
+| cron_edge_config | value | text | NO |
 | currencies | code | text | NO |
 | currencies | symbol | text | NO |
 | currencies | rate | numeric | NO |
 | currencies | name | text | YES |
 | currencies | created_at | timestamp with time zone | YES |
+| employee_cash_transactions | id | uuid | NO |
+| employee_cash_transactions | tenant_id | uuid | NO |
+| employee_cash_transactions | wallet_id | uuid | NO |
+| employee_cash_transactions | task_id | uuid | YES |
+| employee_cash_transactions | amount | numeric | NO |
+| employee_cash_transactions | transaction_type | text | NO |
+| employee_cash_transactions | created_by | uuid | NO |
+| employee_cash_transactions | created_at | timestamp with time zone | YES |
+| employee_cash_transactions | note | text | YES |
+| employee_cash_transactions | receipt_image_url | text | YES |
+| employee_cash_transactions | expected_amount | numeric | YES |
+| employee_cash_transactions | apartment_id | uuid | YES |
+| employee_cash_transactions | client_id | uuid | YES |
+| employee_cash_wallets | id | uuid | NO |
+| employee_cash_wallets | tenant_id | uuid | NO |
+| employee_cash_wallets | profile_id | uuid | NO |
+| employee_cash_wallets | balance | numeric | NO |
+| employee_cash_wallets | updated_at | timestamp with time zone | YES |
+| hq_staff_contracts | id | uuid | NO |
+| hq_staff_contracts | profile_id | uuid | NO |
+| hq_staff_contracts | employment_type | text | NO |
+| hq_staff_contracts | position_label | text | YES |
+| hq_staff_contracts | fixed_salary_monthly | numeric | YES |
+| hq_staff_contracts | bonus_per_acquired_agency | numeric | YES |
+| hq_staff_contracts | commission_percent_managed | numeric | YES |
+| hq_staff_contracts | valid_from | date | NO |
+| hq_staff_contracts | valid_to | date | YES |
+| hq_staff_contracts | created_at | timestamp with time zone | NO |
+| hq_staff_contracts | updated_at | timestamp with time zone | NO |
 | invitations | id | uuid | NO |
 | invitations | email | text | NO |
-| invitations | tenant_id | uuid | NO |
+| invitations | tenant_id | uuid | YES – NULL = pozvánka pro HQ (Super-Admin / Account Manager) |
 | invitations | role | text | NO |
 | invitations | first_name | text | NO |
 | invitations | last_name | text | NO |
@@ -63,6 +135,16 @@
 | invitations | end_date | text | YES |
 | invitations | weekly_hours | integer | YES |
 | invitations | profile_id | uuid | YES |
+| invoices | id | uuid | NO |
+| invoices | tenant_id | uuid | NO |
+| invoices | stripe_invoice_id | text | YES |
+| invoices | amount_due | numeric | NO |
+| invoices | amount_paid | numeric | NO |
+| invoices | currency | text | NO |
+| invoices | status | text | NO |
+| invoices | invoice_pdf_url | text | YES |
+| invoices | created_at | timestamp with time zone | NO |
+| invoices | paid_at | timestamp with time zone | YES |
 | modules | id | uuid | NO |
 | modules | key | text | NO |
 | modules | name | text | NO |
@@ -71,8 +153,22 @@
 | modules | created_at | timestamp with time zone | YES |
 | modules | order_index | integer | YES |
 | modules | pricing_type | text | NO |
-| modules | show_in_menu | boolean | NO (default true) |
+| modules | show_in_menu | boolean | NO |
 | modules | parent_module_key | text | YES |
+| notification_preferences | profile_id | uuid | NO |
+| notification_preferences | tenant_id | uuid | NO |
+| notification_preferences | daily_summary_enabled | boolean | NO |
+| notification_preferences | upcoming_task_enabled | boolean | NO |
+| notification_preferences | new_task_assigned_enabled | boolean | NO |
+| notification_preferences | template_reminders_enabled | boolean | NO |
+| notifications | id | uuid | NO |
+| notifications | tenant_id | uuid | NO |
+| notifications | profile_id | uuid | NO |
+| notifications | title | text | NO |
+| notifications | message | text | NO |
+| notifications | type | text | YES |
+| notifications | is_read | boolean | NO |
+| notifications | created_at | timestamp with time zone | YES |
 | profiles | id | uuid | NO |
 | profiles | auth_id | uuid | YES |
 | profiles | email | text | YES |
@@ -86,13 +182,22 @@
 | profiles | weekly_hours | integer | YES |
 | profiles | start_date | date | YES |
 | profiles | end_date | date | YES |
-| profiles | zone_preferences | jsonb | YES (default '{}') – žebříček preferencí oblastí: {"zone_id": 1, ...}. 1 = nejraději |
 | profiles | language_code | text | YES |
 | profiles | preferred_currency | text | YES |
 | profiles | last_sign_in_at | timestamp with time zone | YES |
 | profiles | created_at | timestamp with time zone | YES |
 | profiles | updated_at | timestamp with time zone | YES |
 | profiles | deleted_at | timestamp with time zone | YES |
+| profiles | zone_preferences | jsonb | YES |
+| reservation_services | id | uuid | NO |
+| reservation_services | tenant_id | uuid | NO |
+| reservation_services | reservation_id | uuid | NO |
+| reservation_services | apartment_service_id | uuid | NO |
+| reservation_services | custom_note | text | YES |
+| reservation_services | charged_price | numeric | YES |
+| reservation_services | payer_type | text | YES |
+| reservation_services | requires_photo | boolean | YES |
+| reservation_services | flight_number | text | YES |
 | reservations | id | uuid | NO |
 | reservations | apartment_id | uuid | NO |
 | reservations | start_date | date | NO |
@@ -105,15 +210,16 @@
 | reservations | status | text | YES |
 | reservations | tenant_id | uuid | YES |
 | reservations | deleted_at | timestamp with time zone | YES |
-| reservations | guest_adults | integer | NO (default 0) |
-| reservations | guest_children | integer | NO (default 0) |
+| reservations | guest_adults | integer | NO |
+| reservations | guest_children | integer | NO |
 | reservations | arrival_time | timestamp with time zone | YES |
-| reservations | guest_phone | text | YES – telefon hosta (pro transfery a předání) |
-| reservations | reservation_source | text | YES (default 'Other', CHECK: 'Booking', 'Airbnb', 'Direct', 'Other') – zdroj rezervace |
-| reservations | departure_time | timestamp with time zone | YES – předpokládaný čas odjezdu (pro Task Automator: úklid, transfer na letiště) |
-| reservations | internal_note | text | YES – interní poznámka manažera. Not synced to mobile app, for admin dashboard only. |
-| reservations | agency_collects_payment | boolean | YES (default false) – FEATURE: false = platbu řeší majitel, true = agentura vybere od hosta na místě |
-| reservations | reference_number | text | YES – automaticky generované referenční číslo (např. RES-A8B3K9). Lidsky čitelný identifikátor pro podporu a importy. |
+| reservations | guest_phone | text | YES |
+| reservations | reservation_source | text | YES |
+| reservations | departure_time | timestamp with time zone | YES |
+| reservations | internal_note | text | YES |
+| reservations | agency_collects_payment | boolean | YES |
+| reservations | reference_number | text | YES |
+| reservations | external_uid | text | YES |
 | staff_absences | id | uuid | NO |
 | staff_absences | profile_id | uuid | YES |
 | staff_absences | start_date | text | NO |
@@ -121,141 +227,136 @@
 | staff_absences | reason | text | YES |
 | staff_absences | invitation_id | uuid | YES |
 | staff_absences | tenant_id | uuid | YES |
+| support_interventions | id | uuid | NO |
+| support_interventions | profile_id | uuid | NO |
+| support_interventions | tenant_id | uuid | NO |
+| support_interventions | started_at | timestamp with time zone | NO |
+| support_interventions | ended_at | timestamp with time zone | YES |
+| support_interventions | work_report | text | YES |
+| support_interventions | created_at | timestamp with time zone | NO |
+| support_interventions | updated_at | timestamp with time zone | NO |
+| task_categories | id | uuid | NO |
+| task_categories | code | text | NO |
+| task_categories | color_hex | text | NO |
+| task_categories | icon_name | text | YES |
+| task_categories | order_index | integer | YES |
+| task_categories | planning_priority | integer | NO |
+| task_commissions | id | uuid | NO |
+| task_commissions | tenant_id | uuid | NO |
+| task_commissions | task_id | uuid | NO |
+| task_commissions | client_id | uuid | YES |
+| task_commissions | amount | numeric | NO |
+| task_commissions | status | text | NO |
+| task_commissions | created_at | timestamp with time zone | NO |
+| task_commissions | updated_at | timestamp with time zone | NO |
+| task_commissions | profile_id | uuid | YES |
+| task_payouts | id | uuid | NO |
+| task_payouts | tenant_id | uuid | NO |
+| task_payouts | task_id | uuid | NO |
+| task_payouts | profile_id | uuid | NO |
+| task_payouts | amount | numeric | NO |
+| task_payouts | status | text | NO |
+| task_payouts | created_at | timestamp with time zone | NO |
+| task_payouts | updated_at | timestamp with time zone | NO |
 | tasks | id | uuid | NO |
 | tasks | tenant_id | uuid | NO |
-| tasks | apartment_id | uuid | YES (NULL = úkol na úrovni agentury nebo externí úkol bez bytu) |
-| tasks | client_id | uuid | YES (FK → clients ON DELETE SET NULL) – pro externí úkoly bez bytu (fakturace) |
-| tasks | custom_location | text | YES – adresa pro řidiče/personál u úkolů bez bytu |
-| tasks | custom_title | text | YES – název úkolu, např. "Transfer letiště", když nemáme název bytu |
+| tasks | apartment_id | uuid | YES |
 | tasks | assigned_user_id | uuid | YES |
 | tasks | scheduled_start | timestamp with time zone | NO |
 | tasks | status | text | NO |
 | tasks | photo_url | text | YES |
-| tasks | media_urls | text[] | YES (default '{}') – URL fotek v falconest_media/tasks/ (hlášení závad, check-in pasy, úklid) |
 | tasks | local_updated_at | timestamp with time zone | NO |
 | tasks | assigned_to | uuid | YES |
 | tasks | task_type | text | YES |
 | tasks | due_date | text | YES |
 | tasks | description | text | YES |
 | tasks | title | text | YES |
-| tasks | deleted_at | timestamp with time zone | YES |
-| tasks | reservation_id | uuid | YES (FK → reservations ON DELETE CASCADE) – vazba na rezervaci, pro mazání při změně termínu |
-| tasks | service_id | uuid | YES (FK → tenant_services ON DELETE SET NULL) – vazba na službu; pro scheduled úkoly a ochranný štít |
-| tasks | metadata | jsonb | NO (default '{}') – flexibilní data pro UI (částka k vybrání, poznámky z rezervace, číslo letu, trackování času) |
-| tasks | created_by | uuid | YES (FK → profiles) – profil tvůrce úkolu; NULL u systémově generovaných nebo starých záznamů |
-| tasks | invoiced_at | timestamp with time zone | YES (default NULL) – Soft-archivace pro fakturaci. NULL = aktivní úkol (zobrazuje se na Nástěnce/Plachtě), NOT NULL = vyfakturovaný (skrytý z aktivních pohledů) |
-| tasks | reference_number | text | YES – automaticky generované referenční číslo (např. TSK-X7M2P4). Lidsky čitelný identifikátor pro podporu a importy. |
+| tasks | deleted_at | timestamp with time zone | YES – Soft delete; NULL = aktivní |
+| tasks | reservation_id | uuid | YES |
+| tasks | service_id | uuid | YES |
+| tasks | metadata | jsonb | NO |
+| tasks | started_at | timestamp with time zone | YES |
+| tasks | completed_at | timestamp with time zone | YES |
+| tasks | created_by | uuid | YES |
+| tasks | media_urls | ARRAY | YES |
+| tasks | invoiced_at | timestamp with time zone | YES |
+| tasks | client_id | uuid | YES |
+| tasks | custom_location | text | YES |
+| tasks | custom_title | text | YES |
+| tasks | reference_number | text | YES |
+| tasks | assigned_user_ids | ARRAY | NO |
+| tasks | updated_at | timestamp with time zone | YES – Čas poslední změny na serveru (UTC). Pro Timestamp Merging při push pending updates z mobilu – detekce konfliktu a Smart Merge. |
+| tenant_message_templates | id | uuid | NO |
+| tenant_message_templates | tenant_id | uuid | NO |
+| tenant_message_templates | key | text | NO |
+| tenant_message_templates | name | text | NO |
+| tenant_message_templates | body | text | NO |
+| tenant_message_templates | channel | text | YES |
+| tenant_message_templates | language_code | text | YES |
+| tenant_message_templates | trigger_context | text | YES |
+| tenant_message_templates | order_index | integer | NO |
+| tenant_message_templates | created_at | timestamp with time zone | YES |
+| tenant_message_templates | deleted_at | timestamp with time zone | YES |
 | tenant_modules | id | uuid | NO |
 | tenant_modules | tenant_id | uuid | YES |
 | tenant_modules | module_id | uuid | YES |
 | tenant_modules | status | text | YES |
 | tenant_modules | valid_until | timestamp with time zone | YES |
 | tenant_modules | created_at | timestamp with time zone | YES |
-| tenant_modules | is_trial | boolean | NO (default false) |
+| tenant_modules | is_trial | boolean | NO |
 | tenant_modules | trial_ends_at | timestamp with time zone | YES |
 | tenant_modules | deleted_at | timestamp with time zone | YES – Soft delete; NULL = aktivní |
-| tenant_modules | stripe_subscription_id | text | YES – ID opakovaného předplatného ve Stripe pro tento modul |
-| tenant_modules | stripe_price_id | text | YES – ID cenového plánu ve Stripe (měsíční/roční) |
-| tenant_modules | cancel_at_period_end | boolean | NO (default false) – zrušeno, předplatné doběhne do valid_until |
+| tenant_modules | stripe_subscription_id | text | YES |
+| tenant_modules | stripe_price_id | text | YES |
+| tenant_modules | cancel_at_period_end | boolean | NO |
+| tenant_services | id | uuid | NO |
+| tenant_services | tenant_id | uuid | NO |
+| tenant_services | name | text | NO |
+| tenant_services | description | text | YES |
+| tenant_services | service_type | text | NO |
+| tenant_services | default_price | numeric | YES |
+| tenant_services | is_active | boolean | NO |
+| tenant_services | deleted_at | timestamp with time zone | YES |
+| tenant_services | order_index | integer | YES |
+| tenant_services | required_role | text | YES |
+| tenant_services | duration_minutes | integer | YES |
+| tenant_services | requires_photo | boolean | NO |
+| tenant_wallets | tenant_id | uuid | NO |
+| tenant_wallets | balance | integer | NO |
+| tenant_wallets | updated_at | timestamp with time zone | YES |
 | tenants | id | uuid | NO |
 | tenants | name | text | NO |
 | tenants | notes | text | YES |
 | tenants | is_active | boolean | YES |
 | tenants | trial_ends_at | date | YES |
-| tenants | paid_until | timestamp with time zone | YES – Zaplaceno do / Kill Switch; přístup blokován pokud today > paid_until |
 | tenants | system_announcement | text | YES |
-| tenants | discount_percentage | integer | NO (default 0, CHECK 0–100) |
+| tenants | billing_info | jsonb | YES |
+| tenants | price_per_apartment | numeric | YES |
+| tenants | currency | text | YES |
+| tenants | discount_percentage | integer | NO |
 | tenants | deleted_at | timestamp with time zone | YES – Soft delete; NULL = aktivní |
-| tenants | stripe_customer_id | text | YES – ID zákazníka ve Stripe pro fakturaci |
-| tenants | billing_email | text | YES – e-mail pro odesílání faktur (může být jiný než majitel) |
-| invoices | id | uuid | NO |
-| invoices | tenant_id | uuid | NO (FK → tenants) |
-| invoices | stripe_invoice_id | text | YES – ID faktury ve Stripe |
-| invoices | amount_due | numeric | NO – částka k úhradě |
-| invoices | amount_paid | numeric | NO – zaplacená částka |
-| invoices | currency | text | NO (default 'eur') |
-| invoices | status | text | NO – draft, open, paid, uncollectible, void |
-| invoices | invoice_pdf_url | text | YES – odkaz na stažení PDF (Stripe nebo náš systém) |
-| invoices | created_at | timestamp with time zone | NO |
-| invoices | paid_at | timestamp with time zone | YES – kdy byla faktura zaplacena |
-| tenant_wallets | tenant_id | uuid | NO (PK, FK → tenants) – jeden řádek na tenanta, předplacená peněženka kreditů. Záznamy vznikají automaticky pomocí triggeru AFTER INSERT na tabulce tenants. |
-| tenant_wallets | balance | integer | NO (default 0) – aktuální stav kreditů |
-| tenant_wallets | updated_at | timestamp with time zone | YES (default now()) |
-| wallet_transactions | id | uuid | NO |
-| wallet_transactions | tenant_id | uuid | NO (FK → tenants) – účetní kniha, append-only |
-| wallet_transactions | amount | integer | NO – kladné (dobití), záporné (útrata) |
-| wallet_transactions | transaction_type | text | NO – např. 'TOP_UP', 'USAGE_AUTO_TASKS' |
-| wallet_transactions | reference_id | text | YES – vazba na Stripe payment ID nebo log generování |
-| wallet_transactions | created_at | timestamp with time zone | YES (default now()) |
-| tenant_services | id | uuid | NO |
-| tenant_services | tenant_id | uuid | NO |
-| tenant_services | name | text | NO |
-| tenant_services | description | text | YES |
-| tenant_services | service_type | text | NO – code odpovídající task_categories (cleaning, transfer_in, check_in, …). Validace v aplikační vrstvě. |
-| tenant_services | default_price | numeric | YES |
-| tenant_services | is_active | boolean | NO (default true) |
-| tenant_services | deleted_at | timestamp with time zone | YES |
-| tenant_services | order_index | integer | YES (default 0) |
-| tenant_services | required_role | text | YES (default 'any') – požadovaná profese: any, cleaner, driver, maintenance, checkin_agent (pro Task Automator) |
-| tenant_services | duration_minutes | integer | YES (default 60) – časová náročnost / rezerva v minutách. U úklidu vata nad standardCleaningDuration, u transfer/extra fixní doba |
-| tenant_services | requires_photo | boolean | NO (default false) – vyžadovat fotodokumentaci při dokončení úkolu (stav apartmánu, pasy) |
-| apartment_services | id | uuid | NO |
-| apartment_services | tenant_id | uuid | NO |
-| apartment_services | apartment_id | uuid | NO |
-| apartment_services | service_id | uuid | NO (FK → tenant_services) |
-| apartment_services | custom_price | numeric | YES |
-| apartment_services | custom_description | text | YES |
-| apartment_services | trigger_type | text | NO. CHECK: povolené hodnoty pouze **'on_demand'**, **'before_checkin'**, **'after_checkout'**, **'both_ways'**, **'scheduled'**. Hodnota 'manual' je zrušena (migrace přepisuje na 'on_demand'). Spouštěč pro Task Automator. |
-| apartment_services | schedule_interval | text | YES. CHECK: povolené hodnoty **NULL** nebo **'1_week'**, **'2_weeks'**, **'1_month'**, **'2_months'**, **'3_months'**, **'6_months'**. Staré hodnoty (weekly, monthly, biweekly, biannually) jsou migrací přepsány na NULL. Pouze u trigger_type = 'scheduled' se interval používá pro pravidelnou údržbu. |
-| apartment_services | is_mandatory | boolean | NO (default false) – pokud true, nelze v rezervaci odškrtnout |
-| apartment_services | payer_type | text | NO (default 'guest', CHECK: 'owner', 'guest') – kdo platí službu (majitel / host) |
-| reservation_services | id | uuid | NO |
-| reservation_services | tenant_id | uuid | NO |
-| reservation_services | reservation_id | uuid | NO (FK → reservations) |
-| reservation_services | apartment_service_id | uuid | NO (FK → apartment_services) |
-| reservation_services | custom_note | text | YES |
-| reservation_services | charged_price | numeric | YES |
-| reservation_services | flight_number | text | YES – číslo letu pro transfery (např. FR1495). Pro sledování na FlightRadar24. |
-| reservation_services | payer_type | text | YES (CHECK: 'owner', 'guest') – kdo platí u této rezervace (override) |
-| task_categories [GLOBAL DICTIONARY] | id | uuid | NO |
-| task_categories | code | text | NO – systémový klíč, UNIQUE, např. 'cleaning', 'transfer_in' |
-| task_categories | color_hex | text | NO – HEX barva pozadí, např. '#FFF3E0' |
-| task_categories | icon_name | text | YES – název Material Icons ikony, např. 'directions_car', 'key' |
-| task_categories | order_index | integer | YES (default 0) – pořadí v legendě a dropdownu |
-| employee_cash_wallets | id | uuid | NO |
-| employee_cash_wallets | tenant_id | uuid | NO (FK → tenants) |
-| employee_cash_wallets | profile_id | uuid | NO (FK → profiles) |
-| employee_cash_wallets | balance | numeric | NO (default 0) – aktuální dlužná hotovost u zaměstnance |
-| employee_cash_wallets | updated_at | timestamp with time zone | YES (default now()) |
-| employee_cash_transactions | id | uuid | NO |
-| employee_cash_transactions | tenant_id | uuid | NO (FK → tenants) |
-| employee_cash_transactions | wallet_id | uuid | NO (FK → employee_cash_wallets) |
-| employee_cash_transactions | task_id | uuid | YES (FK → tasks) – vazba na úkol (Check-in, Transfer) |
-| employee_cash_transactions | amount | numeric | NO – kladné (výběr), záporné (odevzdání, firemní výdaj) |
-| employee_cash_transactions | transaction_type | text | NO – 'COLLECTED_FROM_GUEST', 'HANDED_TO_AGENCY', 'COMPANY_EXPENSE' |
-| employee_cash_transactions | note | text | YES – poznámka k firemnímu výdaji (např. „Materiál na úklid“) |
-| employee_cash_transactions | receipt_image_url | text | YES – URL fotky účtenky (Supabase Storage) |
-| employee_cash_transactions | created_by | uuid | NO (FK → profiles) |
-| employee_cash_transactions | created_at | timestamp with time zone | YES (default now()) |
-| notifications | id | uuid | NO |
-| notifications | tenant_id | uuid | NO (FK → tenants) |
-| notifications | profile_id | uuid | NO (FK → profiles) – komu je notifikace určena |
-| notifications | title | text | NO |
-| notifications | message | text | NO |
-| notifications | type | text | YES – např. 'alert', 'system', 'task' |
-| notifications | is_read | boolean | NO (default false) |
-| notifications | created_at | timestamp with time zone | YES (default now()) |
+| tenants | stripe_customer_id | text | YES |
+| tenants | billing_email | text | YES |
+| tenants | paid_until | timestamp with time zone | YES |
+| tenants | acquired_by | uuid | YES |
+| tenants | managed_by | uuid | YES |
 | user_devices | id | uuid | NO |
-| user_devices | tenant_id | uuid | NO (FK → tenants) |
-| user_devices | profile_id | uuid | NO (FK → profiles) – vazba na profil uživatele |
-| user_devices | fcm_token | text | NO (UNIQUE) – FCM token z Firebase SDK |
-| user_devices | device_type | text | NO (CHECK: 'ios', 'android', 'web') |
-| user_devices | last_active_at | timestamp with time zone | YES (default now()) |
-| notification_preferences | profile_id | uuid | NO (PK, FK → profiles) – jeden řádek na profil |
-| notification_preferences | tenant_id | uuid | NO (FK → tenants) |
-| notification_preferences | daily_summary_enabled | boolean | NO (default true) – ranní souhrn |
-| notification_preferences | upcoming_task_enabled | boolean | NO (default true) – upozornění před úkolem |
-| notification_preferences | new_task_assigned_enabled | boolean | NO (default true) – nový úkol přiřazen |
+| user_devices | tenant_id | uuid | NO |
+| user_devices | profile_id | uuid | NO |
+| user_devices | fcm_token | text | NO |
+| user_devices | device_type | text | NO |
+| user_devices | last_active_at | timestamp with time zone | YES |
+| wallet_transactions | id | uuid | NO |
+| wallet_transactions | tenant_id | uuid | NO |
+| wallet_transactions | amount | integer | NO |
+| wallet_transactions | transaction_type | text | NO |
+| wallet_transactions | reference_id | text | YES |
+| wallet_transactions | created_at | timestamp with time zone | YES |
+| zones | id | uuid | NO |
+| zones | tenant_id | uuid | NO |
+| zones | name | text | NO |
+| zones | created_at | timestamp with time zone | YES |
+| zones | deleted_at | timestamp with time zone | YES – Soft delete; NULL = aktivní |
 
 ---
 
@@ -267,6 +368,14 @@ Pro Realtime streamy a časté filtry na `tenant_id` / `apartment_id` jsou zása
 |---------|-------|------------|------|
 | tasks | idx_tasks_tenant_id | tenant_id | Admin Realtime stream – `inFilter('tenant_id', [tenantId])`. Zrychlení výběru úkolů tenanta. |
 | reservations | idx_reservations_apartment_id | apartment_id | Admin Realtime stream – `inFilter('apartment_id', apartmentIds)`. Zrychlení výběru rezervací dle bytů tenanta. |
+| billing_snapshots | idx_billing_snapshots_tenant_client_period | tenant_id, client_id, billing_period | UNIQUE – jeden snapshot na klienta a měsíc. |
+| billing_snapshots | idx_billing_snapshots_tenant_period | tenant_id, billing_period | Admin přehled uzamčených měsíců. |
+| task_payouts | idx_task_payouts_tenant_id | tenant_id | RLS a filtrování podle tenanta. |
+| task_payouts | idx_task_payouts_task_id | task_id | Výplaty k úkolu. |
+| task_payouts | idx_task_payouts_profile_id | profile_id | Výplaty pracovníka. |
+| task_commissions | idx_task_commissions_tenant_id | tenant_id | RLS a filtrování podle tenanta. |
+| task_commissions | idx_task_commissions_task_id | task_id | Provize k úkolu. |
+| task_commissions | idx_task_commissions_client_id | client_id | Provize partnerovi. |
 
 **SQL pro vytvoření (spustit v Supabase SQL Editoru):**
 
@@ -274,6 +383,12 @@ Pro Realtime streamy a časté filtry na `tenant_id` / `apartment_id` jsou zása
 CREATE INDEX IF NOT EXISTS idx_tasks_tenant_id ON public.tasks(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_reservations_apartment_id ON public.reservations(apartment_id);
 ```
+
+---
+
+### Tabulka tasks – Timestamp Merging (Smart Merge)
+
+Sloupec **tasks.updated_at** (timestamptz, nullable) se na serveru nastavuje triggerem při každém UPDATE. Mobilní aplikace při push pending updates (WorkerSyncService) před odesláním lokální změny stáhne aktuální řádek úkolu včetně `updated_at`. Pokud je `updated_at` ze serveru novější než lokální `last_synced_at`, došlo ke konfliktu (admin mezitím upravil úkol na webu). Aplikace pak aplikuje **Smart Merge**: status zůstává z mobilu (pracovník byl na místě), poznámky se sloučí (append), ostatní pole přebírají hodnoty ze serveru. Bez tohoto mechanismu by platilo „Last-write-wins“ a změny administrátora by mobil přepsal.
 
 ---
 
@@ -289,7 +404,7 @@ Tabulka **notifications** slouží pro zobrazení oznámení v Top Baru (zvoneč
 
 **user_devices** – FCM tokeny zařízení pro doručení push notifikací. Každé zařízení (iOS, Android, Web) má unikátní `fcm_token`. Sloupec `last_active_at` slouží pro čištění neaktivních tokenů.
 
-**notification_preferences** – Nastavení preferencí notifikací na uživatele (1:1 s profilem). Povoluje/vypíná: ranní souhrn (`daily_summary_enabled`), upozornění před úkolem (`upcoming_task_enabled`), notifikace při přiřazení nového úkolu (`new_task_assigned_enabled`).
+**notification_preferences** – Nastavení preferencí notifikací na uživatele (1:1 s profilem). Povoluje/vypíná: ranní souhrn (`daily_summary_enabled`), upozornění před úkolem (`upcoming_task_enabled`), notifikace při přiřazení nového úkolu (`new_task_assigned_enabled`), šablony připomínek (`template_reminders_enabled`).
 
 **RLS:** Uživatel čte a zapisuje pouze své tokeny a preference (`profile_id` = vlastní profil). Super Admin má plný přístup. Edge Functions a budoucí `firebase_messaging` v aplikaci budou tyto tabulky využívat pro targeting.
 
@@ -314,12 +429,59 @@ Modul **Finance** je hlavní modul (zdarma) obsahující **Zaměstnaneckou pokla
 - **note**, **receipt_image_url** – volitelné u firemních výdajů; poznámka a URL fotky účtenky.
 - **amount**: kladné = výběr (zvyšuje balance), záporné = odevzdání (snižuje balance).
 - **task_id** – volitelná vazba na úkol (Check-in, Transfer) pro audit.
+- **apartment_id** – volitelná vazba na apartmán u firemních výdajů (např. materiál do bytu); pro automatické stržení nákladů ve faktuře majitele.
 
 **RLS:** Oba tabulky mají RLS zapnuté; přístup pouze na řádky, kde tenant_id odpovídá tenant_id přihlášeného uživatele (profiles.auth_id = auth.uid()). Super Admin má plný přístup.
 
 **Registr modulů:**
 - **finance** – hlavní modul, zdarma (price_eur = 0), show_in_menu = true.
 - **finance_export** – placený sub-modul, parent_module_key = 'finance', show_in_menu = false, price_eur = 29, pricing_type = 'fixed'.
+
+---
+
+### Modul Vyúčtování a Provize (Settlements & Commissions) – task_payouts, task_commissions
+
+Prémiový modul **zcela oddělený** od Podkladů pro fakturaci (billing_snapshots). Řeší výdaje agentury: výplaty zaměstnancům a provize externím partnerům z jednotlivých úkolů.
+
+**task_payouts** – Výplaty pracovníkům:
+- **tenant_id** – agentura (multi-tenant izolace).
+- **task_id** – vazba na úkol (FK → tasks ON DELETE CASCADE).
+- **profile_id** – komu se platí (FK → profiles – zaměstnanec).
+- **amount** – částka výplaty v měně tenanta.
+- **status** – 'pending' (čeká), 'approved' (schváleno), 'paid' (vyplaceno).
+
+**task_commissions** – Provize partnerům:
+- **tenant_id** – agentura.
+- **task_id** – vazba na úkol.
+- **client_id** – externí agentura/partner v CRM (FK → clients), kterému platíme provizi (nullable).
+- **profile_id** – volitelná vazba na profil (nullable).
+- **amount** – částka provize.
+- **status** – stejné hodnoty jako task_payouts.
+
+**RLS:**
+- **task_payouts**: Admin vidí všechny výplaty v tenantu a může je spravovat. Pracovník vidí pouze své výplaty (`profile_id` = jeho profil). Super Admin má plný přístup.
+- **task_commissions**: Pouze Admin v rámci tenantu vidí a spravuje provize. Super Admin má plný přístup.
+
+---
+
+### Tabulka billing_snapshots – Zmražená vyúčtování (Snapshotting)
+
+Tabulka **billing_snapshots** ukládá při uzamčení měsíce přesná data vyúčtování (ceny, úkoly, výdaje) jako JSONB. Místo generování a ukládání fyzických PDF do cloudu si majitelé mohou v Klientské zóně kdykoliv vygenerovat PDF On-Demand z těchto dat.
+
+**Sloupce:**
+- **tenant_id** – agentura (multi-tenant izolace).
+- **client_id** – klient (majitel) – FK na clients; BillingGroup.groupKey ve fakturaci.
+- **billing_period** – první den měsíce (např. 2026-02-01).
+- **snapshot_data** – JSONB: items (úkoly s cenami), total_to_invoice, total_expenses, final_to_invoice, client_name, currency.
+- **locked_at** – kdy bylo vyúčtování uzamčeno.
+- **locked_by** – profil Admina, který uzamčení provedl (NOT NULL).
+
+**Unikátní index** `(tenant_id, client_id, billing_period)` – jeden snapshot na klienta a měsíc.
+
+**RLS:**
+- **SELECT (Admin/Worker):** Zaměstnanci agentury (role != property_owner) vidí snapshoty své agentury. Super Admin vidí vše.
+- **SELECT (Owner):** Majitel (property_owner) vidí POUZE snapshoty, kde `client_id IN (SELECT id FROM clients WHERE profile_id = jeho profil)`.
+- **INSERT:** Pouze Admin (role = 'admin') nebo Super Admin v rámci svého tenant_id.
 
 ---
 
@@ -337,6 +499,7 @@ Tabulka **task_categories** je **platformový globální číselník** typů úk
 - **color_hex** – barva pozadí karty v HEX formátu
 - **icon_name** – název Material Icons ikony
 - **order_index** – pořadí v legendě a dropdownu
+- **planning_priority** – priorita v plánování (integer, NOT NULL)
 
 **RLS politiky:**
 - **SELECT** – všichni autentizovaní uživatelé (s platným profilem v `public.profiles`) mohou číst.
@@ -348,9 +511,9 @@ Tabulka **task_categories** je **platformový globální číselník** typů úk
 
 ### Tabulka clients – CRM Klienti (Externí úkoly)
 
-Tabulka **clients** slouží pro zákazníky agentury – majitelé bytů (owner), externí klienti bez apartmánu (external) a agentury (agency). Umožňuje fakturaci externích úkolů (např. transfer pro cizího člověka bez rezervace) přes `tasks.client_id`.
+Tabulka **clients** slouží pro zákazníky agentury – majitelé bytů (owner), externí klienti bez apartmánu (external) a agentury (agency). Umožňuje fakturaci externích úkolů (např. transfer pro cizího člověka bez rezervace) přes `tasks.client_id`. Sloupec **profile_id** propojuje CRM klienta s přihlašovacím profilem (Klientský portál majitelů). Sloupec **agency_id** slouží pro vazbu na nadřazenou agenturu (FK → clients).
 
-**Sloupce:** `id`, `tenant_id` (FK → tenants), `name` (povinné), `email`, `phone`, `client_type` (owner/external/agency), `created_at`, `deleted_at`.
+**Sloupce:** `id`, `tenant_id` (FK → tenants), `name` (povinné), `email`, `phone`, `client_type` (owner/external/agency), `created_at`, `deleted_at`, `profile_id`, `agency_id`.
 
 **RLS:** Uživatel vidí a upravuje pouze klienty svého `tenant_id`. Super Admin má plný přístup.
 
@@ -358,7 +521,7 @@ Tabulka **clients** slouží pro zákazníky agentury – majitelé bytů (owner
 
 ### Soft delete (deleted_at)
 
-U tabulek **tasks**, **apartments**, **profiles**, **reservations**, **tenant_services**, **zones**, **apartment_owners**, **clients**, **tenants** a **tenant_modules** sloupec **deleted_at** (timestamptz, nullable) znamená „měkké smazání“: místo fyzického DELETE se volá UPDATE s `deleted_at = now()`. Záznamy s `deleted_at IS NOT NULL` aplikace při načítání vynechává (filtr `.is_('deleted_at', null)`). Audit záznam (SOFT_DELETE) se zapisuje do `audit_logs`.
+U tabulek **tasks**, **apartments**, **profiles**, **reservations**, **tenant_services**, **zones**, **apartment_owners**, **clients**, **client_addresses**, **tenants** a **tenant_modules** sloupec **deleted_at** (timestamptz, nullable) znamená „měkké smazání“: místo fyzického DELETE se volá UPDATE s `deleted_at = now()`. Záznamy s `deleted_at IS NOT NULL` aplikace při načítání vynechává (filtr `.is_('deleted_at', null)`). Audit záznam (SOFT_DELETE) se zapisuje do `audit_logs`.
 
 ---
 
@@ -395,7 +558,7 @@ Služby jsou definovány na třech úrovních: **Katalog agentury** → **Ceník
 |--------|---------|------|------------------|--------|
 | 1. Katalog | **tenant_services** | `default_price` – výchozí cena služby v rámci tenanta | `description` – co služba standardně obsahuje | – |
 | 2. Byt | **apartment_services** | `custom_price` – přepis ceny pro tento byt (NULL = použít výchozí z katalogu) | `custom_description` – přepis obsahu pro tento byt (NULL = použít z katalogu) | `payer_type` – výchozí plátce: 'owner' (majitel – faktura) nebo 'guest' (host – na místě) |
-| 3. Rezervace | **reservation_services** | `charged_price` – skutečně účtovaná cena za tuto službu u této rezervace (NULL = dopočítat z bytu/katalogu) | `custom_note` – **specifická poznámka klienta k této jedné službě** (např. „Potřebujeme dětskou sedačku“ u transferu, „Přivézt pivo místo vína“ u balíčku). **Poznámky ke službám nepatří do reservations**, pouze sem. | `payer_type` – kdo platí u tohoto pobytu (NULL = použít z apartment_services) |
+| 3. Rezervace | **reservation_services** | `charged_price` – skutečně účtovaná cena za tuto službu u této rezervace (NULL = dopočítat z bytu/katalogu) | `custom_note` – **specifická poznámka klienta k této jedné službě** (např. „Potřebujeme dětskou sedačku“ u transferu). | `payer_type` – kdo platí u tohoto pobytu (NULL = použít z apartment_services) |
 
 **Kaskádové přepisování (Override Pattern):**
 
@@ -403,6 +566,7 @@ Služby jsou definovány na třech úrovních: **Katalog agentury** → **Ceník
 - **Popis obsahu služby:** Aplikace bere v pořadí: `apartment_services.custom_description` → pokud NULL, pak `tenant_services.description`. Pole `reservation_services.custom_note` je **pouze poznámka klienta** k této konkrétní službě u pobytu, ne přepis oficiálního popisu.
 - **Plátce služby (kdo platí):** Na úrovni bytu se nastaví výchozí `apartment_services.payer_type` (majitel vs. host). U konkrétní rezervace lze přepsat v `reservation_services.payer_type`; pokud je NULL, použije se hodnota z bytu.
 - **Číslo letu (transfery):** Nativní sloupec `reservation_services.flight_number` – např. FR1495 pro sledování na FlightRadar24. Dříve se ukládalo do `custom_note` s prefixem `[FLIGHT:XXX]`; nyní samostatný sloupec.
+- **reservation_services.requires_photo** – volitelný přepis požadavku na fotodokumentaci u této služby u této rezervace.
 
 **Poznámka k rezervacím:** Textové poznámky ke konkrétním službám (co klient chce u transferu, u úklidu atd.) se ukládají výhradně do **reservation_services.custom_note**. Do tabulky **reservations** se nepřidávají žádná další textová pole pro služby; rozšíření rezervace jsou sloupce **guest_adults**, **guest_children** (počty hostů) a **arrival_time** (předpokládaný čas příjezdu).
 

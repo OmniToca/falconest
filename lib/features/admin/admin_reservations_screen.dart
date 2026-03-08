@@ -2,6 +2,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
 
 import 'package:falconest/core/audit/enterprise_audit_payload.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
@@ -111,8 +112,9 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
   @override
   void initState() {
     super.initState();
+    // Plachta výchozí pohled: vždy 1. den aktuálního měsíce (měsíční zobrazení).
     final now = DateTime.now();
-    _timelineVisibleStartDate = DateTime(now.year, now.month, now.day).subtract(const Duration(days: 7));
+    _timelineVisibleStartDate = DateTime(now.year, now.month, 1);
   }
 
   @override
@@ -172,40 +174,29 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
                 Expanded(
                   child: TabBarView(
                     children: [
-                      SingleChildScrollView(
+                      // Plachta vyplní dostupné místo (Expanded); vertikální scroll je uvnitř ReservationTimeline.
+                      Padding(
                         padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Text(
-                              'admin.reservations_timeline_title'.tr(),
-                              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                            ),
-                            const SizedBox(height: 12),
-                            ReservationTimeline(
-                              visibleStartDate: _timelineVisibleStartDate,
-                              onPrevious: () => setState(() {
-                                _timelineVisibleStartDate = _timelineVisibleStartDate.subtract(const Duration(days: 7));
-                              }),
-                              onToday: () {
-                                final now = DateTime.now();
-                                setState(() {
-                                  _timelineVisibleStartDate = DateTime(now.year, now.month, now.day).subtract(const Duration(days: 7));
-                                });
-                              },
-                              onNext: () => setState(() {
-                                _timelineVisibleStartDate = _timelineVisibleStartDate.add(const Duration(days: 7));
-                              }),
-                              onReservationTap: (r) => _showEditDialog(context, ref, r),
-                              onEmptyCellTap: (apartmentId, date) {
-                                final d = date;
-                                final checkInStr = '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}.${d.year}';
-                                _showAddDialog(context, ref, initialApartmentId: apartmentId, initialCheckIn: checkInStr);
-                              },
-                            ),
-                          ],
+                        child: ReservationTimeline(
+                          visibleStartDate: _timelineVisibleStartDate,
+                          onPrevious: () => setState(() {
+                            _timelineVisibleStartDate = DateTime(_timelineVisibleStartDate.year, _timelineVisibleStartDate.month - 1, 1);
+                          }),
+                          onToday: () {
+                            final now = DateTime.now();
+                            setState(() {
+                              _timelineVisibleStartDate = DateTime(now.year, now.month, 1);
+                            });
+                          },
+                          onNext: () => setState(() {
+                            _timelineVisibleStartDate = DateTime(_timelineVisibleStartDate.year, _timelineVisibleStartDate.month + 1, 1);
+                          }),
+                          onReservationTap: (r) => _showEditDialog(context, ref, r),
+                          onEmptyCellTap: (apartmentId, date) {
+                            final d = date;
+                            final checkInStr = '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}.${d.year}';
+                            _showAddDialog(context, ref, initialApartmentId: apartmentId, initialCheckIn: checkInStr);
+                          },
                         ),
                       ),
                       filtered.isEmpty
@@ -448,7 +439,9 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
   }
 
   /// Otevře FilePicker, načte XLSX a předá do processImport.
+  /// Během zpracování zobrazí celoobrazovkový loading; po dokončení výsledek v AlertDialogu (ne SnackBar).
   Future<void> _importCsv(BuildContext context, WidgetRef ref) async {
+    var loadingShown = false;
     try {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
@@ -479,31 +472,61 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
         }
         return;
       }
-      final apartments = await ref.read(apartmentsProvider.future);
+      final apartments = await ref.read(apartmentsFullListProvider.future);
       final codeToApartmentId = <String, String>{};
       for (final a in apartments) {
         if (a.code != null && a.code!.trim().isNotEmpty) {
           codeToApartmentId[a.code!.trim()] = a.id;
         }
       }
+
+      // Celá obrazovka: indikátor + text, zablokované pozadí – uživatel vidí, že se něco děje.
+      if (context.mounted) {
+        showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          barrierColor: Colors.black54,
+          builder: (ctx) => PopScope(
+            canPop: false,
+            child: Center(
+              child: Card(
+                margin: const EdgeInsets.symmetric(horizontal: 48),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CircularProgressIndicator(),
+                      const SizedBox(height: 20),
+                      Text(
+                        'admin.import_processing_message'.tr(),
+                        textAlign: TextAlign.center,
+                        style: Theme.of(ctx).textTheme.bodyLarge,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        loadingShown = true;
+      }
+
       final importResult = await ReservationImportService.processImport(
         bytes,
         tenantId,
         codeToApartmentId,
       );
+
       if (context.mounted) {
+        if (loadingShown) Navigator.of(context, rootNavigator: true).pop();
         ref.invalidate(adminReservationsProvider);
-        final msg = 'admin.import_report'.tr(namedArgs: {
-          'success': '${importResult.successCount}',
-          'warnings': '${importResult.warningCount}',
-          'errors': '${importResult.errorCount}',
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(msg), duration: const Duration(seconds: 4)),
-        );
+        _showImportResultDialog(context, importResult);
       }
     } on ArgumentError catch (e) {
       if (context.mounted) {
+        if (loadingShown) Navigator.of(context, rootNavigator: true).pop();
         final key = e.message?.toString() ?? 'admin.import_error';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(key.startsWith('admin.') ? key.tr() : key)),
@@ -511,11 +534,109 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
       }
     } catch (e) {
       if (context.mounted) {
+        if (loadingShown) Navigator.of(context, rootNavigator: true).pop();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('admin.import_error'.tr(namedArgs: {'error': e.toString()}))),
         );
       }
     }
+  }
+
+  /// Velký výsledkový dialog importu – úspěšně / služby s chybou / zcela selhalo (zelená / oranžová / červená).
+  void _showImportResultDialog(BuildContext context, ReservationImportResult result) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('admin.import_dialog_title'.tr()),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _ImportResultRow(
+                label: 'admin.import_dialog_success'.tr(),
+                count: result.successCount,
+                color: Colors.green.shade700,
+                icon: Icons.check_circle_outline,
+              ),
+              const SizedBox(height: 12),
+              _ImportResultRow(
+                label: 'admin.import_dialog_services_error'.tr(),
+                count: result.warningCount,
+                color: Colors.orange.shade700,
+                icon: Icons.warning_amber_outlined,
+              ),
+              const SizedBox(height: 12),
+              _ImportResultRow(
+                label: 'admin.import_dialog_failed_rows'.tr(),
+                count: result.errorCount,
+                color: Colors.red.shade700,
+                icon: Icons.error_outline,
+              ),
+              if (result.errorCount > 0) ...[
+                const SizedBox(height: 16),
+                Text(
+                  'admin.import_dialog_some_rows_failed'.tr(),
+                  style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                        color: Colors.grey.shade700,
+                        fontStyle: FontStyle.italic,
+                      ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text('admin.import_dialog_close'.tr()),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Jeden řádek výsledku importu – ikona, tučný popis, počet v dané barvě.
+class _ImportResultRow extends StatelessWidget {
+  const _ImportResultRow({
+    required this.label,
+    required this.count,
+    required this.color,
+    required this.icon,
+  });
+
+  final String label;
+  final int count;
+  final Color color;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, color: color, size: 24),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: color,
+              fontSize: 15,
+            ),
+          ),
+        ),
+        Text(
+          '$count',
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: color,
+            fontSize: 16,
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -611,9 +732,9 @@ class _TopActionBar extends StatelessWidget {
 }
 
 /// Rezervační plachta (Gantt chart) – souvislé pruhy rezervací v mřížce dnů × apartmány.
-/// [visibleStartDate] – první zobrazený den; [onPrevious]/[onToday]/[onNext] – navigace v čase.
+/// [visibleStartDate] – 1. den zobrazeného měsíce; šipky posunují o celý měsíc, hlavička zobrazuje „Měsíc rok“.
 /// [onEmptyCellTap] – tap na prázdnou buňku → nová rezervace s předvyplněním bytu a data.
-class ReservationTimeline extends ConsumerWidget {
+class ReservationTimeline extends ConsumerStatefulWidget {
   const ReservationTimeline({
     super.key,
     required this.visibleStartDate,
@@ -635,27 +756,44 @@ class ReservationTimeline extends ConsumerWidget {
   static const double rowHeight = 80.0;
   static const double leftColumnWidth = 120.0;
 
-  static const int _totalDays = 38;
-  static const double _timelineHeight = 480.0;
+  @override
+  ConsumerState<ReservationTimeline> createState() => _ReservationTimelineState();
+}
+
+class _ReservationTimelineState extends ConsumerState<ReservationTimeline> {
+  /// Controller pro horizontální posun časové osy; vynucujeme viditelný Scrollbar kvůli UX na webu (uživatelé bez trackpadu).
+  late final ScrollController _horizontalScrollController;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  void initState() {
+    super.initState();
+    _horizontalScrollController = ScrollController();
+  }
+
+  @override
+  void dispose() {
+    _horizontalScrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final reservationsAsync = ref.watch(adminReservationsProvider);
-    final apartmentsAsync = ref.watch(apartmentsProvider);
+    final apartmentsAsync = ref.watch(apartmentsFullListProvider);
 
     if (reservationsAsync.isLoading || apartmentsAsync.isLoading) {
-      return SizedBox(
-        height: _timelineHeight,
-        child: const Center(child: CircularProgressIndicator()),
-      );
+      return const Center(child: CircularProgressIndicator());
     }
 
     final reservations = reservationsAsync.valueOrNull ?? [];
     final apartments = apartmentsAsync.valueOrNull ?? [];
 
-    final startDate = DateTime(visibleStartDate.year, visibleStartDate.month, visibleStartDate.day);
+    // Měsíční zobrazení: vždy 1. den měsíce a počet dní daného měsíce (28–31).
+    final startDate = DateTime(widget.visibleStartDate.year, widget.visibleStartDate.month, 1);
+    final lastDayOfMonth = DateTime(widget.visibleStartDate.year, widget.visibleStartDate.month + 1, 0);
+    final totalDays = lastDayOfMonth.day;
     final days = List<DateTime>.generate(
-      _totalDays,
+      totalDays,
       (i) => startDate.add(Duration(days: i)),
     );
     final now = DateTime.now();
@@ -677,108 +815,124 @@ class ReservationTimeline extends ConsumerWidget {
       return true;
     }
 
-    final totalWidth = days.length * dayWidth;
-    final gridHeight = apartments.length * rowHeight;
+    final totalWidth = days.length * ReservationTimeline.dayWidth;
+    final gridHeight = apartments.length * ReservationTimeline.rowHeight;
     final apartmentIndexById = {for (var i = 0; i < apartments.length; i++) apartments[i].id: i};
     final locale = context.locale.toString();
-    final dateFormat = DateFormat('d.M.', locale);
-    final endDate = startDate.add(Duration(days: days.length - 1));
+    // Hlavička: název měsíce a rok (např. „Duben 2026“), lokalizovaně.
+    final monthYearFormat = DateFormat.yMMMM(locale);
+    final monthYearLabel = monthYearFormat.format(startDate);
 
-    return SizedBox(
-      height: _timelineHeight,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Horní ovládací lišta – přesný layout jako Plánovací kalendář
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.chevron_left),
-                  onPressed: onPrevious,
-                  tooltip: 'admin.reservations_timeline_prev'.tr(),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  '${dateFormat.format(startDate)} – ${dateFormat.format(endDate)}',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Horní ovládací lišta – navigace po měsících, název měsíce + rok, legenda.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.chevron_left),
+                    onPressed: widget.onPrevious,
+                    tooltip: 'admin.reservations_timeline_prev'.tr(),
                   ),
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  icon: const Icon(Icons.chevron_right),
-                  onPressed: onNext,
-                  tooltip: 'admin.reservations_timeline_next'.tr(),
-                ),
-                const SizedBox(width: 24),
-                OutlinedButton(
-                  onPressed: onToday,
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  const SizedBox(width: 8),
+                  Text(
+                    monthYearLabel,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
                   ),
-                  child: Text('admin.reservations_timeline_today'.tr()),
-                ),
-                const SizedBox(width: 24),
-                Expanded(
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.chevron_right),
+                    onPressed: widget.onNext,
+                    tooltip: 'admin.reservations_timeline_next'.tr(),
+                  ),
+                  const SizedBox(width: 24),
+                  OutlinedButton(
+                      onPressed: widget.onToday,
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    child: Text('admin.reservations_timeline_today'.tr()),
+                  ),
+                ],
+              ),
+              const SizedBox(width: 24),
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       _ReservationLegendPill(status: 'new', bg: Colors.blue.shade100, text: Colors.blue.shade900),
+                      const SizedBox(width: 8),
                       _ReservationLegendPill(status: 'confirmed', bg: Colors.green.shade100, text: Colors.green.shade900),
+                      const SizedBox(width: 8),
                       _ReservationLegendPill(status: 'checked_in', bg: Colors.orange.shade100, text: Colors.orange.shade900),
+                      const SizedBox(width: 8),
                       _ReservationLegendPill(status: 'checked_out', bg: Colors.grey.shade200, text: Colors.grey.shade800),
+                      const SizedBox(width: 8),
                       _ReservationLegendPill(status: 'cancelled', bg: Colors.red.shade100, text: Colors.red.shade900),
                     ],
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-          // Kontejner „papír na stole“ – bílý box se stínem a zaoblenými rohy (konzistence s Plánovacím kalendářem)
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.06),
-                      blurRadius: 8,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
+        ),
+        // Kontejner „papír na stole“ – bílý box; uvnitř vertikální scroll, aby levý sloupec i mřížka rolovály společně.
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.06),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              clipBehavior: Clip.antiAlias,
+                  child: SingleChildScrollView(
+                scrollDirection: Axis.vertical,
+                child: SizedBox(
+                  height: ReservationTimeline.rowHeight + gridHeight,
+                  child: _ReservationTimelineGrid(
+                    reservations: reservations,
+                    apartments: apartments,
+                    days: days,
+                    startDate: startDate,
+                    today: today,
+                    dayWidth: ReservationTimeline.dayWidth,
+                    rowHeight: ReservationTimeline.rowHeight,
+                    leftColumnWidth: ReservationTimeline.leftColumnWidth,
+                    totalWidth: totalWidth,
+                    gridHeight: gridHeight,
+                    apartmentIndexById: apartmentIndexById,
+                    isCellEmpty: isCellEmpty,
+                    onReservationTap: widget.onReservationTap,
+                    onEmptyCellTap: widget.onEmptyCellTap,
+                    horizontalScrollController: _horizontalScrollController,
+                  ),
                 ),
-                clipBehavior: Clip.antiAlias,
-                child: _ReservationTimelineGrid(
-              reservations: reservations,
-              apartments: apartments,
-              days: days,
-              startDate: startDate,
-              today: today,
-              dayWidth: dayWidth,
-              rowHeight: rowHeight,
-              leftColumnWidth: leftColumnWidth,
-              totalWidth: totalWidth,
-              gridHeight: gridHeight,
-              apartmentIndexById: apartmentIndexById,
-              isCellEmpty: isCellEmpty,
-              onReservationTap: onReservationTap,
-              onEmptyCellTap: onEmptyCellTap,
-            ),
               ),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -832,6 +986,7 @@ class _ReservationTimelineGrid extends StatelessWidget {
     required this.isCellEmpty,
     required this.onReservationTap,
     required this.onEmptyCellTap,
+    required this.horizontalScrollController,
   });
 
   final List<ReservationRow> reservations;
@@ -848,6 +1003,7 @@ class _ReservationTimelineGrid extends StatelessWidget {
   final bool Function(int rowIndex, int colIndex) isCellEmpty;
   final ValueChanged<ReservationRow>? onReservationTap;
   final void Function(String apartmentId, DateTime date)? onEmptyCellTap;
+  final ScrollController horizontalScrollController;
 
   static const List<String> _dayKeys = [
     'planning_calendar.mon', 'planning_calendar.tue', 'planning_calendar.wed',
@@ -868,16 +1024,22 @@ class _ReservationTimelineGrid extends StatelessWidget {
           leftColumnWidth: leftColumnWidth,
         ),
         Expanded(
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SizedBox(
-              width: totalWidth,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Hlavička dnů s dolní hranicí (oddělení od mřížky)
-                  Container(
+          // Horizontální posuvník vždy viditelný kvůli UX na webu – uživatelé s myší (bez trackpadu) musí vědět, že lze rolovat dny.
+          child: Scrollbar(
+            controller: horizontalScrollController,
+            thumbVisibility: true,
+            trackVisibility: true,
+            child: SingleChildScrollView(
+              controller: horizontalScrollController,
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: totalWidth,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Hlavička dnů s dolní hranicí (oddělení od mřížky)
+                    Container(
                     decoration: BoxDecoration(
                       border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
                     ),
@@ -933,6 +1095,7 @@ class _ReservationTimelineGrid extends StatelessWidget {
                 ],
               ),
             ),
+          ),
           ),
         ),
       ],
@@ -1105,13 +1268,14 @@ class _ReservationTimelineBlock extends StatelessWidget {
     final checkInDt = parseReservationCheckIn(reservation.checkIn);
     final checkOutDt = parseReservationCheckOut(reservation.checkOut);
     if (checkInDt == null || checkOutDt == null) return const SizedBox.shrink();
-    final checkInDate = DateTime(checkInDt.year, checkInDt.month, checkInDt.day);
-    final checkOutDate = DateTime(checkOutDt.year, checkOutDt.month, checkOutDt.day);
     final startDateOnly = DateTime(startDate.year, startDate.month, startDate.day);
-    final daysFromStart = checkInDate.difference(startDateOnly).inDays;
-    final left = daysFromStart < 0 ? 0.0 : daysFromStart * dayWidth;
-    final nights = checkOutDate.difference(checkInDate).inDays;
-    final width = nights * dayWidth;
+    // Výpočet v jednotkách dní (zlomky) – podpora same-day turnover (check-out 10:00, check-in 14:00).
+    final exactStartDays = checkInDt.difference(startDateOnly).inMinutes / (24 * 60.0);
+    final exactEndDays = checkOutDt.difference(startDateOnly).inMinutes / (24 * 60.0);
+    final rawLeft = exactStartDays * dayWidth;
+    final left = rawLeft < 0 ? 0.0 : rawLeft;
+    final rawWidth = (exactEndDays - exactStartDays) * dayWidth;
+    final width = rawLeft < 0 ? (rawWidth + rawLeft) : rawWidth;
     if (width <= 0) return const SizedBox.shrink();
     final aptIndex = apartmentIndexById[reservation.apartmentId] ?? 0;
     final top = aptIndex * rowHeight;
@@ -1649,7 +1813,11 @@ class _KanbanCardContent extends StatelessWidget {
               ],
             ),
           ),
-          if (showDelete) ...[
+          // Konzistence s Úkoly: u Odhlášeno zámeček místo koše (nelze mazat historické záznamy).
+          if (reservation.status == 'checked_out') ...[
+            const SizedBox(width: 4),
+            Icon(Icons.lock, size: 16, color: Colors.grey),
+          ] else if (showDelete) ...[
             const SizedBox(width: 4),
             IconButton(
               icon: Icon(Icons.delete_outline, size: 20, color: Colors.red.shade300),
@@ -1785,16 +1953,19 @@ class _ReservationCard extends StatelessWidget {
                 materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 visualDensity: VisualDensity.compact,
               ),
-              IconButton(
-                icon: const Icon(Icons.delete, size: 22),
-                color: Colors.red,
-                tooltip: 'admin.reservations_delete_reservation'.tr(),
-                onPressed: () => onDelete(reservation),
-                style: IconButton.styleFrom(
-                  minimumSize: const Size(40, 40),
-                  padding: EdgeInsets.zero,
-                ),
-              ),
+              // Konzistence s Úkoly: u Odhlášeno zámeček místo koše.
+              reservation.status == 'checked_out'
+                  ? Icon(Icons.lock, size: 16, color: Colors.grey)
+                  : IconButton(
+                      icon: const Icon(Icons.delete, size: 22),
+                      color: Colors.red,
+                      tooltip: 'admin.reservations_delete_reservation'.tr(),
+                      onPressed: () => onDelete(reservation),
+                      style: IconButton.styleFrom(
+                        minimumSize: const Size(40, 40),
+                        padding: EdgeInsets.zero,
+                      ),
+                    ),
             ],
           ),
     );

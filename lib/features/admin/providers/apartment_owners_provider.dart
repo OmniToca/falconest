@@ -36,7 +36,7 @@ class ApartmentOwnerRow {
 /// BUGFIX: Explicitní hint !apartment_owners_owner_id_fkey pro PostgREST –
 /// zajistí správný JOIN při více FK vazbách a po doplnění migrace 20260223.
 final apartmentOwnersForApartmentProvider =
-    FutureProvider.family<List<ApartmentOwnerRow>, String>((ref, apartmentId) async {
+    FutureProvider.autoDispose.family<List<ApartmentOwnerRow>, String>((ref, apartmentId) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];
 
@@ -117,8 +117,10 @@ final ownerApartmentCountsProvider = FutureProvider<Map<String, int>>((ref) asyn
 ///
 /// Lazy-loaded dotaz – načte se až při otevření tabu Apartmány v detailu klienta.
 /// SELECT apartments s inner join apartment_owners WHERE owner_id = profileId.
+/// Filtrujeme jen aktivní propojení (apartment_owners.deleted_at IS NULL), aby se
+/// po odebrání majitele apartmán v záložce Apartmány nezobrazoval.
 final apartmentsForProfileProvider =
-    FutureProvider.family<List<ApartmentRow>, String>((ref, profileId) async {
+    FutureProvider.autoDispose.family<List<ApartmentRow>, String>((ref, profileId) async {
   if (profileId.trim().isEmpty) return [];
 
   final res = await SupabaseService.client
@@ -129,6 +131,7 @@ final apartmentsForProfileProvider =
         'apartment_owners!inner(owner_id)',
       )
       .eq('apartment_owners.owner_id', profileId)
+      .isFilter('apartment_owners.deleted_at', null)
       .isFilter('deleted_at', null)
       .order('name');
 
@@ -225,6 +228,37 @@ class PropertyOwnerOption {
 class ApartmentOwnersRepository {
   ApartmentOwnersRepository._();
 
+  /// Zajistí propojení majitel–byt: pokud existuje soft-deleted záznam, obnoví ho,
+  /// jinak vloží nový řádek. Tím se vyhneme chybě duplicate key při znovupřidání majitele.
+  static Future<void> _ensureOwnerLinked({
+    required String apartmentId,
+    required String ownerId,
+  }) async {
+    final existing = await SupabaseService.client
+        .from('apartment_owners')
+        .select('id, deleted_at')
+        .eq('apartment_id', apartmentId)
+        .eq('owner_id', ownerId)
+        .maybeSingle();
+
+    if (existing != null) {
+      final id = existing['id']?.toString();
+      final deletedAt = existing['deleted_at'];
+      if (id != null && id.isNotEmpty && deletedAt != null) {
+        await SupabaseService.client
+            .from('apartment_owners')
+            .update({'deleted_at': null})
+            .eq('id', id);
+      }
+      return;
+    }
+
+    await SupabaseService.client.from('apartment_owners').insert({
+      'apartment_id': apartmentId,
+      'owner_id': ownerId,
+    });
+  }
+
   /// Přiřadí CRM klienta (majitele) k apartmánu. Pokud klient nemá profile_id,
   /// automaticky vytvoří ghost profil, pozvánku a uloží profile_id do clients.
   ///
@@ -282,7 +316,7 @@ class ApartmentOwnersRepository {
         .single();
     final newProfileId = (profileRes as Map)['id']?.toString();
     if (newProfileId == null || newProfileId.isEmpty) {
-      throw StateError('Profil majitele nebyl vytvořen.');
+      throw StateError('admin.owners_error_profile_not_created');
     }
 
     final invPayload = <String, dynamic>{
@@ -308,24 +342,25 @@ class ApartmentOwnersRepository {
         : null;
   }
 
-  await SupabaseService.client.from('apartment_owners').insert({
-    'apartment_id': apartmentId,
-    'owner_id': targetProfileId,
-  });
+  await _ensureOwnerLinked(
+    apartmentId: apartmentId,
+    ownerId: targetProfileId,
+  );
 
   return inviteLink;
 }
 
   /// Přidá propojení majitel–byt. Volá admin; RLS kontroluje tenant_id.
+  /// Pokud existuje soft-deleted záznam stejné dvojice, obnoví ho místo nového INSERT.
   static Future<void> addOwner({
     required String apartmentId,
     required String ownerId,
     required String tenantId,
   }) async {
-    await SupabaseService.client.from('apartment_owners').insert({
-      'apartment_id': apartmentId,
-      'owner_id': ownerId,
-    });
+    await _ensureOwnerLinked(
+      apartmentId: apartmentId,
+      ownerId: ownerId,
+    );
   }
 
   /// Odebere propojení – soft delete (nastavení deleted_at).

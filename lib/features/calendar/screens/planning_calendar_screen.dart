@@ -163,12 +163,12 @@ class _PlanningCalendarScreenState extends ConsumerState<PlanningCalendarScreen>
               ],
             ),
           ),
-          // Řádek 2: navigace týdne, tlačítko Dnes, legenda, dropdown
+          // Řádek 2: kompaktní hlavička – navigace + dropdown vlevo, horizontálně scrollovatelná legenda vpravo.
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
             child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
+                // Levé křídlo: navigace týdne + tlačítko Dnes + dropdown zaměstnanců.
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -210,82 +210,89 @@ class _PlanningCalendarScreenState extends ConsumerState<PlanningCalendarScreen>
                       ),
                       child: Text('planning_calendar.today'.tr()),
                     ),
+                    const SizedBox(width: 16),
+                    dataAsync.when(
+                      data: (data) => SizedBox(
+                        width: 160,
+                        child: _FilterDropdown(
+                          resources: data.resources,
+                          selectedId: _selectedFilterId,
+                          onChanged: (id) => setState(() => _selectedFilterId = id),
+                        ),
+                      ),
+                      loading: () => const SizedBox(width: 160, height: 40),
+                      error: (_, _) => const SizedBox(width: 160, height: 40),
+                    ),
                   ],
                 ),
+                const SizedBox(width: 24),
+                // Pravé křídlo: legenda scrolluje horizontálně, nezalamuje se.
                 Expanded(
-                  child: Center(
-                    child: TaskLegend(),
-                  ),
-                ),
-                dataAsync.when(
-                  data: (data) => SizedBox(
-                    width: 200,
-                    child: _FilterDropdown(
-                      resources: data.resources,
-                      selectedId: _selectedFilterId,
-                      onChanged: (id) => setState(() => _selectedFilterId = id),
-                    ),
-                  ),
-                  loading: () => const SizedBox(width: 200, height: 48),
-                  error: (_, _) => const SizedBox(width: 200, height: 48),
+                  child: TaskLegend(scrollHorizontally: true),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 16),
-          // Kalendář v bílém kontejneru – sticky hlavička dnů, scroll jen tělo mřížky
+          const SizedBox(height: 8),
+          // Kalendář v bílém kontejneru – Expanded zabere zbývající místo, mřížka scrolluje vertikálně.
+          // Bottom overflow fix: vnitřek musí být v SingleChildScrollView, ne expandovat mimo obrazovku.
           Expanded(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   final w = constraints.maxWidth;
+                  final h = constraints.maxHeight;
                   final dayColumnWidth = ((w - _timeColumnWidth) / 7).clamp(80.0, double.infinity);
                   final totalWidth = _timeColumnWidth + 7 * dayColumnWidth;
-                  return Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(12),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.06),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.max,
-                      children: [
-                        _DayHeaderRow(
-                          weekStart: _weekStart,
-                          dayColumnWidth: dayColumnWidth,
-                          dateFormat: dateFormat,
-                        ),
-                        Expanded(
-                          child: dataAsync.when(
-                            data: (data) => _WeekGridScrollBody(
-                              weekStart: _weekStart,
-                              data: data,
-                              categoriesByCode: ref.watch(taskCategoriesProvider).valueOrNull ?? {},
-                              selectedFilterId: _selectedFilterId,
-                              searchQuery: _searchController.text.trim(),
-                              onTaskTap: _openEditTask,
-                              dayColumnWidth: dayColumnWidth,
-                              totalWidth: totalWidth,
-                              verticalScrollController: _verticalScrollController,
-                            ),
-                            loading: () => const Center(child: CircularProgressIndicator()),
-                            error: (e, _) => Center(
-                              child: Text(
-                                'planning_calendar.error'.tr(namedArgs: {'error': '$e'}),
+                  return SizedBox(
+                    width: w,
+                    height: h,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.06),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.max,
+                        children: [
+                          _DayHeaderRow(
+                            weekStart: _weekStart,
+                            dayColumnWidth: dayColumnWidth,
+                            dateFormat: dateFormat,
+                          ),
+                          Expanded(
+                            child: dataAsync.when(
+                              data: (data) => _WeekGridScrollBody(
+                                weekStart: _weekStart,
+                                data: data,
+                                categoriesByCode: ref.watch(taskCategoriesProvider).valueOrNull ?? {},
+                                selectedFilterId: _selectedFilterId,
+                                searchQuery: _searchController.text.trim(),
+                                onTaskTap: _openEditTask,
+                                dayColumnWidth: dayColumnWidth,
+                                totalWidth: totalWidth,
+                                verticalScrollController: _verticalScrollController,
+                              ),
+                              loading: () => const Center(child: CircularProgressIndicator()),
+                              error: (e, _) => Center(
+                                child: Text(
+                                  'planning_calendar.error'.tr(namedArgs: {'error': '$e'}),
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   );
                 },

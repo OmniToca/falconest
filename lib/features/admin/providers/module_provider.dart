@@ -34,7 +34,7 @@ final activeModuleKeysProvider = FutureProvider<Set<String>>((ref) async {
 /// Množina UUID modulů aktivních pro konkrétního tenanta (pro Super Admin – detail agentury).
 /// Schema: tenant_modules má sloupce tenant_id, module_id (UUID). Používáme pro přepínače v UI.
 final tenantActiveModuleIdsProvider =
-    FutureProvider.family<Set<String>, String>((ref, tenantId) async {
+    FutureProvider.autoDispose.family<Set<String>, String>((ref, tenantId) async {
   if (tenantId.isEmpty) return {};
   return _fetchActiveModuleIdsForTenant(tenantId);
 });
@@ -42,7 +42,7 @@ final tenantActiveModuleIdsProvider =
 /// Množina UUID modulů, u kterých je cancel_at_period_end = true (ukončí se na konci měsíce).
 /// Používá se pro zobrazení varovného badge v tenant_detail_screen.
 final tenantModuleCancelAtPeriodEndIdsProvider =
-    FutureProvider.family<Set<String>, String>((ref, tenantId) async {
+    FutureProvider.autoDispose.family<Set<String>, String>((ref, tenantId) async {
   if (tenantId.isEmpty) return {};
   return _fetchCancelAtPeriodEndModuleIdsForTenant(tenantId);
 });

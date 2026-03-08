@@ -12,20 +12,11 @@ class AdminTasksRepository {
   /// Realtime stream úkolů pro daného tenanta.
   ///
   /// PROČ: Realtime stream pro okamžitou aktualizaci UI bez nutnosti F5 (Supabase WebSockets).
-  /// Dispečer vidí změny (nové úkoly, přiřazení, status) hned po provedení jiným uživatelem nebo systémem.
-  ///
-  /// PROČ resilientSupabaseStream: Chyby WebSocketu (Code 1000) se nikdy nepropagují do Riverpodu.
-  ///
-  /// OMEZENÍ: Supabase stream podporuje pouze jeden filtr – používáme inFilter(tenant_id).
-  /// Filtrování deleted_at a řazení probíhá na straně klienta.
-  ///
-  /// PROČ hybridní přístup (initial fetch + stream): Supabase Realtime stream nemusí vždy
-  /// emitovat úvodní data okamžitě. Bez initial fetch by StreamProvider zůstal v loading.
+  /// OMEZENÍ: Bez časového okna, limit 500. Pro záložku Úkoly preferuj [watchTasksRawForMonth].
   Stream<List<Map<String, dynamic>>> watchTasksRaw(String tenantId) {
     if (tenantId.isEmpty) return Stream.value([]);
 
     List<Map<String, dynamic>> _filterAndSort(List<Map<String, dynamic>> rows) {
-      // PROČ: Archivace. Vyfakturované úkoly (invoiced_at != null) schováváme z aktivních pohledů.
       final filtered = rows
           .where((r) => r['deleted_at'] == null && r['invoiced_at'] == null)
           .toList();
@@ -51,7 +42,6 @@ class AdminTasksRepository {
     return _streamWithInitialFetch(
       stream: stream,
       initialFetch: () async {
-        // PROČ: Archivace. Vyfakturované úkoly (invoiced_at != null) schováváme z aktivních pohledů.
         final res = await SupabaseService.client
             .from('tasks')
             .select()
@@ -64,6 +54,177 @@ class AdminTasksRepository {
         return _filterAndSort(list);
       },
     );
+  }
+
+  /// Realtime stream úkolů pro daného tenanta omezený na jeden měsíc.
+  ///
+  /// PROČ: Výkon – limit 500 se aplikuje jen na vybraný měsíc (odstranění „slepoty do minulosti“).
+  /// [month] – libovolný den v měsíci; použije se první a poslední den měsíce (UTC).
+  Stream<List<Map<String, dynamic>>> watchTasksRawForMonth(String tenantId, DateTime month) {
+    if (tenantId.isEmpty) return Stream.value([]);
+
+    final start = DateTime.utc(month.year, month.month, 1);
+    final end = DateTime.utc(month.year, month.month + 1, 1);
+    final startIso = start.toIso8601String();
+    final endIso = end.toIso8601String();
+
+    bool _isInMonth(Map<String, dynamic> r) {
+      final s = r['scheduled_start'] ?? r['due_date'];
+      if (s == null) return false;
+      final dt = DateTime.tryParse(s.toString());
+      if (dt == null) return false;
+      return !dt.isBefore(start) && dt.isBefore(end);
+    }
+
+    List<Map<String, dynamic>> _filterAndSort(List<Map<String, dynamic>> rows) {
+      final filtered = rows
+          .where((r) => r['deleted_at'] == null && _isInMonth(r))
+          .toList();
+      filtered.sort((a, b) {
+        final aVal = a['due_date'] ?? a['scheduled_start'] ?? '';
+        final bVal = b['due_date'] ?? b['scheduled_start'] ?? '';
+        return aVal.toString().compareTo(bVal.toString());
+      });
+      return filtered;
+    }
+
+    final stream = resilientSupabaseStream<List<Map<String, dynamic>>>(
+      streamBuilder: () => SupabaseService.client
+          .from('tasks')
+          .stream(primaryKey: ['id'])
+          .inFilter('tenant_id', [tenantId])
+          .order('scheduled_start', ascending: false)
+          .limit(500)
+          .map((List<Map<String, dynamic>> rows) => _filterAndSort(rows)),
+      debugLabel: 'AdminTasksRepository.watchTasksRawForMonth',
+    );
+
+    return _streamWithInitialFetch(
+      stream: stream,
+      initialFetch: () async {
+        final res = await SupabaseService.client
+            .from('tasks')
+            .select()
+            .eq('tenant_id', tenantId)
+            .isFilter('deleted_at', null)
+            .gte('scheduled_start', startIso)
+            .lt('scheduled_start', endIso)
+            .order('scheduled_start', ascending: false)
+            .limit(500);
+        final list = (res as List).cast<Map<String, dynamic>>();
+        return _filterAndSort(list);
+      },
+    );
+  }
+
+  /// Realtime stream úkolů pouze pro Nástěnku – zúžené časové okno.
+  ///
+  /// PROČ: Dashboard nepotřebuje 500 úkolů; stačí výřez „včera 00:00 → dnes + 14 dní 23:59“.
+  /// Snižuje zátěž paměti i databáze. Ostatní moduly (záložka Úkoly) dál používají [watchTasksRaw].
+  ///
+  /// Filtry: tenant_id, deleted_at IS NULL, invoiced_at IS NULL, scheduled_start v [from, to].
+  /// [from] a [to] – provider předává UTC (např. z lokálního „včera 00:00“ přes .toUtc()).
+  Stream<List<Map<String, dynamic>>> watchTasksForDashboard(
+    String tenantId, {
+    required DateTime from,
+    required DateTime to,
+  }) {
+    if (tenantId.isEmpty) return Stream.value([]);
+
+    final fromUtc = from.isUtc ? from : from.toUtc();
+    final toUtc = to.isUtc ? to : to.toUtc();
+    final fromIso = fromUtc.toIso8601String();
+    final toIso = toUtc.toIso8601String();
+
+    List<Map<String, dynamic>> _filterAndSort(List<Map<String, dynamic>> rows) {
+      final filtered = rows
+          .where((r) {
+            if (r['deleted_at'] != null || r['invoiced_at'] != null) return false;
+            final s = r['scheduled_start'] ?? r['due_date'];
+            if (s == null) return false;
+            final dt = DateTime.tryParse(s.toString());
+            if (dt == null) return true;
+            return !dt.isBefore(fromUtc) && !dt.isAfter(toUtc);
+          })
+          .toList();
+      filtered.sort((a, b) {
+        final aVal = a['due_date'] ?? a['scheduled_start'] ?? '';
+        final bVal = b['due_date'] ?? b['scheduled_start'] ?? '';
+        return aVal.toString().compareTo(bVal.toString());
+      });
+      return filtered;
+    }
+
+    // Realtime stream: Supabase stream nepodporuje .gte/.lte, proto bereme výřez a filtrujeme v map.
+    final stream = resilientSupabaseStream<List<Map<String, dynamic>>>(
+      streamBuilder: () => SupabaseService.client
+          .from('tasks')
+          .stream(primaryKey: ['id'])
+          .inFilter('tenant_id', [tenantId])
+          .order('scheduled_start', ascending: false)
+          .limit(300)
+          .map((List<Map<String, dynamic>> rows) => _filterAndSort(rows)),
+      debugLabel: 'AdminTasksRepository.watchTasksForDashboard',
+    );
+
+    return _streamWithInitialFetch(
+      stream: stream,
+      initialFetch: () async {
+        final res = await SupabaseService.client
+            .from('tasks')
+            .select()
+            .eq('tenant_id', tenantId)
+            .isFilter('deleted_at', null)
+            .isFilter('invoiced_at', null)
+            .gte('scheduled_start', fromIso)
+            .lte('scheduled_start', toIso)
+            .order('scheduled_start', ascending: false)
+            .limit(300);
+        final list = (res as List).cast<Map<String, dynamic>>();
+        return _filterAndSort(list);
+      },
+    );
+  }
+
+  /// Načte všechny úkoly navázané na danou rezervaci – BEZ časového/měsíčního filtru.
+  ///
+  /// PROČ: V detailu rezervace (Související úkoly) musí být vidět check-in i check-out úkoly;
+  /// check-out může spadat do dalšího měsíce a [watchTasksRawForMonth] by je nepřinesl.
+  /// Vrací pouze úkoly s reservation_id == [reservationId], seřazené podle scheduled_start.
+  static Future<List<Map<String, dynamic>>> fetchTasksForReservation(String tenantId, String reservationId) async {
+    if (tenantId.isEmpty || reservationId.isEmpty) return [];
+    try {
+      final res = await SupabaseService.client
+          .from('tasks')
+          .select()
+          .eq('tenant_id', tenantId)
+          .eq('reservation_id', reservationId)
+          .isFilter('deleted_at', null)
+          .order('scheduled_start', ascending: true);
+      final list = (res as List).cast<Map<String, dynamic>>();
+      return list;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// Načte jeden úkol podle ID – BEZ filtru deleted_at/invoiced_at.
+  ///
+  /// PROČ: Peněženka zobrazuje transakce vázané na úkoly (včetně dokončených/archivovaných).
+  /// Admin stream tyto úkoly vyřazuje. Tato metoda umožňuje otevřít detail z transakce.
+  static Future<Map<String, dynamic>?> fetchTaskById(String tenantId, String taskId) async {
+    if (tenantId.isEmpty || taskId.isEmpty) return null;
+    try {
+      final res = await SupabaseService.client
+          .from('tasks')
+          .select()
+          .eq('tenant_id', tenantId)
+          .eq('id', taskId)
+          .maybeSingle();
+      return res != null ? Map<String, dynamic>.from(res as Map) : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Emituje nejdřív úvodní data z [initialFetch], pak pokračuje streamem.

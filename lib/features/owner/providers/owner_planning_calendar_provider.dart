@@ -11,7 +11,7 @@ import 'package:falconest/features/calendar/providers/planning_calendar_provider
 /// Stejná logika jako ownerTasksProvider – ownedApartmentIds, early exit,
 /// .inFilter('apartment_id', ...). Nestahuje profiles (jména personálu).
 final ownerPlanningCalendarTasksProvider =
-    FutureProvider.family<List<PlanningTask>, DateTime>((ref, weekStart) async {
+    FutureProvider.autoDispose.family<List<PlanningTask>, DateTime>((ref, weekStart) async {
   final apartments = await ref.read(ownerApartmentsProvider.future);
   final ownedApartmentIds = apartments
       .map((a) => a.id)
@@ -73,7 +73,7 @@ List<PlanningTask> _parseTasksForOwner(dynamic res) {
       final idStr = (map['id']?.toString() ?? '').trim();
       if (idStr.isEmpty) continue;
 
-      String aptName = 'Neznámý';
+      String aptName = '';
       final apartment = map['apartments'];
       if (apartment != null) {
         final a = apartment is Map
@@ -85,11 +85,14 @@ List<PlanningTask> _parseTasksForOwner(dynamic res) {
         }
       }
 
+      final rawTaskType = (map['task_type']?.toString() ?? '').trim();
+      final taskType = rawTaskType.isEmpty ? 'other' : rawTaskType;
+
       tasks.add(PlanningTask(
         id: idStr,
         title: (map['title']?.toString() ?? '').trim(),
         description: (map['description']?.toString() ?? '').trim(),
-        taskType: (map['task_type']?.toString() ?? 'Jiné').trim(),
+        taskType: taskType,
         scheduledStart: start,
         assignedTo: (map['assigned_to']?.toString() ?? '').trim().isEmpty
             ? null
@@ -101,7 +104,7 @@ List<PlanningTask> _parseTasksForOwner(dynamic res) {
             ? null
             : (map['status']?.toString() ?? '').trim(),
         assignedUserName: null, // Ochrana soukromí: jména personálu nenačítáme.
-        apartmentName: aptName == 'Neznámý' ? null : aptName,
+        apartmentName: aptName.isEmpty ? null : aptName,
         metadata: _parseMetadata(map['metadata']),
       ));
     } catch (err) {

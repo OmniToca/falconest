@@ -17,6 +17,10 @@ class WorkerTask {
     this.referenceNumber,
     this.apartmentName,
     this.apartmentAddress,
+    this.clientName,
+    this.customLocation,
+    this.customTitle,
+    this.metadata,
   });
 
   final String id;
@@ -30,12 +34,20 @@ class WorkerTask {
   final String? referenceNumber;
   final String? apartmentName;
   final String? apartmentAddress;
+  /// Jméno klienta – pro externí úkoly bez bytu (client_id).
+  final String? clientName;
+  /// Adresa pro externí úkoly (tasks.custom_location).
+  final String? customLocation;
+  /// Název pro externí úkoly (tasks.custom_title).
+  final String? customTitle;
+  /// Metadata (guest_name, client_name, address atd.) pro fallback zobrazení.
+  final Map<String, dynamic>? metadata;
 }
 
 /// Detail úkolu pro Worker Task Detail Screen (keybox, ownerNotes, photoUrl, metadata, časová razítka).
 /// [guestName] a [guestPhone] – z propojené rezervace pro check-in/transfer (kontakt na hosta).
 /// [customLocation] a [customTitle] – pro externí úkoly bez bytu (ruční transfer).
-/// [clientName] – z tabulky clients pro externí úkoly s client_id.
+/// [clientName] a [clientPhone] – z tabulky clients pro externí úkoly s client_id.
 /// [mediaUrls] – pole URL fotek z tasks.media_urls (requires_photo, hlášení závad).
 class WorkerTaskDetail {
   const WorkerTaskDetail({
@@ -52,6 +64,7 @@ class WorkerTaskDetail {
     this.customLocation,
     this.customTitle,
     this.clientName,
+    this.clientPhone,
     this.keybox,
     this.ownerNotes,
     this.guestName,
@@ -80,6 +93,8 @@ class WorkerTaskDetail {
   final String? customTitle;
   /// Jméno klienta z tabulky clients – pro externí úkoly s client_id.
   final String? clientName;
+  /// Telefon klienta z tabulky clients – fallback pro externí úkoly bez rezervace.
+  final String? clientPhone;
   final String? keybox;
   final String? ownerNotes;
   /// Jméno hosta z propojené rezervace (Check-in, Transfer).
@@ -135,6 +150,9 @@ abstract class ITaskRepository {
   /// [completedAt] – nastaví se při přechodu do completed (Time Tracking).
   /// [metadataOverlay] – volitelně sloučí dodatečné klíče do metadata (např. cash_collection_failed).
   /// [mediaUrls] – URL fotek z Supabase Storage (např. pro úkoly s requires_photo). Nahrání volá klient před voláním.
+  /// [localPhotoPaths] – cesty k lokálním souborům při offline (zkopírované do persistent storage).
+  /// [existingMediaUrls] – již nahrané URL při offline flow (pro merge v procesoru).
+  /// Na webu ignorováno. Na mobilu: enqueue OFFLINE_TASK_COMPLETE_WITH_PHOTOS, aktualizuje Isar.
   Future<void> updateTaskStatus(
     String tenantId,
     String taskId,
@@ -143,5 +161,7 @@ abstract class ITaskRepository {
     DateTime? completedAt,
     Map<String, dynamic>? metadataOverlay,
     List<String>? mediaUrls,
+    List<String>? localPhotoPaths,
+    List<String>? existingMediaUrls,
   });
 }

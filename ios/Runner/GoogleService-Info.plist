@@ -9,7 +9,7 @@
 	<key>PLIST_VERSION</key>
 	<string>1</string>
 	<key>BUNDLE_ID</key>
-	<string>com.example.falconest</string>
+	<string>com.falconest.app</string>
 	<key>PROJECT_ID</key>
 	<string>falconest-8d060</string>
 	<key>STORAGE_BUCKET</key>
@@ -25,6 +25,6 @@
 	<key>IS_SIGNIN_ENABLED</key>
 	<true></true>
 	<key>GOOGLE_APP_ID</key>
-	<string>1:339673988370:ios:b16a51779f5ac4096d07cb</string>
+	<string>1:339673988370:ios:84585bf1859258da6d07cb</string>
 </dict>
 </plist>

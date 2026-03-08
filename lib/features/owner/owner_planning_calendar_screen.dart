@@ -625,9 +625,9 @@ class _OwnerTaskDetailDialog extends StatelessWidget {
   static String _statusLabel(String? status) {
     if (status == null || status.trim().isEmpty) return 'task_status.assigned'.tr();
     final s = status.trim().toLowerCase();
-    if (s == 'in_progress' || s == 'probíhá') return 'task_status.in_progress'.tr();
-    if (s == 'completed' || s == 'done' || s == 'hotovo') return 'task_status.completed'.tr();
-    if (s == 'problem' || s == 'problém') return 'task_status.problem'.tr();
+    if (s == 'in_progress') return 'task_status.in_progress'.tr();
+    if (s == 'completed' || s == 'done') return 'task_status.completed'.tr();
+    if (s == 'problem') return 'task_status.problem'.tr();
     return 'task_status.assigned'.tr();
   }
 
@@ -645,7 +645,7 @@ class _OwnerTaskDetailDialog extends StatelessWidget {
           children: [
             _DetailRow(label: 'owner.task_detail_type'.tr(), value: _taskTypeLabelKey(task.taskType).tr()),
             _DetailRow(label: 'owner.task_detail_title_label'.tr(), value: task.title),
-            _DetailRow(label: 'owner.task_detail_apartment'.tr(), value: task.apartmentName ?? '–'),
+            _DetailRow(label: 'owner.task_detail_apartment'.tr(), value: (task.apartmentName == null || task.apartmentName!.trim().isEmpty) ? 'common.unknown'.tr() : task.apartmentName!),
             _DetailRow(label: 'owner.task_detail_staff'.tr(), value: 'owner.tasks_staff_label'.tr()),
             _DetailRow(label: 'owner.task_detail_date'.tr(), value: '$dateStr $timeStr'),
             _DetailRow(label: 'owner.task_detail_status'.tr(), value: _statusLabel(task.status)),

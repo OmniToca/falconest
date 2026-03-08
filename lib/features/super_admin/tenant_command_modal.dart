@@ -1,5 +1,3 @@
-import 'dart:ui';
-
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,6 +14,7 @@ import 'package:falconest/features/settings/pricing_type_label.dart';
 import 'package:falconest/features/super_admin/module_subscription_dialog.dart';
 import 'package:falconest/features/super_admin/providers/all_tenants_provider.dart';
 import 'package:falconest/features/super_admin/providers/tenant_detail_provider.dart';
+import 'package:falconest/core/utils/app_modal_utils.dart';
 import 'package:falconest/features/super_admin/tenant_detail_screen.dart';
 import 'package:falconest/features/super_admin/services/super_admin_service.dart';
 
@@ -33,29 +32,17 @@ class TenantCommandModal extends ConsumerStatefulWidget {
   final String tenantName;
 
   /// Otevře modal nad aktuálním kontextem (dashboard). Použij místo context.push na detail.
+  /// Používá [showAppModal] pro jednotný vizuál napříč aplikací.
   static Future<void> show(BuildContext context, {required String tenantId, required String tenantName}) {
-    return showGeneralDialog<void>(
+    return showAppModal<void>(
       context: context,
-      barrierDismissible: true,
       barrierLabel: 'super_admin.barrier_tenant'.tr(),
-      barrierColor: Colors.black54,
-      transitionDuration: const Duration(milliseconds: 250),
-      pageBuilder: (_, _, _) => const SizedBox.shrink(),
-      transitionBuilder: (context, animation, secondaryAnimation, child) {
-        return BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-          child: FadeTransition(
-            opacity: animation,
-            child: ScaleTransition(
-              scale: CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
-              child: _TenantCommandModalContent(
-                tenantId: tenantId,
-                tenantName: tenantName,
-              ),
-            ),
-          ),
-        );
-      },
+      maxWidth: 600,
+      maxHeightFraction: 0.88,
+      child: _TenantCommandModalContent(
+        tenantId: tenantId,
+        tenantName: tenantName,
+      ),
     );
   }
 
@@ -432,29 +419,7 @@ class _TenantCommandModalState extends ConsumerState<TenantCommandModal> {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Material(
-        color: Colors.transparent,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: 600,
-            maxHeight: MediaQuery.of(context).size.height * 0.88,
-          ),
-          child: Container(
-            width: MediaQuery.of(context).size.width * 0.9,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(24),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.15),
-                  blurRadius: 24,
-                  offset: const Offset(0, 8),
-                ),
-              ],
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Column(
+    return Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 _buildHeader(context),
@@ -472,11 +437,7 @@ class _TenantCommandModalState extends ConsumerState<TenantCommandModal> {
                   ),
                 ),
               ],
-            ),
-          ),
-        ),
-      ),
-    );
+            );
   }
 
   Widget _buildHeader(BuildContext context) {
@@ -590,7 +551,7 @@ class _TenantCommandModalState extends ConsumerState<TenantCommandModal> {
               Expanded(
                 child: _HeroCard(
                   title: 'super_admin.mrr_per_month_short'.tr(namedArgs: {'amount': mrrStr}),
-                  subtitle: 'MRR',
+                  subtitle: 'super_admin.mrr_short'.tr(),
                   invoicedIn: invoicedInText,
                   icon: Icons.euro_rounded,
                   color: Colors.green,
@@ -1143,7 +1104,7 @@ class _TenantEditInfoDialogState extends ConsumerState<_TenantEditInfoDialog> {
                       decoration: InputDecoration(
                         labelText: 'super_admin.discount_percentage_label'.tr(),
                         border: const OutlineInputBorder(),
-                        hintText: '0',
+                        hintText: 'super_admin.discount_placeholder'.tr(),
                       ),
                       validator: (v) {
                         final s = v?.trim() ?? '';

@@ -1,0 +1,18 @@
+name: falconest_drift
+description: Drift (SQLite) databáze pro FalcoNest – paralelní implementace pro offline stabilitu.
+publish_to: 'none'
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  drift: ^2.32.0
+  path: ^1.9.0
+  path_provider: ^2.1.4
+  sqlite3: ^3.1.6
+
+dev_dependencies:
+  drift_dev: ^2.32.0
+  build_runner: ^2.4.13

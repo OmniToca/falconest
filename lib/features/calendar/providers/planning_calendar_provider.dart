@@ -29,6 +29,7 @@ class PlanningTask {
     required this.taskType,
     required this.scheduledStart,
     this.assignedTo,
+    this.assignedUserIds = const [],
     this.apartmentId,
     this.status,
     this.assignedUserName,
@@ -42,6 +43,8 @@ class PlanningTask {
   final String taskType;
   final DateTime scheduledStart;
   final String? assignedTo;
+  /// Další přiřazení pracovníci – pro sdílení úkolu.
+  final List<String> assignedUserIds;
   final String? apartmentId;
   final String? status;
   final String? assignedUserName;
@@ -49,9 +52,21 @@ class PlanningTask {
   /// JSONB metadata z tasks (custom_note, amount_to_collect, expected_audit_total, collection_breakdown).
   final Map<String, dynamic>? metadata;
 
+  /// Unikátní spojení assignedTo (pokud existuje) a prvků z assignedUserIds.
+  List<String> get allAssignees {
+    final ids = <String>{};
+    if (assignedTo != null && assignedTo!.isNotEmpty) ids.add(assignedTo!);
+    ids.addAll(assignedUserIds);
+    return ids.toList();
+  }
+
   String get resourceId => assignedTo ?? kUnassignedResourceId;
 
-  PlanningTask copyWith({String? assignedUserName, String? apartmentName}) =>
+  PlanningTask copyWith({
+    String? assignedUserName,
+    String? apartmentName,
+    List<String>? assignedUserIds,
+  }) =>
       PlanningTask(
         id: id,
         title: title,
@@ -59,6 +74,7 @@ class PlanningTask {
         taskType: taskType,
         scheduledStart: scheduledStart,
         assignedTo: assignedTo,
+        assignedUserIds: assignedUserIds ?? this.assignedUserIds,
         apartmentId: apartmentId,
         status: status,
         assignedUserName: assignedUserName ?? this.assignedUserName,
@@ -70,15 +86,30 @@ class PlanningTask {
         id: id,
         apartmentId: apartmentId ?? '',
         assignedTo: assignedTo,
+        assignedUserIds: assignedUserIds,
         title: title,
         description: description,
-        status: status ?? 'Návrh',
+        status: status ?? 'pending',
         taskType: taskType,
         dueDate: roundedDueDate ?? scheduledStart,
         apartmentName: apartmentName,
         assignedToName: assignedUserName,
         metadata: metadata,
       );
+}
+
+/// Parsuje assigned_user_ids z DB (List / JSON).
+List<String> _parseUuidList(dynamic raw) {
+  if (raw == null) return const [];
+  if (raw is List) {
+    final list = <String>[];
+    for (final e in raw) {
+      final s = e?.toString().trim();
+      if (s != null && s.isNotEmpty) list.add(s);
+    }
+    return list;
+  }
+  return const [];
 }
 
 /// Zaokrouhlí datum na nejbližší 15 minut (lokální čas).
@@ -91,17 +122,29 @@ DateTime roundToNearest15Minutes(DateTime dt) {
   return DateTime(local.year, local.month, local.day, hour, min);
 }
 
+/// Parsuje délku trvání z popisu úkolu – multijazyčně (cs/en/es).
+///
+/// PROČ: Podpora „1 hod 30 min“, „1h 30m“, „1 hour 30 mins“, „1 horas 30 minutos“ atd.
+/// Regex je case insensitive.
 int parseDurationMinutesFromDescription(String? description) {
   if (description == null || description.trim().isEmpty) return 60;
   final s = description.trim();
   int minutes = 0;
-  final hodReg = RegExp(r'(\d+)\s*hod', caseSensitive: false);
-  final minReg = RegExp(r'(\d+)\s*min', caseSensitive: false);
-  if (hodReg.firstMatch(s) != null) {
-    minutes += int.parse(hodReg.firstMatch(s)!.group(1) ?? '0') * 60;
+  final hourReg = RegExp(
+    r'(\d+)\s*(?:hod|h|hrs|horas|hour|hours)',
+    caseSensitive: false,
+  );
+  final minReg = RegExp(
+    r'(\d+)\s*(?:min|m|mins|minutos|minute|minutes)',
+    caseSensitive: false,
+  );
+  final hourMatch = hourReg.firstMatch(s);
+  if (hourMatch != null) {
+    minutes += int.parse(hourMatch.group(1) ?? '0') * 60;
   }
-  if (minReg.firstMatch(s) != null) {
-    minutes += int.parse(minReg.firstMatch(s)!.group(1) ?? '0');
+  final minMatch = minReg.firstMatch(s);
+  if (minMatch != null) {
+    minutes += int.parse(minMatch.group(1) ?? '0');
   }
   return minutes > 0 ? minutes : 60;
 }
@@ -117,6 +160,9 @@ Map<String, dynamic>? _parseMetadata(dynamic raw) {
 List<PlanningTask> _parseTasksFromResponse(dynamic res) {
   final list = res is List ? res : <dynamic>[];
   final tasks = <PlanningTask>[];
+  final unassignedLabel = 'common.unassigned'.tr();
+  final unknownLabel = 'common.unknown'.tr();
+  final otherLabel = 'common.other'.tr();
 
   for (final e in list) {
     try {
@@ -132,7 +178,7 @@ List<PlanningTask> _parseTasksFromResponse(dynamic res) {
       final idStr = (map['id']?.toString() ?? '').trim();
       if (idStr.isEmpty) continue;
 
-      String workerName = 'Nepřiřazeno';
+      String workerName = unassignedLabel;
       // BUGFIX: PostgREST vrací profiles pod klíčem profiles!tasks_assigned_to_fkey při explicitním FK.
       final profile = map['profiles'] ?? map['profiles!tasks_assigned_to_fkey'];
       if (profile != null) {
@@ -144,11 +190,11 @@ List<PlanningTask> _parseTasksFromResponse(dynamic res) {
           final last = (p['last_name']?.toString() ?? '').trim();
           workerName = '$first $last'.trim();
           if (workerName.isEmpty) workerName = (p['name']?.toString() ?? '').trim();
-          if (workerName.isEmpty) workerName = 'Nepřiřazeno';
+          if (workerName.isEmpty) workerName = unassignedLabel;
         }
       }
 
-      String aptName = 'Neznámý';
+      String aptName = unknownLabel;
       final apartment = map['apartments'];
       if (apartment != null) {
         final a = apartment is Map
@@ -160,15 +206,19 @@ List<PlanningTask> _parseTasksFromResponse(dynamic res) {
         }
       }
 
+      final taskTypeRaw = (map['task_type']?.toString() ?? '').trim();
+      final taskType = taskTypeRaw.isEmpty ? otherLabel : taskTypeRaw;
+
       tasks.add(PlanningTask(
         id: idStr,
         title: (map['title']?.toString() ?? '').trim(),
         description: (map['description']?.toString() ?? '').trim(),
-        taskType: (map['task_type']?.toString() ?? 'Jiné').trim(),
+        taskType: taskType,
         scheduledStart: start,
         assignedTo: (map['assigned_to']?.toString() ?? '').trim().isEmpty
             ? null
             : (map['assigned_to']?.toString() ?? '').trim(),
+        assignedUserIds: _parseUuidList(map['assigned_user_ids']),
         apartmentId: (map['apartment_id']?.toString() ?? '').trim().isEmpty
             ? null
             : (map['apartment_id']?.toString() ?? '').trim(),
@@ -176,7 +226,7 @@ List<PlanningTask> _parseTasksFromResponse(dynamic res) {
             ? null
             : (map['status']?.toString() ?? '').trim(),
         assignedUserName: workerName,
-        apartmentName: aptName == 'Neznámý' ? null : aptName,
+        apartmentName: aptName == unknownLabel ? null : aptName,
         metadata: _parseMetadata(map['metadata']),
       ));
     } catch (e) {
@@ -329,7 +379,7 @@ final planningCalendarAllTasksProvider =
     final res = await SupabaseService.client
         .from('tasks')
         .select(
-            'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, apartment_id, metadata, profiles!tasks_assigned_to_fkey(first_name, last_name, name), apartments(name)')
+            'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, assigned_user_ids, apartment_id, metadata, profiles!tasks_assigned_to_fkey(first_name, last_name, name), apartments(name)')
         .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
         .isFilter('invoiced_at', null)
@@ -361,7 +411,7 @@ final planningCalendarAllTasksForMonthProvider =
     final res = await SupabaseService.client
         .from('tasks')
         .select(
-            'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, apartment_id, metadata, profiles!tasks_assigned_to_fkey(first_name, last_name, name), apartments(name)')
+            'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, assigned_user_ids, apartment_id, metadata, profiles!tasks_assigned_to_fkey(first_name, last_name, name), apartments(name)')
         .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
         .isFilter('invoiced_at', null)
@@ -397,7 +447,7 @@ class PlanningCalendarData {
 /// Poskytuje zdroje, úkoly, detekci konfliktů a pastelové barvy.
 final planningCalendarDataProvider =
     FutureProvider.family<PlanningCalendarData, DateTime>((ref, weekStart) async {
-  final teamAsync = ref.watch(adminTeamProvider);
+  final teamAsync = ref.watch(teamFullListProvider);
   final tasksAsync = ref.watch(planningCalendarAllTasksProvider(weekStart));
 
   final members = teamAsync.valueOrNull ?? [];
@@ -442,7 +492,7 @@ final planningCalendarDataProvider =
 /// Data kalendáře pro celý měsíc – pro TableCalendar (zdroje + úkoly + konflikty + barvy).
 final planningCalendarDataForMonthProvider =
     FutureProvider.family<PlanningCalendarData, DateTime>((ref, dayInMonth) async {
-  final teamAsync = ref.watch(adminTeamProvider);
+  final teamAsync = ref.watch(teamFullListProvider);
   final tasksAsync = ref.watch(planningCalendarAllTasksForMonthProvider(dayInMonth));
 
   final members = teamAsync.valueOrNull ?? [];

@@ -14,19 +14,13 @@ final taskDetailProvider = FutureProvider.family<TaskDetailData?, int>((
   );
 });
 
-Future<void> updateTaskStatus({
-  required int taskId,
-  required String status,
-}) {
+Future<void> updateTaskStatus(WidgetRef ref, {required int taskId, required String status}) {
   throw UnsupportedError(
     'updateTaskStatus není dostupný na této platformě',
   );
 }
 
-Future<void> saveTaskPhotoPath({
-  required int taskId,
-  required String photoPath,
-}) {
+Future<void> saveTaskPhotoPath(WidgetRef ref, {required int taskId, required String photoPath}) {
   throw UnsupportedError(
     'saveTaskPhotoPath není dostupný na této platformě',
   );

@@ -37,11 +37,13 @@ class CashWalletRepository {
   /// a o procesování peněženky se postará Sync Engine.
   ///
   /// [profileId] – profiles.id aktuálně přihlášeného zaměstnance (převzal hotovost).
+  /// [expectedAmount] – očekávaná částka z metadata.amount_to_collect (pro výpočet spropitného).
   Future<void> recordCashCollection({
     required String taskId,
     required double amount,
     required String tenantId,
     required String profileId,
+    double? expectedAmount,
   }) async {
     if (amount <= 0) return;
 
@@ -72,12 +74,13 @@ class CashWalletRepository {
         currentBalance = (_toDouble(existing['balance']) ?? 0);
       }
 
-      // (b) Vložení transakce do účetní knihy
+      // (b) Vložení transakce do účetní knihy (expected_amount pro výpočet spropitného)
       await client.from('employee_cash_transactions').insert({
         'tenant_id': tenantId,
         'wallet_id': walletId,
         'task_id': taskId,
         'amount': amount,
+        if (expectedAmount != null && expectedAmount > 0) 'expected_amount': expectedAmount,
         'transaction_type': 'COLLECTED_FROM_GUEST',
         'created_by': profileId,
       });
@@ -109,6 +112,7 @@ class CashWalletRepository {
             'profile_id': profileId,
             'task_id': taskId,
             'amount': amount,
+            if (expectedAmount != null && expectedAmount > 0) 'expected_amount': expectedAmount,
           },
         );
         return;
@@ -127,12 +131,16 @@ class CashWalletRepository {
   /// [amount] – kladná částka výdaje (do DB se ukládá jako záporná).
   /// [note] – povinná poznámka (např. „Materiál na úklid“).
   /// [receiptImageUrl] – volitelná URL fotky účtenky.
+  /// [apartmentId] – volitelná vazba na apartmán; pro automatické stržení nákladů ve faktuře majitele.
+  /// [clientId] – volitelná vazba na klienta; pro výdaje vázané na konkrétního klienta (např. externí).
   Future<void> recordCompanyExpense({
     required String tenantId,
     required String profileId,
     required double amount,
     required String note,
     String? receiptImageUrl,
+    String? apartmentId,
+    String? clientId,
   }) async {
     if (amount <= 0) return;
     final noteTrimmed = note.trim();
@@ -164,6 +172,8 @@ class CashWalletRepository {
         'tenant_id': tenantId,
         'wallet_id': walletId,
         'task_id': null,
+        if (apartmentId != null && apartmentId.trim().isNotEmpty) 'apartment_id': apartmentId.trim(),
+        if (clientId != null && clientId.trim().isNotEmpty) 'client_id': clientId.trim(),
         'amount': negativeAmount,
         'transaction_type': 'COMPANY_EXPENSE',
         'note': noteTrimmed,
@@ -201,6 +211,10 @@ class CashWalletRepository {
             'note': noteTrimmed,
             if (receiptImageUrl != null && receiptImageUrl.trim().isNotEmpty)
               'receipt_image_url': receiptImageUrl.trim(),
+            if (apartmentId != null && apartmentId.trim().isNotEmpty)
+              'apartment_id': apartmentId.trim(),
+            if (clientId != null && clientId.trim().isNotEmpty)
+              'client_id': clientId.trim(),
           },
         );
         return;

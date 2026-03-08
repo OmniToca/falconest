@@ -30,6 +30,12 @@ final Map<int, int> _idReplacements = {
   557933263205041222: 1,           // ApartmentLocal
   -9072514404709919410: 2,        // TaskLocal
   2346012127249937678: 3,         // PendingAuditAction
+  4215116564478627792: 4,         // ReservationLocal
+  4502856345066684593: 5,         // ClientLocal
+  4167288617694592477: 6,         // TenantLocal (CollectionSchema)
+  2753382765909358918: 7,         // TenantLocal (index/embedded schema)
+  -4080214636527794270: 8,        // PendingMutationLocal
+  -3300368222018366486: 9,        // MessageTemplateLocal
 };
 
 void main() {

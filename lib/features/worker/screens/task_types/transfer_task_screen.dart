@@ -1,5 +1,6 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/services/currency_service.dart';
@@ -7,9 +8,12 @@ import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/features/communication/providers/message_templates_provider.dart';
+import 'package:falconest/features/communication/services/template_placeholder_service.dart';
+import 'package:falconest/core/database/models/message_template_local.dart';
+import 'package:falconest/core/widgets/task_header_widget.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
 import 'package:falconest/features/worker/widgets/task_countdown_timer.dart';
-import 'package:falconest/features/worker/widgets/worker_task_shared_header.dart';
 import 'package:falconest/features/worker/utils/cash_collection_dialog.dart';
 import 'package:falconest/features/worker/widgets/task_complete_with_photo_section.dart';
 import 'package:falconest/features/worker/widgets/issue_reporter_dialog.dart';
@@ -24,6 +28,9 @@ class TransferTaskScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final detailAsync = ref.watch(workerTaskDetailProvider(taskId));
+    final tenantId = ref.watch(authNotifierProvider).tenantIdForData ?? '';
+    final templatesAsync = ref.watch(messageTemplatesForWorkerProvider(tenantId));
+    final templates = templatesAsync.valueOrNull ?? [];
 
     return detailAsync.when(
       data: (detail) {
@@ -70,10 +77,12 @@ class TransferTaskScreen extends ConsumerWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        WorkerTaskSharedHeader(
+                        TaskHeaderWidget(
                           title: _mainHeading(detail),
                           scheduledStart: detail.scheduledStart,
-                          apartmentAddress: detail.displayAddress.isNotEmpty ? detail.displayAddress : null,
+                        ),
+                        const SizedBox(height: 16),
+                        TaskCountdownTimer(
                           startedAt: detail.startedAt,
                           completedAt: detail.completedAt,
                           estimatedMinutes: parseTaskEstimateMinutes(
@@ -90,6 +99,7 @@ class TransferTaskScreen extends ConsumerWidget {
                         const SizedBox(height: 16),
                         _buildInstructionsCard(context, detail.description, detail.metadata ?? {}),
                         ..._buildFlightInfo(context, detail.flightNumber),
+                        ..._buildQuickMessagesSection(context, detail, templates),
                         ..._buildTransferMetadata(context, ref, detail.metadata ?? {}),
                       ],
                     ),
@@ -100,7 +110,7 @@ class TransferTaskScreen extends ConsumerWidget {
                   taskId: taskId,
                   detail: detail,
                   finishKey: 'worker.task_detail_finish_transfer',
-                  beforeComplete: (ctx, ref, mediaUrls) =>
+                  beforeComplete: (ctx, ref, mediaUrls, {localPhotoPaths}) =>
                       maybeShowCashCollectionDialog(
                     ctx,
                     ref,
@@ -111,6 +121,7 @@ class TransferTaskScreen extends ConsumerWidget {
                       if (ctx.mounted) ctx.pop();
                     },
                     mediaUrls: mediaUrls.isEmpty ? null : mediaUrls,
+                    localPhotoPaths: localPhotoPaths,
                   ),
                 ),
               ],
@@ -119,7 +130,7 @@ class TransferTaskScreen extends ConsumerWidget {
         );
       },
       loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
-      error: (_, __) => Scaffold(
+      error: (e, st) => Scaffold(
         body: Center(child: Text('worker.task_detail_not_found'.tr())),
       ),
     );
@@ -176,44 +187,90 @@ class TransferTaskScreen extends ConsumerWidget {
   }
 
   static Widget _buildAddressRowWithNavigate(BuildContext context, String address) {
-    return InkWell(
-      onTap: () async {
-        final url = Uri.parse(
-          'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(address)}',
-        );
-        if (await canLaunchUrl(url)) {
-          await launchUrl(url, mode: LaunchMode.externalApplication);
-        }
-      },
-      borderRadius: BorderRadius.circular(4),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Icon(Icons.location_on, size: 22, color: Colors.blue.shade700),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(address, style: TextStyle(fontSize: 15, color: Colors.grey.shade800)),
-            ),
-            Icon(Icons.map_outlined, size: 20, color: Colors.blue.shade600),
-            const SizedBox(width: 4),
-            Text(
-              'worker.maps'.tr(),
-              style: TextStyle(fontSize: 13, color: Colors.blue.shade600, fontWeight: FontWeight.w500),
-            ),
-          ],
-        ),
+    // Adresa víceřádkově, tlačítka pod ní – aby nedocházelo k ořezávání
+    // dlouhých adres (např. španělské s názvem ulice i čísla domu na více řádcích).
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.location_on, size: 22, color: Colors.blue.shade700),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  address,
+                  style: TextStyle(fontSize: 15, color: Colors.grey.shade800),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.copy, size: 22),
+                color: Colors.blue.shade700,
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: address));
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('worker.address_copied'.tr()),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  }
+                },
+                tooltip: 'worker.copy_address_tooltip'.tr(),
+              ),
+              const SizedBox(width: 8),
+              InkWell(
+                onTap: () async {
+                  final url = Uri.parse(
+                    'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(address)}',
+                  );
+                  if (await canLaunchUrl(url)) {
+                    await launchUrl(url, mode: LaunchMode.externalApplication);
+                  }
+                },
+                borderRadius: BorderRadius.circular(4),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.map_outlined, size: 20, color: Colors.blue.shade600),
+                      const SizedBox(width: 4),
+                      Text(
+                        'worker.maps'.tr(),
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.blue.shade600,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
 
   /// Kód schránky a kontakt na hosta – řidič musí řešit zpoždění a předání.
+  /// PROČ: Používá resolveGuestPhone (Fallback Chain) pro zobrazení telefonu.
   List<Widget> _buildKeyboxAndGuestContact(BuildContext context, dynamic detail) {
     final widgets = <Widget>[];
     final keybox = detail.keybox?.trim();
-    final guestName = detail.guestName?.trim();
-    final guestPhone = detail.guestPhone?.trim();
+    final guestName = detail.displayName.trim().isNotEmpty ? detail.displayName.trim() : null;
+    final guestPhone = TemplatePlaceholderService.resolveGuestPhone(detail)?.trim();
     if (keybox != null && keybox.isNotEmpty) {
       widgets.add(_buildKeyboxCard(keybox));
       widgets.add(const SizedBox(height: 12));
@@ -369,6 +426,105 @@ class TransferTaskScreen extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  /// Sekce „Rychlé zprávy hostovi“ – tlačítka pro odeslání šablon přes WhatsApp.
+  /// PROČ: Řidič rychle pošle předpřipravené zprávy (48h předem, Jsem u letiště…).
+  /// Pokud nejsou žádné šablony, sekce se nezobrazí.
+  static List<Widget> _buildQuickMessagesSection(
+    BuildContext context,
+    WorkerTaskDetail detail,
+    List<MessageTemplateLocal> templates,
+  ) {
+    if (templates.isEmpty) return [];
+
+    return [
+      const SizedBox(height: 16),
+      Card(
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'worker.quick_messages'.tr(),
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey.shade700,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: templates
+                    .map(
+                      (t) => OutlinedButton.icon(
+                        onPressed: () =>
+                            _sendTemplateMessage(context, t, detail),
+                        icon: Icon(Icons.chat_bubble_outline, size: 18, color: Colors.green.shade700),
+                        label: Text(t.name),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.green.shade800,
+                          side: BorderSide(color: Colors.green.shade400),
+                        ),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ];
+  }
+
+  /// Odeslání šablony přes WhatsApp – otevře wa.me s předvyplněným textem.
+  /// PROČ: url_launcher s externalApplication otevře nativní WhatsApp na mobilu.
+  /// Používá resolveGuestPhone (Fallback Chain) – ne jen detail.guestPhone.
+  static Future<void> _sendTemplateMessage(
+    BuildContext context,
+    MessageTemplateLocal template,
+    WorkerTaskDetail detail,
+  ) async {
+    final resolvedPhone = TemplatePlaceholderService.resolveGuestPhone(detail);
+    if (resolvedPhone == null || resolvedPhone.trim().isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('worker.error_missing_phone'.tr())),
+        );
+      }
+      return;
+    }
+
+    // Očista telefonu – pouze číslice (wa.me nechce + ve path).
+    final cleanedPhone = resolvedPhone.replaceAll(RegExp(r'[^\d]'), '');
+    if (cleanedPhone.isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('worker.error_missing_phone'.tr())),
+        );
+      }
+      return;
+    }
+
+    final contextMap =
+        TemplatePlaceholderService.buildContextFromTask(detail);
+    final parsedText =
+        TemplatePlaceholderService.replacePlaceholders(template.body, contextMap);
+    final encodedText = Uri.encodeComponent(parsedText);
+    final url = Uri.parse('https://wa.me/$cleanedPhone?text=$encodedText');
+
+    try {
+      if (await canLaunchUrl(url)) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      }
+    } catch (e) {
+      // Uživatel uvidí, že se nic nestalo; typicky chybí WhatsApp nebo omezení OS.
+      assert(false, 'launchUrl failed: $e');
+    }
   }
 
   /// Karta čísla letu s proklikem na FlightRadar24 – používá nativní detail.flightNumber.

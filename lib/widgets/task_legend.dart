@@ -8,24 +8,36 @@ import 'package:falconest/utils/task_visuals.dart';
 /// Sdílená legenda úkolů – zobrazuje kritické stavy (Nepřiřazeno, Konflikt) a typy služeb z DB.
 /// ConsumerWidget – sleduje taskCategoriesProvider. Při načítání zobrazí indikátor.
 /// Na začátku legendy jsou natvrdo chybové stavy (Nepřiřazeno, Časový konflikt), potom dynamické kategorie.
+/// Pokud [scrollHorizontally] je true, štítky se scrollují horizontálně a nikdy se nezalamují do více řádků.
 class TaskLegend extends ConsumerWidget {
-  const TaskLegend({super.key});
+  const TaskLegend({super.key, this.scrollHorizontally = false});
+
+  /// true = horizontální scroll místo zalamování (pro kompaktní hlavičku kalendáře).
+  final bool scrollHorizontally;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final asyncCategories = ref.watch(taskCategoriesProvider);
     return asyncCategories.when(
       loading: () => const SizedBox(height: 24, child: Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)))),
-      error: (_, _) => _buildLegendWrap(context, TaskVisuals.getLegendItems()),
+      error: (_, _) => _buildLegendContent(context, TaskVisuals.getLegendItems()),
       data: (categoriesByCode) {
         final items = categoriesByCode.isNotEmpty
             ? TaskVisuals.getLegendItemsFromCategories(categoriesByCode)
             : TaskVisuals.getLegendItems();
-        return _buildLegendWrap(context, items);
+        return _buildLegendContent(context, items);
       },
     );
   }
 
+  Widget _buildLegendContent(BuildContext context, List<TaskLegendItem> items) {
+    if (scrollHorizontally) {
+      return _buildLegendScrollRow(context, items);
+    }
+    return _buildLegendWrap(context, items);
+  }
+
+  /// Klasická varianta – Wrap s vertikálním zalamováním (např. obrazovka Úkoly).
   Widget _buildLegendWrap(BuildContext context, List<TaskLegendItem> items) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
@@ -36,6 +48,22 @@ class TaskLegend extends ConsumerWidget {
         children: items
             .map((item) => _LegendBadge(item: item))
             .toList(),
+      ),
+    );
+  }
+
+  /// Kompaktní varianta – horizontální scroll bez vertikálního zalamování (plánovací kalendář).
+  Widget _buildLegendScrollRow(BuildContext context, List<TaskLegendItem> items) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < items.length; i++) ...[
+            if (i > 0) const SizedBox(width: 8),
+            _LegendBadge(item: items[i]),
+          ],
+        ],
       ),
     );
   }

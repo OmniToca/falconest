@@ -7,11 +7,11 @@ import 'package:falconest/core/services/supabase_service.dart';
 
 /// Načte výchozí měnu aktuálního tenanta (agentury).
 ///
-/// OFFLINE-FIRST: Na mobilu (dart:io) nejprve čte z TenantLocal v Isaru – WorkerSyncService
-/// při synchronizaci ukládá tenants (id, currency) do Isaru. Tím se vyhne fallbacku na
+/// OFFLINE-FIRST: Na mobilu (dart:io) nejprve čte z Drift – WorkerSyncService
+/// při synchronizaci ukládá tenants (id, currency) do SQLite. Tím se vyhne fallbacku na
 /// profiles.preferred_currency a Worker UI zobrazí správnou měnu firmy i bez signálu.
 ///
-/// KROK 1: Mobil – Isar (přes tenant_currency_local, podmíněný import)
+/// KROK 1: Mobil – Drift (přes tenant_currency_local, podmíněný import)
 /// KROK 2: Lokální data nemá nebo web – Supabase
 ///
 /// Null = tenant nemá měnu nastavenou. Používá se spolu s profiles.preferred_currency
@@ -22,8 +22,8 @@ final currentTenantCurrencyProvider = FutureProvider<String?>((ref) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return null;
 
-  // KROK 1: Mobil – zkus načíst z Isaru (pouze dart:io, web používá stub který vrací null).
-  final fromLocal = await tenant_currency_local.getTenantCurrencyFromLocal(tenantId);
+  // KROK 1: Mobil – zkus načíst z Drift (pouze dart:io, web používá stub který vrací null).
+  final fromLocal = await tenant_currency_local.getTenantCurrencyFromLocal(ref, tenantId);
   if (fromLocal != null && fromLocal.trim().isNotEmpty) {
     return fromLocal.trim().toUpperCase();
   }

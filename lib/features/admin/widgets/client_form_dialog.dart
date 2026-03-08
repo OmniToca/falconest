@@ -13,10 +13,70 @@ const _clientTypeOptions = [
   ('agency', 'clients.type_agency'),
 ];
 
+/// Dropdown výběr doporučující agentury – pouze klienti s typem agency.
+///
+/// PROČ oddělený widget: Načítá clientsProvider a filtruje na agency. Zobrazuje se
+/// pouze v formuláři při výběru typu "Externí" – externí klient může být evidován
+/// s odkazem na agenturu, která nám ho doporučila.
+class _AgencyDropdown extends ConsumerWidget {
+  const _AgencyDropdown({
+    required this.selectedAgencyId,
+    this.currentClientId,
+    required this.onChanged,
+  });
+
+  final String? selectedAgencyId;
+  /// Při editaci vynecháme aktuálního klienta (nemůže být sám sobě agenturou).
+  final String? currentClientId;
+  final ValueChanged<String?> onChanged;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final clientsAsync = ref.watch(clientsFullListProvider);
+    return clientsAsync.when(
+      data: (allClients) {
+        final agencies = allClients
+            .where((c) =>
+                (c.clientType?.toLowerCase() ?? '') == 'agency' &&
+                c.id != (currentClientId ?? ''))
+            .toList();
+        return DropdownButtonFormField<String>(
+          value: selectedAgencyId != null && selectedAgencyId!.isNotEmpty
+              ? (agencies.any((a) => a.id == selectedAgencyId)
+                  ? selectedAgencyId
+                  : null)
+              : null,
+          decoration: InputDecoration(
+            labelText: 'clients.recommended_by_agency'.tr(),
+            border: const OutlineInputBorder(),
+          ),
+          items: [
+            DropdownMenuItem<String>(
+              value: null,
+              child: Text('clients.recommended_by_agency_none'.tr()),
+            ),
+            ...agencies.map((a) => DropdownMenuItem<String>(
+                  value: a.id,
+                  child: Text(a.name),
+                )),
+          ],
+          onChanged: onChanged,
+        );
+      },
+      loading: () => const LinearProgressIndicator(),
+      error: (e, _) => Text(
+        'common.error_with_message'.tr(namedArgs: {'message': e.toString()}),
+        style: TextStyle(color: Colors.red.shade700),
+      ),
+    );
+  }
+}
+
 /// Dialog pro vytvoření nebo úpravu klienta.
 ///
 /// Pole: Jméno (povinné), Email, Telefon, Typ klienta (Majitel/Externí/Agentura).
-/// Validace: jméno nesmí být prázdné. Při úspěchu invaliduje clientsProvider.
+/// Pro typ Externí navíc: Doporučující agentura (dropdown). Validace: jméno nesmí
+/// být prázdné. Při úspěchu invaliduje clientsProvider.
 class ClientFormDialog extends ConsumerStatefulWidget {
   const ClientFormDialog({
     super.key,
@@ -40,6 +100,8 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
   late TextEditingController _emailController;
   late TextEditingController _phoneController;
   String? _selectedClientType;
+  /// Doporučující agentura – pouze pro typ external. ID klienta (agency).
+  String? _selectedAgencyId;
 
   @override
   void initState() {
@@ -54,6 +116,10 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
       text: widget.client?.phone ?? '',
     );
     _selectedClientType = widget.client?.clientType;
+    // PROČ: agency_id platí pouze pro external – při editaci předvyplníme.
+    _selectedAgencyId = widget.client?.clientType?.toLowerCase() == 'external'
+        ? widget.client?.agencyId
+        : null;
   }
 
   @override
@@ -131,9 +197,27 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
                     );
                   }).toList(),
                   onChanged: (v) {
-                    setState(() => _selectedClientType = v);
+                    setState(() {
+                      _selectedClientType = v;
+                      // PROČ: agency_id má smysl pouze u external. Při změně na owner/agency vynulujeme.
+                      if (v?.toLowerCase() != 'external') {
+                        _selectedAgencyId = null;
+                      } else if (widget.client?.agencyId != null) {
+                        _selectedAgencyId = widget.client!.agencyId;
+                      }
+                    });
                   },
                 ),
+                // PROČ: Pole "Doporučující agentura" se zobrazuje JEN pro external –
+                // u majitele a agentury nemá smysl evidovat, kdo klienta doporučil.
+                if (_selectedClientType?.toLowerCase() == 'external') ...[
+                  const SizedBox(height: 16),
+                  _AgencyDropdown(
+                    selectedAgencyId: _selectedAgencyId,
+                    currentClientId: widget.client?.id,
+                    onChanged: (v) => setState(() => _selectedAgencyId = v),
+                  ),
+                ],
               ],
             ),
           ),
@@ -182,12 +266,18 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
     final phoneOpt = phone.isEmpty ? null : phone;
 
     try {
+      // PROČ: agency_id posíláme pouze u external – u owner/agency v DB má být NULL.
+      final agencyIdOpt = _selectedClientType?.toLowerCase() == 'external'
+          ? _selectedAgencyId
+          : null;
+
       if (widget.client != null) {
         final updated = widget.client!.copyWith(
           name: name,
           email: emailOpt,
           phone: phoneOpt,
           clientType: _selectedClientType,
+          agencyId: agencyIdOpt,
         );
         await ref.read(updateClientProvider)(updated);
       } else {
@@ -198,6 +288,7 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
           email: emailOpt,
           phone: phoneOpt,
           clientType: _selectedClientType,
+          agencyId: agencyIdOpt,
         );
         await ref.read(addClientProvider)(newClient);
       }

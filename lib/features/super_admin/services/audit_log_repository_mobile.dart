@@ -1,10 +1,9 @@
-/// Mobilní implementace AuditLogRepository – Isar offline-first.
+/// Mobilní implementace AuditLogRepository – Drift offline-first.
 ///
-/// Kompiluje se pouze pro dart:io. Používá PendingAuditAction pro offline zápis.
-import 'package:isar/isar.dart';
-import 'package:falconest/core/database/isar_service.dart';
-import 'package:falconest/core/database/models/pending_audit_action.dart';
-import 'package:falconest/core/database/models/sync_status.dart';
+/// Kompiluje se pouze pro dart:io. Používá Drift PendingAuditActions pro offline zápis.
+/// Isar odstraněn.
+import 'package:falconest/core/database/drift/repositories/drift_pending_audit_action_repository.dart';
+import 'package:falconest/core/database/drift/app_database.dart';
 import 'package:falconest/features/super_admin/services/audit_log_shared.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
@@ -12,6 +11,9 @@ class AuditLogRepository {
   AuditLogRepository._();
 
   static final _client = SupabaseService.client;
+  static late final AppDatabase _db = AppDatabase();
+  static late final DriftPendingAuditActionRepository _pendingRepo =
+      DriftPendingAuditActionRepository(_db);
 
   static Future<Map<String, String>> fetchActorNames(Set<String> userIds) async {
     if (userIds.isEmpty) return {};
@@ -72,15 +74,12 @@ class AuditLogRepository {
     final recordId = entry.recordId;
     if (table == null || recordId == null || !kSoftDeleteTables.contains(table)) return;
     try {
-      final isar = IsarService.instance;
-      final pending = PendingAuditAction()
-        ..actionType = 'restore'
-        ..tableName = table
-        ..recordId = recordId
-        ..tenantId = entry.tenantId
-        ..createdAtUtc = DateTime.now().toUtc()
-        ..syncStatus = SyncStatus.pending;
-      await isar.writeTxn(() async => isar.pendingAuditActions.put(pending));
+      await _pendingRepo.enqueue(
+        actionType: 'restore',
+        tableName: table,
+        recordId: recordId,
+        tenantId: entry.tenantId,
+      );
       await processPendingAuditActions();
     } catch (_) {
       await applyRestoreToSupabase(table, recordId);
@@ -92,15 +91,12 @@ class AuditLogRepository {
     final recordId = entry.recordId;
     if (table == null || recordId == null || !kSoftDeleteTables.contains(table)) return;
     try {
-      final isar = IsarService.instance;
-      final pending = PendingAuditAction()
-        ..actionType = 'hard_delete'
-        ..tableName = table
-        ..recordId = recordId
-        ..tenantId = entry.tenantId
-        ..createdAtUtc = DateTime.now().toUtc()
-        ..syncStatus = SyncStatus.pending;
-      await isar.writeTxn(() async => isar.pendingAuditActions.put(pending));
+      await _pendingRepo.enqueue(
+        actionType: 'hard_delete',
+        tableName: table,
+        recordId: recordId,
+        tenantId: entry.tenantId,
+      );
       await processPendingAuditActions();
     } catch (_) {
       await applyHardDeleteToSupabase(table, recordId);
@@ -109,20 +105,15 @@ class AuditLogRepository {
 
   static Future<void> processPendingAuditActions() async {
     try {
-      final isar = IsarService.instance;
-      final pending = await isar.pendingAuditActions
-          .filter()
-          .syncStatusEqualTo(SyncStatus.pending)
-          .findAll();
+      final pending = await _pendingRepo.getPending();
       for (final p in pending) {
         try {
           if (p.actionType == 'restore') {
-            await applyRestoreToSupabase(p.tableName, p.recordId);
+            await applyRestoreToSupabase(p.targetTable, p.recordId);
           } else if (p.actionType == 'hard_delete') {
-            await applyHardDeleteToSupabase(p.tableName, p.recordId);
+            await applyHardDeleteToSupabase(p.targetTable, p.recordId);
           }
-          p.syncStatus = SyncStatus.synced;
-          await isar.writeTxn(() async => isar.pendingAuditActions.put(p));
+          await _pendingRepo.markSynced(p);
         } catch (_) {}
       }
     } catch (_) {}

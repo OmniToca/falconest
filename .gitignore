@@ -51,3 +51,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Android signing – nikdy necommituj hesla ani keystore
+key.properties
+**/*.jks

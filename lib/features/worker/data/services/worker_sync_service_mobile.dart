@@ -1,19 +1,12 @@
-/// Mobilní implementace WorkerSyncService – Isar offline-first.
+/// Mobilní implementace WorkerSyncService – čte/zapisuje výhradně do Drift (SQLite).
 ///
-/// Kompiluje se pouze pro dart:io. Stahuje úkoly ze Supabase do Isaru,
-/// odesílá pending změny na server. Používá path_provider a Isar.
+/// Isar byl kompletně odstraněn – nestabilní na iOS ("Collection id is invalid").
+/// Všechna data pro Worker UI jsou nyní v relační SQLite databázi.
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
-import 'package:isar/isar.dart';
 
-import 'package:falconest/core/database/isar_service.dart';
-import 'package:falconest/core/database/models/apartment_local.dart';
-import 'package:falconest/core/database/models/client_local.dart';
-import 'package:falconest/core/database/models/reservation_local.dart';
-import 'package:falconest/core/database/models/sync_status.dart';
-import 'package:falconest/core/database/models/task_local.dart';
-import 'package:falconest/core/database/models/tenant_local.dart';
+import 'package:falconest/core/database/drift/database_provider.dart' show DriftSyncRepos;
 import 'package:falconest/core/services/supabase_service.dart';
 
 class WorkerSyncService {
@@ -23,28 +16,31 @@ class WorkerSyncService {
     String workerId,
     String tenantId, {
     void Function(String)? onSyncError,
+    DriftSyncRepos? driftRepos,
   }) async {
     try {
       if (workerId.isEmpty || tenantId.isEmpty) return;
 
-      await pushPendingUpdates(tenantId, onSyncError: onSyncError);
+      await pushPendingUpdates(tenantId, onSyncError: onSyncError, driftRepos: driftRepos);
 
-      // PROČ: Stahujeme měnu tenanta do Isaru – Worker UI ji potřebuje offline (formátování hotovosti).
-      await _syncTenantToIsar(tenantId);
+      if (driftRepos == null) return;
+
+      // PROČ: Stahujeme měnu tenanta – Worker UI ji potřebuje offline (formátování hotovosti).
+      await _syncTenant(tenantId, driftRepos);
+
+      // PROČ: Modul Communication – šablony zpráv pro řidiče. Full Replace.
+      await _syncMessageTemplates(tenantId, driftRepos);
 
       final now = DateTime.now().toUtc();
       final pastLimit = now.subtract(const Duration(days: 7)).toIso8601String();
       final futureLimit = now.add(const Duration(days: 14)).toIso8601String();
 
-      // Kritická pojistka: Pracovník nesmí do mobilu stáhnout úkoly ve stavu 'pending' (návrhy).
-      // PROČ: Do mobilu stahujeme pouze aktivní úkoly. Vyfakturované (archivované) úkoly pracovníkům
-      // do lokální Isar databáze nepatří, šetříme místo a data.
-      // PROČ: client_id, custom_location, custom_title – pro zobrazení jména a adresy u ručních externích úkolů (transfer).
+      // PROČ: Worker vidí úkol, pokud je v assigned_to NEBO v assigned_user_ids.
       final tasksData = await SupabaseService.client
           .from('tasks')
-          .select('id, tenant_id, apartment_id, client_id, custom_location, custom_title, reference_number, reservation_id, assigned_to, title, description, task_type, scheduled_start, status, photo_url, metadata, started_at, completed_at, invoiced_at')
+          .select('id, tenant_id, apartment_id, client_id, custom_location, custom_title, reference_number, reservation_id, assigned_to, assigned_user_ids, title, description, task_type, scheduled_start, status, photo_url, metadata, started_at, completed_at, invoiced_at')
           .eq('tenant_id', tenantId)
-          .eq('assigned_to', workerId)
+          .or('assigned_to.eq.$workerId,assigned_user_ids.cs.{$workerId}')
           .neq('status', 'pending')
           .isFilter('deleted_at', null)
           .isFilter('invoiced_at', null)
@@ -54,7 +50,7 @@ class WorkerSyncService {
 
       final tasksList = tasksData is List ? List<dynamic>.from(tasksData) : <dynamic>[];
       if (tasksList.isEmpty) {
-        await _clearWorkerTasksAndWrite(tenantId, workerId, [], [], [], []);
+        await _clearAndWrite(tenantId, workerId, [], [], [], [], driftRepos);
         return;
       }
 
@@ -81,7 +77,6 @@ class WorkerSyncService {
         apartmentsData = apartmentsData is List ? List<dynamic>.from(apartmentsData) : [];
       }
 
-      // PROČ: Stahujeme guest_name a guest_phone pro zobrazení check-in agentům a řidičům (kontakt v terénu).
       List<dynamic> reservationsData = [];
       if (reservationIds.isNotEmpty) {
         reservationsData = await SupabaseService.client
@@ -92,7 +87,6 @@ class WorkerSyncService {
         reservationsData = reservationsData is List ? List<dynamic>.from(reservationsData) : [];
       }
 
-      // PROČ: Stahujeme klienty pro externí úkoly – řidič vidí jméno klienta offline.
       List<dynamic> clientsData = [];
       if (clientIds.isNotEmpty) {
         clientsData = await SupabaseService.client
@@ -103,7 +97,15 @@ class WorkerSyncService {
         clientsData = clientsData is List ? List<dynamic>.from(clientsData) : [];
       }
 
-      await _clearWorkerTasksAndWrite(tenantId, workerId, tasksList, apartmentsData, reservationsData, clientsData);
+      await _clearAndWrite(
+        tenantId,
+        workerId,
+        tasksList,
+        apartmentsData,
+        reservationsData,
+        clientsData,
+        driftRepos,
+      );
     } catch (e, st) {
       onSyncError?.call(e.toString());
       if (kDebugMode) {
@@ -115,9 +117,7 @@ class WorkerSyncService {
     }
   }
 
-  /// Stáhne tenant (id, currency) ze Supabase a uloží do Isaru.
-  /// PROČ: currentTenantCurrencyProvider čte měnu z Isaru při offline – Worker UI zobrazí správnou měnu firmy.
-  static Future<void> _syncTenantToIsar(String tenantId) async {
+  static Future<void> _syncTenant(String tenantId, DriftSyncRepos driftRepos) async {
     if (tenantId.isEmpty) return;
     try {
       final tenantRes = await SupabaseService.client
@@ -128,256 +128,306 @@ class WorkerSyncService {
       if (tenantRes == null || tenantRes is! Map) return;
       final map = Map<String, dynamic>.from(tenantRes as Map);
       if (map.isEmpty) return;
-
-      final tenant = TenantLocal.fromMap(map);
-      if (tenant.supabaseId.isEmpty) return;
-
-      Isar isar;
-      try {
-        isar = IsarService.instance;
-      } on StateError {
-        return;
-      }
-
-      await isar.writeTxn(() async {
-        final existing = await isar.tenantLocals
-            .filter()
-            .supabaseIdEqualTo(tenant.supabaseId)
-            .findFirst();
-        if (existing != null) tenant.id = existing.id;
-        await isar.tenantLocals.put(tenant);
-      });
+      await driftRepos.tenant.upsertFromSupabaseMap(map);
     } catch (_) {}
   }
 
-  static Future<void> _clearWorkerTasksAndWrite(
+  static Future<void> _syncMessageTemplates(String tenantId, DriftSyncRepos driftRepos) async {
+    if (tenantId.isEmpty) return;
+    try {
+      final templatesData = await SupabaseService.client
+          .from('tenant_message_templates')
+          .select('id, tenant_id, key, name, body, channel, language_code, trigger_context, order_index')
+          .eq('tenant_id', tenantId)
+          .isFilter('deleted_at', null)
+          .order('order_index', ascending: true);
+
+      final templatesList = templatesData is List ? List<dynamic>.from(templatesData) : <dynamic>[];
+
+      await driftRepos.messageTemplate.clearForTenant(tenantId);
+      for (final raw in templatesList) {
+        final map = raw is Map<String, dynamic> ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+        if (map.isEmpty) continue;
+        final supabaseId = map['id']?.toString().trim();
+        if (supabaseId == null || supabaseId.isEmpty) continue;
+        await driftRepos.messageTemplate.upsertFromSupabaseMap(map);
+      }
+    } catch (_) {}
+  }
+
+  static Future<void> _clearAndWrite(
     String tenantId,
     String workerId,
     List<dynamic> tasksList,
     List<dynamic> apartmentsData,
     List<dynamic> reservationsData,
     List<dynamic> clientsData,
+    DriftSyncRepos driftRepos,
   ) async {
-    Isar isar;
-    try {
-      isar = IsarService.instance;
-    } on StateError {
-      return;
+    await driftRepos.task.clearTasksForWorker(tenantId, workerId);
+
+    for (final a in apartmentsData) {
+      final map = a is Map<String, dynamic> ? Map<String, dynamic>.from(a) : <String, dynamic>{};
+      if (map.isEmpty) continue;
+      await driftRepos.apartment.upsertFromSupabaseMap(map);
     }
 
-    await isar.writeTxn(() async {
-      final downloadedIds = <String>{};
-      for (final t in tasksList) {
-        final map = t is Map<String, dynamic> ? Map<String, dynamic>.from(t) : <String, dynamic>{};
-        final id = map['id']?.toString().trim();
-        if (id != null && id.isNotEmpty) downloadedIds.add(id);
-      }
-      final syncedToRemove = await isar.taskLocals
-          .filter()
-          .tenantIdEqualTo(tenantId)
-          .assignedUserSupabaseIdEqualTo(workerId)
-          .syncStatusEqualTo(SyncStatus.synced)
-          .findAll();
-      for (final t in syncedToRemove) {
-        if (t.supabaseId != null && !downloadedIds.contains(t.supabaseId)) {
-          await isar.taskLocals.delete(t.id);
-        }
-      }
+    for (final r in reservationsData) {
+      final map = r is Map<String, dynamic> ? Map<String, dynamic>.from(r) : <String, dynamic>{};
+      if (map.isEmpty) continue;
+      final supabaseId = map['id']?.toString().trim();
+      if (supabaseId == null || supabaseId.isEmpty) continue;
+      await driftRepos.reservation.upsertFromSupabaseMap(map);
+    }
 
-      for (final a in apartmentsData) {
-        final map = a is Map<String, dynamic> ? Map<String, dynamic>.from(a) : <String, dynamic>{};
-        if (map.isEmpty) continue;
-        final apt = ApartmentLocal.fromMap(map);
-        apt.syncStatus = SyncStatus.synced;
-        final existing = await isar.apartmentLocals.filter().supabaseIdEqualTo(apt.supabaseId).findFirst();
-        if (existing != null) apt.id = existing.id;
-        await isar.apartmentLocals.put(apt);
-      }
+    for (final c in clientsData) {
+      final map = c is Map<String, dynamic> ? Map<String, dynamic>.from(c) : <String, dynamic>{};
+      if (map.isEmpty) continue;
+      final supabaseId = map['id']?.toString().trim();
+      if (supabaseId == null || supabaseId.isEmpty) continue;
+      await driftRepos.client.upsertFromSupabaseMap(map);
+    }
 
-      for (final r in reservationsData) {
-        final map = r is Map<String, dynamic> ? Map<String, dynamic>.from(r) : <String, dynamic>{};
-        if (map.isEmpty) continue;
-        final res = ReservationLocal.fromMap(map);
-        final supabaseId = res.supabaseId;
-        if (supabaseId == null || supabaseId.isEmpty) continue;
-        final existing = await isar.reservationLocals
-            .filter()
-            .tenantIdEqualTo(tenantId)
-            .supabaseIdEqualTo(supabaseId)
-            .findFirst();
-        if (existing != null && existing.syncStatus == SyncStatus.pending) continue;
-        if (existing != null) res.id = existing.id;
-        res.syncStatus = SyncStatus.synced;
-        await isar.reservationLocals.put(res);
-      }
-
-      for (final c in clientsData) {
-        final map = c is Map<String, dynamic> ? Map<String, dynamic>.from(c) : <String, dynamic>{};
-        if (map.isEmpty) continue;
-        final client = ClientLocal.fromMap(map);
-        if (client.supabaseId == null || client.supabaseId!.isEmpty) continue;
-        final existing = await isar.clientLocals.filter().supabaseIdEqualTo(client.supabaseId!).findFirst();
-        if (existing != null) client.id = existing.id;
-        await isar.clientLocals.put(client);
-      }
-
-      for (final t in tasksList) {
-        final map = t is Map<String, dynamic> ? Map<String, dynamic>.from(t) : <String, dynamic>{};
-        if (map.isEmpty) continue;
-        final task = TaskLocal.fromMap(map);
-        final supabaseId = task.supabaseId;
-        if (supabaseId == null || supabaseId.isEmpty) continue;
-
-        final existingTask = await isar.taskLocals
-            .filter()
-            .supabaseIdEqualTo(supabaseId)
-            .findFirst();
-        if (existingTask != null && existingTask.syncStatus == SyncStatus.pending) continue;
-
-        if (existingTask != null) task.id = existingTask.id;
-        task.syncStatus = SyncStatus.synced;
-        await isar.taskLocals.put(task);
-      }
-    });
+    for (final t in tasksList) {
+      final map = t is Map<String, dynamic> ? Map<String, dynamic>.from(t) : <String, dynamic>{};
+      if (map.isEmpty) continue;
+      await driftRepos.task.upsertTaskFromSupabaseMap(map);
+    }
   }
 
+  /// Push pending úkolů na Supabase s Timestamp Merging (Smart Merge).
+  ///
+  /// PROČ TIMESTAMP MERGING: Bez něj by platilo "Last-write-wins" – mobilní aplikace
+  /// by po připojení přepsala změny, které mezitím udělal administrátor na webu.
+  /// Timestamp Merging před odesláním lokální mutace:
+  /// 1) Stáhne aktuální verzi úkolu ze serveru (updated_at, status, description, metadata, …).
+  /// 2) Pokud je server.updated_at novější než lokální last_synced_at → konflikt.
+  /// 3) Při konfliktu aplikuje byznysová pravidla (Smart Merge), odešle sloučený stav
+  ///    na Supabase a zapíše ho i do lokální Drift DB.
+  ///
+  /// BYZNYSOVÁ PRAVIDLA (PROČ takto):
+  /// - PRAVIDLO 1 (Status): Lokální změna statusu pracovníkem má přednost – pracovník byl
+  ///   na místě a práci dokončil; přepisovat jeho "completed" administrátorskou úpravou
+  ///   by bylo chybné.
+  /// - PRAVIDLO 2 (Poznámky): Pokud se změnily poznámky na serveru i lokálně, texty se
+  ///   nesmí přepsat, ale spojí se (append): "[Admin]: text ze serveru \n [Worker]: lokální text",
+  ///   aby se neztratila ani administrátorská ani terénní informace.
+  /// - PRAVIDLO 3 (Ostatní): U dat, která pracovník typicky nemění (termín úkolu, cena,
+  ///   název, typ úkolu), má vždy přednost novější verze ze serveru – zdroj pravdy je admin.
   static Future<void> pushPendingUpdates(
     String tenantId, {
     void Function(String)? onSyncError,
+    DriftSyncRepos? driftRepos,
   }) async {
     debugPrint('🔄 SYNC: Spouštím pushPendingUpdates...');
     if (tenantId.isEmpty) return;
 
-    await pushPendingReservationUpdates(tenantId, onSyncError: onSyncError);
+    await pushPendingReservationUpdates(tenantId, onSyncError: onSyncError, driftRepos: driftRepos);
 
-    Isar isar;
-    try {
-      isar = IsarService.instance;
-    } on StateError {
-      return;
-    }
+    if (driftRepos == null) return;
 
-    final pending = isar.taskLocals
-        .filter()
-        .tenantIdEqualTo(tenantId)
-        .syncStatusEqualTo(SyncStatus.pending)
-        .findAllSync();
-
+    final pending = await driftRepos.task.getPendingTasks(tenantId);
     if (pending.isEmpty) return;
 
     for (final task in pending) {
       final supabaseId = task.supabaseId;
       if (supabaseId == null || supabaseId.isEmpty) continue;
 
-      debugPrint('🔄 SYNC: Pokus o odeslání úkolu s ID: ${task.supabaseId}, nový status: ${task.status}');
+      debugPrint('🔄 SYNC: Pokus o odeslání úkolu s ID: $supabaseId, nový status: ${task.status}');
       try {
-        final updates = <String, dynamic>{'status': task.status};
-        if (task.startedAt != null) updates['started_at'] = task.startedAt!.toUtc().toIso8601String();
-        if (task.completedAt != null) updates['completed_at'] = task.completedAt!.toUtc().toIso8601String();
-        if (task.metadataJson != null && task.metadataJson!.trim().isNotEmpty) {
+        // ---------- KROK 1: Před odesláním stáhnout aktuální verzi úkolu ze serveru ----------
+        // PROČ: Abychom mohli detekovat konflikt (admin mezitím upravil úkol) a aplikovat Smart Merge.
+        final serverRow = await _fetchCurrentTaskFromServer(supabaseId, tenantId);
+
+        // ---------- KROK 2: Detekce konfliktu a sestavení sloučeného payloadu ----------
+        final serverUpdatedAt = serverRow != null ? _parseServerUpdatedAt(serverRow) : null;
+        final lastSynced = task.lastSyncedAt;
+        final hasConflict = serverUpdatedAt != null &&
+            (lastSynced == null || serverUpdatedAt.isAfter(lastSynced));
+
+        final Map<String, dynamic> updates;
+        String mergedStatus = task.status;
+        String? mergedDescription;
+        String? mergedMetadataJson;
+        String? serverTitle;
+        String? serverTaskType;
+        DateTime? serverScheduledStart;
+
+        if (hasConflict && serverRow != null) {
+          // Smart Merge: aplikace byznysových pravidel.
+          mergedStatus = task.status; // PRAVIDLO 1: status má vždy lokální (worker).
+          mergedDescription = _mergeNotes(
+            serverNotes: serverRow['description']?.toString().trim(),
+            localNotes: task.description.trim(),
+          );
+          final serverMeta = _parseMetadataFromDynamic(serverRow['metadata']);
+          final localMeta = _parseMetadataForSync(task.metadataJson ?? '{}');
+          final mergedMeta = _mergeMetadataMap(serverMeta ?? {}, localMeta);
+          mergedMetadataJson = mergedMeta.isEmpty ? null : jsonEncode(mergedMeta);
+
+          serverTitle = serverRow['title']?.toString().trim();
+          serverTaskType = serverRow['task_type']?.toString().trim();
+          final ss = serverRow['scheduled_start'];
+          if (ss != null) serverScheduledStart = DateTime.tryParse(ss.toString())?.toUtc();
+
+          updates = <String, dynamic>{
+            'status': mergedStatus,
+            'description': mergedDescription,
+          };
+          if (serverTitle != null && serverTitle.isNotEmpty) updates['title'] = serverTitle;
+          if (serverTaskType != null && serverTaskType.isNotEmpty) updates['task_type'] = serverTaskType;
+          if (serverScheduledStart != null) {
+            updates['scheduled_start'] = serverScheduledStart.toIso8601String();
+          }
+          if (mergedMeta.isNotEmpty) updates['metadata'] = mergedMeta;
+        } else {
+          // Žádný konflikt: odesíláme jen lokální změny (status, časy, metadata).
+          updates = <String, dynamic>{'status': task.status};
+          mergedDescription = task.description;
+          mergedMetadataJson = task.metadataJson;
+        }
+
+        if (task.startedAt != null) {
+          updates['started_at'] = task.startedAt!.toUtc().toIso8601String();
+        }
+        if (task.completedAt != null) {
+          updates['completed_at'] = task.completedAt!.toUtc().toIso8601String();
+        }
+        if (!hasConflict &&
+            task.metadataJson != null &&
+            task.metadataJson!.trim().isNotEmpty) {
           try {
             final parsed = _parseMetadataForSync(task.metadataJson!);
             if (parsed != null && parsed.isNotEmpty) updates['metadata'] = parsed;
           } catch (_) {}
         }
-        await SupabaseService.client
-            .from('tasks')
-            .update(updates)
-            .eq('id', supabaseId);
-        debugPrint('✅ SYNC ÚSPĚCH: Úkol ${task.supabaseId} byl odeslán.');
-      } catch (e, st) {
+
+        await SupabaseService.client.from('tasks').update(updates).eq('id', supabaseId).eq('tenant_id', tenantId);
+        debugPrint('✅ SYNC ÚSPĚCH: Úkol $supabaseId byl odeslán.');
+
+        if (hasConflict) {
+          await driftRepos.task.applyMergedTaskAndMarkSynced(
+            task,
+            mergedStatus: mergedStatus,
+            mergedDescription: mergedDescription,
+            mergedMetadataJson: mergedMetadataJson,
+            title: serverTitle,
+            taskType: serverTaskType,
+            scheduledStart: serverScheduledStart,
+          );
+        } else {
+          await driftRepos.task.markTaskSynced(task);
+        }
+      } catch (e) {
         onSyncError?.call(e.toString());
         debugPrint('❌ SYNC CHYBA (Supabase): $e');
-        debugPrint('❌ SYNC StackTrace: $st');
         if (kDebugMode) {
           // ignore: avoid_print
           print('WorkerSyncService.pushPendingUpdates: update failed for $supabaseId: $e');
         }
         continue;
       }
-
-      await isar.writeTxn(() async {
-        task.syncStatus = SyncStatus.synced;
-        task.lastSyncedAt = DateTime.now().toUtc();
-        task.lastUpdated = DateTime.now().toUtc();
-        await isar.taskLocals.put(task);
-      });
     }
   }
 
-  /// Odešle lokální změny rezervací (status checked_in při Check-inu) na Supabase.
+  /// Stáhne aktuální řádek úkolu ze Supabase (pro Timestamp Merging).
+  static Future<Map<String, dynamic>?> _fetchCurrentTaskFromServer(String taskId, String tenantId) async {
+    try {
+      final res = await SupabaseService.client
+          .from('tasks')
+          .select('id, updated_at, status, description, metadata, scheduled_start, title, task_type')
+          .eq('id', taskId)
+          .eq('tenant_id', tenantId)
+          .maybeSingle();
+      if (res == null || res is! Map) return null;
+      return Map<String, dynamic>.from(res as Map);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static DateTime? _parseServerUpdatedAt(Map<String, dynamic> serverRow) {
+    final v = serverRow['updated_at'];
+    if (v == null) return null;
+    if (v is DateTime) return v.toUtc();
+    final parsed = DateTime.tryParse(v.toString());
+    return parsed?.toUtc();
+  }
+
+  /// Sloučí poznámky při konfliktu: "[Admin]: text ze serveru \n [Worker]: lokální text".
+  static String _mergeNotes({String? serverNotes, String? localNotes}) {
+    final server = (serverNotes ?? '').trim();
+    final local = (localNotes ?? '').trim();
+    if (server.isEmpty) return local;
+    if (local.isEmpty) return server;
+    return '[Admin]: $server\n[Worker]: $local';
+  }
+
+  static Map<String, dynamic>? _parseMetadataFromDynamic(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    try {
+      final decoded = jsonDecode(raw.toString());
+      if (decoded is Map) return Map<String, dynamic>.from(decoded);
+    } catch (_) {}
+    return null;
+  }
+
+  /// Sloučí metadata: klíče ze serveru + klíče z lokálu (lokální přepíše při duplicitě).
+  static Map<String, dynamic> _mergeMetadataMap(Map<String, dynamic> server, Map<String, dynamic>? local) {
+    final out = Map<String, dynamic>.from(server);
+    if (local != null && local.isNotEmpty) {
+      for (final e in local.entries) {
+        out[e.key] = e.value;
+      }
+    }
+    return out;
+  }
+
+
   static Future<void> pushPendingReservationUpdates(
     String tenantId, {
     void Function(String)? onSyncError,
+    DriftSyncRepos? driftRepos,
   }) async {
     if (tenantId.isEmpty) return;
+    if (driftRepos == null) return;
 
-    Isar isar;
-    try {
-      isar = IsarService.instance;
-    } on StateError {
-      return;
-    }
-
-    final pending = isar.reservationLocals
-        .filter()
-        .tenantIdEqualTo(tenantId)
-        .syncStatusEqualTo(SyncStatus.pending)
-        .findAllSync();
+    final pending = await driftRepos.reservation.getPendingReservations(tenantId);
 
     for (final res in pending) {
       final supabaseId = res.supabaseId;
       if (supabaseId == null || supabaseId.isEmpty) continue;
 
-      debugPrint('🔄 SYNC: Rezervace ${res.supabaseId} → status: ${res.status}');
+      debugPrint('🔄 SYNC: Rezervace $supabaseId → status: ${res.status}');
       try {
         await SupabaseService.client
             .from('reservations')
             .update({'status': res.status})
             .eq('id', supabaseId)
             .eq('tenant_id', tenantId);
-        debugPrint('✅ SYNC ÚSPĚCH: Rezervace ${res.supabaseId} byla odeslána.');
-      } catch (e, st) {
+        debugPrint('✅ SYNC ÚSPĚCH: Rezervace $supabaseId byla odeslána.');
+
+        await driftRepos.reservation.markReservationSynced(res);
+      } catch (e) {
         onSyncError?.call(e.toString());
         debugPrint('❌ SYNC CHYBA (Rezervace): $e');
         if (kDebugMode) {
           // ignore: avoid_print
           print('WorkerSyncService.pushPendingReservationUpdates: $supabaseId: $e');
-          // ignore: avoid_print
-          print(st);
         }
         continue;
       }
-
-      await isar.writeTxn(() async {
-        res.syncStatus = SyncStatus.synced;
-        res.lastUpdated = DateTime.now().toUtc();
-        await isar.reservationLocals.put(res);
-      });
     }
   }
 
-  /// Vrací počet záznamů (úkoly + rezervace) čekajících na odeslání do Supabase.
-  /// Používá se pro UI indikaci – pracovník vidí, že má lokální změny.
-  static Future<int> getPendingSyncCount(String tenantId) async {
+  static Future<int> getPendingSyncCount(String tenantId, {DriftSyncRepos? driftRepos}) async {
     if (tenantId.isEmpty) return 0;
-    Isar isar;
-    try {
-      isar = IsarService.instance;
-    } on StateError {
-      return 0;
-    }
-    final pendingTasks = isar.taskLocals
-        .filter()
-        .tenantIdEqualTo(tenantId)
-        .syncStatusEqualTo(SyncStatus.pending)
-        .countSync();
-    final pendingRes = isar.reservationLocals
-        .filter()
-        .tenantIdEqualTo(tenantId)
-        .syncStatusEqualTo(SyncStatus.pending)
-        .countSync();
-    return pendingTasks + pendingRes;
+    if (driftRepos == null) return 0;
+
+    final pendingTasks = await driftRepos.task.getPendingTasks(tenantId);
+    final pendingRes = await driftRepos.reservation.getPendingReservations(tenantId);
+    return pendingTasks.length + pendingRes.length;
   }
 
   static Map<String, dynamic>? _parseMetadataForSync(String raw) {

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/super_admin/providers/tenant_detail_provider.dart';
 
@@ -12,6 +13,7 @@ import 'package:falconest/features/super_admin/providers/tenant_detail_provider.
 /// [trial_ends_at] – konec zkušební doby; když v budoucnosti, zobrazíme štítek „V Trialu“.
 /// [paid_until] – zaplaceno do; když v minulosti → badge „Nezaplaceno“.
 /// [systemAnnouncement] – text Globálního Megafonu; neprázdný = aktuálně se vysílá všem.
+/// [acquiredBy] / [managedBy] – Lovec a Farmář (profile_id z profiles); pro přiřazení zodpovědnosti za agenturu.
 class TenantRow {
   const TenantRow({
     required this.id,
@@ -27,6 +29,8 @@ class TenantRow {
     this.currency,
     this.discountPercentage = 0,
     this.deletedAt,
+    this.acquiredBy,
+    this.managedBy,
   });
 
   final String id;
@@ -45,6 +49,10 @@ class TenantRow {
   final int discountPercentage;
   /// Soft delete: když není null, agentura je skrytá ze seznamu.
   final DateTime? deletedAt;
+  /// Lovec – profile_id zaměstnance, který agenturu získal.
+  final String? acquiredBy;
+  /// Farmář – profile_id zaměstnance, který se o agenturu stará.
+  final String? managedBy;
 }
 
 /// Model záznamu z tabulky invitations (čekající pozvánka pro daného tenant_id).
@@ -126,20 +134,24 @@ class TenantWithStatus {
   bool get isActive => hasAdminProfile;
 }
 
-/// Provider načítající všechny tenanty (agentury) z Supabase.
+/// Provider načítající tenanty (agentury) z Supabase.
 ///
-/// Čistý dotaz BEZ filtrace – Super Admin vidí VŠECHNY záznamy.
-/// Sloupce: id, name (created_at a notes volitelné – tabulka je může nemít).
+/// Super Admin vidí VŠECHNY záznamy. Account Manager jen ty, kde je Lovec nebo Farmář
+/// (acquired_by / managed_by = jeho profile_id) – ochrana citlivých dat.
 /// PROČ: Bezpečnostní limit 500 záznamů, aby nedošlo k zahlcení paměti při 1000+ agenturách.
 final allTenantsProvider = FutureProvider<List<TenantRow>>((ref) async {
   try {
-    // Čistý select – Super Admin vidí vše; filtr deleted_at IS NULL (soft delete)
-    final response = await SupabaseService.client
+    final auth = ref.read(authNotifierProvider).state;
+    final role = auth.role;
+    final profileId = auth.profileId ?? '';
+    var query = SupabaseService.client
         .from('tenants')
-        .select('id, name')
-        .isFilter('deleted_at', null)
-        .order('name', ascending: true)
-        .limit(500);
+        .select('id, name, acquired_by, managed_by')
+        .isFilter('deleted_at', null);
+    if (role == 'account_manager' && profileId.isNotEmpty) {
+      query = query.or('acquired_by.eq.$profileId,managed_by.eq.$profileId');
+    }
+    final response = await query.order('name', ascending: true).limit(500);
 
     if (kDebugMode) {
       // ignore: avoid_print
@@ -234,6 +246,8 @@ TenantRow _parseTenant(Map<String, dynamic> map) {
   if (deletedAtRaw != null) {
     deletedAt = DateTime.tryParse(deletedAtRaw.toString());
   }
+  final acquiredBy = (map['acquired_by'] as String?)?.trim();
+  final managedBy = (map['managed_by'] as String?)?.trim();
   return TenantRow(
     id: id,
     name: name,
@@ -248,6 +262,8 @@ TenantRow _parseTenant(Map<String, dynamic> map) {
     currency: currency?.isNotEmpty == true ? currency : null,
     discountPercentage: discountPercentage,
     deletedAt: deletedAt,
+    acquiredBy: acquiredBy?.isEmpty == true ? null : acquiredBy,
+    managedBy: managedBy?.isEmpty == true ? null : managedBy,
   );
 }
 
@@ -470,17 +486,23 @@ Future<(int total, Map<String, int> activeByTenant)> _loadModuleAdoption(
 final tenantsWithStatusProvider =
     FutureProvider<List<TenantWithStatus>>((ref) async {
   final client = SupabaseService.client;
+  final auth = ref.read(authNotifierProvider).state;
+  final role = auth.role;
+  final profileId = auth.profileId ?? '';
 
   // KROK 1: Pouze tenants – minimální dotaz, bez joinů. Hlavní seznam nesmí padnout.
-  // PROČ: Bezpečnostní limit 500 záznamů, aby nedošlo k zahlcení paměti při 1000+ agenturách.
+  // PROČ: Bezpečnostní limit 500 záznamů. Account Manager vidí JEN agentury, kde je Lovec nebo Farmář
+  // (filtrace acquired_by / managed_by) – ochrana citlivých dat a zamezení přístupu k cizím klientům.
   List<TenantRow> tenants;
   try {
-    final tenantsRes = await client
+    var query = client
         .from('tenants')
         .select('id, name, is_active, trial_ends_at, paid_until, system_announcement, billing_info, price_per_apartment, currency, discount_percentage')
-        .isFilter('deleted_at', null)
-        .order('name', ascending: true)
-        .limit(500);
+        .isFilter('deleted_at', null);
+    if (role == 'account_manager' && profileId.isNotEmpty) {
+      query = query.or('acquired_by.eq.$profileId,managed_by.eq.$profileId');
+    }
+    final tenantsRes = await query.order('name', ascending: true).limit(500);
     final tenantList = _toList(tenantsRes);
     tenants = [];
     for (var i = 0; i < tenantList.length; i++) {

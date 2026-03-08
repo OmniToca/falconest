@@ -28,10 +28,13 @@ import 'package:falconest/features/settings/module_editor_screen.dart';
 import 'package:falconest/features/admin/admin_zones_screen.dart';
 import 'package:falconest/features/settings/settings_screen.dart';
 import 'package:falconest/features/super_admin/audit_log_screen.dart';
+import 'package:falconest/features/super_admin/onboarding_wizard_screen.dart';
+import 'package:falconest/features/super_admin/providers/all_tenants_provider.dart';
 import 'package:falconest/features/super_admin/super_admin_dashboard.dart';
 import 'package:falconest/features/super_admin/tenant_detail_screen.dart';
 import 'package:falconest/features/worker/screens/worker_absences_screen.dart';
 import 'package:falconest/features/worker/screens/worker_dashboard_screen.dart';
+import 'package:falconest/features/worker/screens/worker_earnings_screen.dart';
 import 'package:falconest/features/worker/screens/worker_wallet_screen.dart';
 import 'package:falconest/features/worker/screens/worker_task_detail_screen.dart';
 import 'package:falconest/features/owner/owner_apartment_detail_screen.dart';
@@ -61,6 +64,7 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         authNotifier,
         pinUnlocked,
         uiMode,
+        ref,
       );
     },
     routes: [
@@ -148,6 +152,16 @@ final goRouterProvider = Provider<GoRouter>((ref) {
               final id = state.pathParameters['id'] ?? '';
               return TenantDetailScreen(tenantId: id);
             },
+            routes: [
+              GoRoute(
+                path: 'onboarding',
+                name: 'onboardingWizard',
+                builder: (context, state) {
+                  final id = state.pathParameters['id'] ?? '';
+                  return SuperAdminOnboardingWizardScreen(tenantId: id);
+                },
+              ),
+            ],
           ),
           GoRoute(
             path: 'audit-log',
@@ -172,6 +186,11 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             path: 'wallet',
             name: 'workerWallet',
             builder: (context, state) => const WorkerWalletScreen(),
+          ),
+          GoRoute(
+            path: 'earnings',
+            name: 'workerEarnings',
+            builder: (context, state) => const WorkerEarningsScreen(),
           ),
           GoRoute(
             path: 'task/:id',
@@ -247,10 +266,11 @@ final goRouterProvider = Provider<GoRouter>((ref) {
   );
 });
 
-/// Vrací cílovou cestu. NEPRŮSTŘELNÁ PRIORITA – super_admin PŘED tenant_id!
+/// Vrací cílovou cestu. NEPRŮSTŘELNÁ PRIORITA – super_admin a account_manager PŘED tenant_id!
 ///
-/// 1. role == super_admin → vždy /super-admin (nebo /admin při převtělení). Na tenant_id se NEKOUKÁ.
-/// 2. tenant_id == null (u ne‑super_admin) → čekárna
+/// 1. role == super_admin NEBO account_manager → vždy /super-admin (nebo /admin při převtělení).
+///    Account Manager vidí jen agentury, kde je Lovec/Farmář (filtrace v provideru).
+/// 2. tenant_id == null (u ne‑super_admin a ne‑account_manager) → čekárna
 /// 3. role == admin/manager → podle [uiMode]: forceMobile→/worker, forceDesktop→/admin,
 ///    auto→nativní mobil→/worker, web→/admin
 /// 4. default → worker
@@ -274,8 +294,8 @@ Future<String?> _getRedirectTargetForRole(
   }
 
   // NEPRŮSTŘELNÝ ROUTER – PŘESNĚ TOTO POŘADÍ (bez else-if řetězení).
-  // Super_admin: tenant_id v DB je null – to je v pořádku, přesměruj na dashboard.
-  if (role == 'super_admin') {
+  // Super_admin a account_manager: HQ role, přesměruj na velín (/super-admin). Při převtělení na /admin.
+  if (role == 'super_admin' || role == 'account_manager') {
     if (authNotifier.state.isImpersonating) return '/admin';
     return '/super-admin';
   }
@@ -308,12 +328,14 @@ Future<String?> _getRedirectTargetForRole(
 /// 2. Přihlášený na /: čeká na profil, pak podle role
 /// 3. /pin-setup: povoleno když isLoggedIn (mobilní flow)
 /// 4. Worker/admin/owner – přístupové omezení
+/// 5. P1 (audit): Account Manager smí na detail tenanta jen pokud je Lovec/Farmář u této agentury.
 Future<String?> _redirectLogic(
   BuildContext context,
   GoRouterState state,
   AuthNotifier authNotifier,
   bool pinUnlocked,
   AdminUiMode uiMode,
+  Ref ref,
 ) async {
   final location = state.matchedLocation;
   final uri = state.uri;
@@ -353,6 +375,28 @@ Future<String?> _redirectLogic(
     return null; // Zůstat na loading obrazovce
   }
 
+  // Pravidlo P1 (audit): Account Manager smí na detail tenanta jen pokud je Lovec/Farmář u této agentury.
+  // Bez této pojistky by mohl někdo zkusit přístup k cizí agentuře přes přímou URL.
+  if (isLoggedIn && role == 'account_manager' && location.startsWith('/super-admin/tenant/')) {
+    final match = RegExp(r'^/super-admin/tenant/([^/]+)').firstMatch(location);
+    final tenantId = match?.group(1)?.trim();
+    if (tenantId != null && tenantId.isNotEmpty) {
+      try {
+        final allowed = await ref.read(tenantsWithStatusProvider.future);
+        final allowedIds = allowed.map((t) => t.tenant.id).toSet();
+        if (!allowedIds.contains(tenantId)) {
+          if (kDebugMode) {
+            // ignore: avoid_print
+            print('Router (P1): Account Manager nemá přístup k agentuře $tenantId → přesměrování na nástěnku.');
+          }
+          return '/super-admin?access_denied=tenant';
+        }
+      } catch (_) {
+        return '/super-admin?access_denied=tenant';
+      }
+    }
+  }
+
   // Pravidlo 1: Nepřihlášený smí na login (/), registraci (/register),
   // obnovení hesla (/update-password), dokončení invite (/set-password) a zvací obrazovku (/invite).
   if (!isLoggedIn) {
@@ -388,7 +432,8 @@ Future<String?> _redirectLogic(
   final endOfPaidDay = paidUntil != null
       ? DateTime.utc(paidUntil.year, paidUntil.month, paidUntil.day, 23, 59, 59)
       : null;
-  if (role != 'super_admin') {
+  // Kill Switch (paid_until) se nevztahuje na HQ role – super_admin a account_manager.
+  if (role != 'super_admin' && role != 'account_manager') {
     if (endOfPaidDay != null && now.isAfter(endOfPaidDay) && location != '/payment-required') {
       return '/payment-required';
     }
@@ -407,14 +452,14 @@ Future<String?> _redirectLogic(
     return null;
   }
 
-  // Pravidlo 1c: Super_admin na /waiting-room nesmí zůstat – VŽDY ho pusť na dashboard
-  if (role == 'super_admin' && location == '/waiting-room') {
+  // Pravidlo 1c: Super_admin a account_manager na /waiting-room nesmí zůstat – VŽDY pusť na velín
+  if ((role == 'super_admin' || role == 'account_manager') && location == '/waiting-room') {
     return '/super-admin';
   }
 
-  // Pravidlo 1d: Uživatel čeká na schválení (tenant_id == null, role != super_admin)
+  // Pravidlo 1d: Uživatel čeká na schválení (tenant_id == null, není HQ role)
   // Smí pouze na /waiting-room, jinak tam přesměruj
-  if (role != 'super_admin' && authNotifier.state.tenantId == null) {
+  if (role != 'super_admin' && role != 'account_manager' && authNotifier.state.tenantId == null) {
     if (location == '/waiting-room') return null;
     return '/waiting-room';
   }
@@ -435,22 +480,25 @@ Future<String?> _redirectLogic(
     return null;
   }
 
-  // Pravidlo 2c: Super_admin – domovská stránka /super-admin, ALE smí na /admin/*
-  // při převtělení (isImpersonating == true). NESMÍ ho vyhodit zpět na /super-admin!
-  if (role == 'super_admin') {
+  // Pravidlo 2c: Super_admin a account_manager – domovská stránka /super-admin, smí na /admin/*
+  // při převtělení (isImpersonating == true). Ochrana: bez převtělení nesmí na /admin.
+  if (role == 'super_admin' || role == 'account_manager') {
     if (authNotifier.state.isImpersonating && location.startsWith('/admin')) {
       return null; // Povolit – převtělen, zůstat na /admin
     }
     if (location.startsWith('/admin') && !authNotifier.state.isImpersonating) {
-      return '/super-admin'; // Super_admin bez převtělení nesmí na /admin
+      return '/super-admin'; // HQ bez převtělení nesmí na /admin
     }
     if (location.startsWith('/worker') || location.startsWith('/owner')) {
       return '/super-admin';
     }
   }
 
-  // Pravidlo 2d: Admin/Manager – přepínač Web vs. Mobil. Při změně uiMode přesměruj.
+  // Pravidlo 2d: Admin/Manager – nesmí na velín; přepínač Web vs. Mobil. Při změně uiMode přesměruj.
   if (role == 'admin' || role == 'manager') {
+    if (location.startsWith('/super-admin')) {
+      return _getRedirectTargetForRole(authNotifier, pinUnlocked, uiMode);
+    }
     if (uiMode == AdminUiMode.forceMobile && location.startsWith('/admin')) {
       return '/worker';
     }

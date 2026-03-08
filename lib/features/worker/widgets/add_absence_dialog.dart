@@ -5,9 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
-import 'package:falconest/core/utils/id_generator.dart';
 import 'package:falconest/core/offline/mutation_queue_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/settings/providers/profile_provider.dart';
 
 /// Důvody nepřítomnosti – volby pro dropdown.
@@ -69,35 +69,42 @@ class _AddAbsenceDialogState extends ConsumerState<AddAbsenceDialog> {
     }
   }
 
-  /// Vytvoření upozorňovacího úkolu pro dispečera – zobrazení v kalendáři při hlášení nepřítomnosti.
-  /// Obsahuje lokalizovaný důvod, jméno pracovníka a rozsah dat.
-  Map<String, dynamic> _buildAlertTaskPayload({
+  /// Odešle notifikaci všem adminům/manažerům agentury (zvoneček) – stejný vzor jako výběr hotovosti.
+  /// Volá se po úspěšném vložení absence se statusem pending.
+  Future<void> _notifyAdminsAboutAbsenceRequest({
     required String tenantId,
-    required String profileId,
-    required String translatedReason,
     required String userName,
     required String formattedStart,
     required String formattedEnd,
-    required String startIso,
-  }) {
-    final title = '$translatedReason: $userName ($formattedStart - $formattedEnd)';
-    final nowIso = DateTime.now().toUtc().toIso8601String();
-    return {
-      'id': const Uuid().v4(),
-      'tenant_id': tenantId,
-      'reference_number': generateTaskRef(),
-      'task_type': 'other',
-      'status': 'pending',
-      'title': title,
-      'description': 'worker.absence_alert_task_description'.tr(),
-      'created_by': profileId,
-      'apartment_id': null,
-      'assigned_to': null,
-      'scheduled_start': startIso,
-      'due_date': startIso,
-      'local_updated_at': nowIso,
-      'metadata': <String, dynamic>{},
-    };
+  }) async {
+    try {
+      final client = SupabaseService.client;
+      final adminsRes = await client
+          .from('profiles')
+          .select('id')
+          .eq('tenant_id', tenantId)
+          .inFilter('role', ['admin', 'manager'])
+          .isFilter('deleted_at', null);
+      final admins = List<dynamic>.from(adminsRes as List);
+      if (admins.isEmpty) return;
+      final title = 'admin.notification_absence_request_title'.tr(namedArgs: {'name': userName});
+      final message = 'admin.notification_absence_request_message'.tr(namedArgs: {'start': formattedStart, 'end': formattedEnd});
+      final payloads = <Map<String, dynamic>>[];
+      for (final a in admins) {
+        final m = Map<String, dynamic>.from(a as Map);
+        final adminId = (m['id'] as String?)?.trim();
+        if (adminId == null || adminId.isEmpty) continue;
+        payloads.add({
+          'tenant_id': tenantId,
+          'profile_id': adminId,
+          'title': title,
+          'message': message,
+          'type': 'absence',
+        });
+      }
+      if (payloads.isEmpty) return;
+      await client.from('notifications').insert(payloads);
+    } catch (_) {}
   }
 
   Future<void> _submit() async {
@@ -132,16 +139,13 @@ class _AddAbsenceDialogState extends ConsumerState<AddAbsenceDialog> {
 
     setState(() => _isSaving = true);
 
-    // Načtení jména přihlášeného uživatele pro titul alert úkolu.
     final profile = await ref.read(currentUserProfileProvider.future);
     final userName = profile.name.trim().isNotEmpty ? profile.name.trim() : 'worker.drawer_my_profile'.tr();
 
-    // Formát jako v Admin – ISO pro konzistenci s StaffAbsence.fromJson.
     final startStr = _startDate!.toIso8601String();
     final endStr = (_endDate ?? _startDate!).toIso8601String();
     final formattedStart = DateFormat('dd.MM.yyyy').format(_startDate!);
     final formattedEnd = DateFormat('dd.MM.yyyy').format(_endDate ?? _startDate!);
-    final translatedReason = _reasonLabel(_reason);
 
     final payload = <String, dynamic>{
       'id': const Uuid().v4(),
@@ -150,22 +154,17 @@ class _AddAbsenceDialogState extends ConsumerState<AddAbsenceDialog> {
       'start_date': startStr,
       'end_date': endStr,
       'reason': _reason,
+      'status': staffAbsenceStatusPending,
     };
-
-    // Vytvoření upozorňovacího úkolu pro dispečera – zobrazí se v kalendáři jako nepřiřazený.
-    final alertTaskPayload = _buildAlertTaskPayload(
-      tenantId: tenantId,
-      profileId: profileId,
-      translatedReason: translatedReason,
-      userName: userName,
-      formattedStart: formattedStart,
-      formattedEnd: formattedEnd,
-      startIso: startStr,
-    );
 
     try {
       await SupabaseService.client.from('staff_absences').insert(payload);
-      await SupabaseService.client.from('tasks').insert(alertTaskPayload);
+      await _notifyAdminsAboutAbsenceRequest(
+        tenantId: tenantId,
+        userName: userName,
+        formattedStart: formattedStart,
+        formattedEnd: formattedEnd,
+      );
       if (!mounted) return;
       Navigator.of(context).pop();
       widget.onSaved();
@@ -183,11 +182,6 @@ class _AddAbsenceDialogState extends ConsumerState<AddAbsenceDialog> {
               table: 'staff_absences',
               action: 'INSERT',
               payload: payload,
-            );
-        await ref.read(mutationQueueServiceProvider).enqueueMutation(
-              table: 'tasks',
-              action: 'INSERT',
-              payload: alertTaskPayload,
             );
         if (!mounted) return;
         Navigator.of(context).pop();

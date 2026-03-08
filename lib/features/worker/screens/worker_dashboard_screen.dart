@@ -297,15 +297,15 @@ void _showLanguageDialog(BuildContext context, WidgetRef ref) {
       children: [
         SimpleDialogOption(
           onPressed: () => selectAndClose('cs'),
-          child: const Text('Čeština'),
+          child: Text('common.language_cs'.tr()),
         ),
         SimpleDialogOption(
           onPressed: () => selectAndClose('en'),
-          child: const Text('English'),
+          child: Text('common.language_en'.tr()),
         ),
         SimpleDialogOption(
           onPressed: () => selectAndClose('es'),
-          child: const Text('Español'),
+          child: Text('common.language_es'.tr()),
         ),
       ],
     ),
@@ -394,6 +394,15 @@ class _WorkerDrawer extends ConsumerWidget {
               onTap: () {
                 Navigator.of(context).pop();
                 context.push('/worker/wallet');
+              },
+            ),
+            // Moje výdělky – výplaty z úkolů (modul Vyúčtování).
+            ListTile(
+              leading: const Icon(Icons.monetization_on_outlined),
+              title: Text('worker.menu_earnings'.tr()),
+              onTap: () {
+                Navigator.of(context).pop();
+                context.push('/worker/earnings');
               },
             ),
             // Moje nepřítomnost – přehled a žádosti o dovolenou/nemoc.
@@ -536,6 +545,37 @@ class _TaskCard extends StatelessWidget {
 
   final WorkerTask task;
 
+  /// Jméno zobrazené na kartě: apartmán → klient/host → custom_title → title. Nikdy pomlčka.
+  static String _displayName(WorkerTask t) {
+    if (t.apartmentName != null && t.apartmentName!.trim().isNotEmpty) {
+      return t.apartmentName!.trim();
+    }
+    if (t.clientName != null && t.clientName!.trim().isNotEmpty) {
+      return t.clientName!.trim();
+    }
+    final guestName = t.metadata?['guest_name']?.toString().trim();
+    if (guestName != null && guestName.isNotEmpty) return guestName;
+    final clientName = t.metadata?['client_name']?.toString().trim();
+    if (clientName != null && clientName.isNotEmpty) return clientName;
+    if (t.customTitle != null && t.customTitle!.trim().isNotEmpty) {
+      return t.customTitle!.trim();
+    }
+    return t.title.trim().isNotEmpty ? t.title.trim() : 'worker.task_unnamed'.tr();
+  }
+
+  /// Adresa pro zobrazení a navigaci: apartment → custom_location → metadata.
+  static String _displayAddress(WorkerTask t) {
+    if (t.apartmentAddress != null && t.apartmentAddress!.trim().isNotEmpty) {
+      return t.apartmentAddress!.trim();
+    }
+    if (t.customLocation != null && t.customLocation!.trim().isNotEmpty) {
+      return t.customLocation!.trim();
+    }
+    final addr = t.metadata?['address']?.toString().trim();
+    if (addr != null && addr.isNotEmpty) return addr;
+    return '';
+  }
+
   Future<void> _openMaps(BuildContext context, String? address) async {
     final query = (address ?? '').trim();
     if (query.isEmpty) return;
@@ -549,11 +589,18 @@ class _TaskCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final timeStr = DateFormat('HH:mm').format(task.scheduledStart);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final taskDay = DateTime(task.scheduledStart.year, task.scheduledStart.month, task.scheduledStart.day);
+    final isToday = taskDay == today;
+    final timeStr = isToday
+        ? DateFormat('HH:mm').format(task.scheduledStart)
+        : DateFormat('dd.MM. HH:mm').format(task.scheduledStart);
     final iconColor = _iconColorForTaskType(task.taskType);
     final statusColor = task.status == 'in_progress' ? _primaryBlue : Colors.amber.shade700;
     final hasInstructions = (task.description.trim()).isNotEmpty;
-    final address = task.apartmentAddress ?? '';
+    final displayName = _displayName(task);
+    final address = _displayAddress(task);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -581,33 +628,25 @@ class _TaskCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Text(
-                          timeStr,
-                          style: const TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black87,
-                          ),
-                        ),
-                        if (task.referenceNumber != null && task.referenceNumber!.trim().isNotEmpty) ...[
-                          const SizedBox(width: 8),
-                          Text(
-                            '#${task.referenceNumber!.trim()}',
-                            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-                          ),
-                        ],
-                      ],
+                    Text(
+                      timeStr,
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
                     ),
                     const SizedBox(height: 4),
+                    // Omezujeme délku textu na 1 řádek pro lepší čitelnost na malých displejích.
                     Text(
-                      task.apartmentName ?? '—',
+                      displayName,
                       style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
                         color: Colors.black87,
                       ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                     // Zobrazení přesného typu úkolu pro lepší orientaci v terénu
                     Padding(
@@ -625,13 +664,14 @@ class _TaskCard extends StatelessWidget {
                     ),
                     if (address.isNotEmpty) ...[
                       const SizedBox(height: 2),
+                      // Adresa max. 1 řádek – zamezí přetečení přes navigační tlačítko vpravo.
                       Text(
                         address,
                         style: TextStyle(
                           fontSize: 13,
                           color: Colors.grey.shade600,
                         ),
-                        maxLines: 2,
+                        maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
                     ],
@@ -659,8 +699,9 @@ class _TaskCard extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 12),
               Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   if (address.isNotEmpty)
                     Material(

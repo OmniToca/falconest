@@ -45,6 +45,9 @@ bool _isTodayWithinReservation(String? checkIn, String? checkOut) {
 /// Záměrně porovnáváme proti anglickým DB hodnotám – nikoli proti českému 'Hotovo',
 /// které by nikdy nesedělo a způsobilo by chybný stav „K úklidu“ i pro dokončené úkoly.
 bool _hasOpenCleaningTask(List<TaskRow> tasks, String apartmentId) {
+  final now = DateTime.now();
+  final endOfToday = DateTime(now.year, now.month, now.day, 23, 59, 59, 999);
+
   for (final t in tasks) {
     if (t.apartmentId != apartmentId) continue;
     final type = (t.taskType).toLowerCase().trim();
@@ -52,9 +55,20 @@ bool _hasOpenCleaningTask(List<TaskRow> tasks, String apartmentId) {
     if (!isCleaning) continue;
     final s = (t.status).toLowerCase().trim();
     if (_isCompletedStatus(s)) continue;
+    // A) Ignorujeme návrhy – byt není reálně „K úklidu", dokud dispečer nepotvrdí.
+    if (_isDraftOrProposalStatus(s)) continue;
+    // B) Ignorujeme úkoly v budoucnu – úklid na příští týden neznamená „K úklidu" dnes.
+    final taskDate = t.scheduledStart ?? t.dueDate;
+    if (taskDate.isAfter(endOfToday)) continue;
     return true;
   }
   return false;
+}
+
+/// Stav úkolu znamená „návrh k odsouhlasení" – byt tedy není reálně v režimu „K úklidu".
+bool _isDraftOrProposalStatus(String status) {
+  final lower = status.trim().toLowerCase();
+  return lower == 'draft' || lower == 'návrh' || lower == 'navrh';
 }
 
 /// Vrací true, pokud status znamená dokončený úkol (anglické DB hodnoty + legacy).
@@ -96,7 +110,7 @@ String getApartmentStatusForToday(
 ///
 /// KROK C: Jinak → apartments.status.clean (Volno).
 final apartmentStatusProvider =
-    Provider.family<String, String>((ref, apartmentId) {
+    Provider.autoDispose.family<String, String>((ref, apartmentId) {
   final reservations = ref.watch(adminReservationsProvider);
   final tasks = ref.watch(adminTasksStreamProvider);
 

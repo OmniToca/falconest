@@ -97,7 +97,7 @@ class CheckinTaskScreen extends ConsumerWidget {
                   taskId: taskId,
                   detail: detail,
                   finishKey: 'worker.task_detail_finish',
-                  beforeComplete: (ctx, ref, mediaUrls) =>
+                  beforeComplete: (ctx, ref, mediaUrls, {localPhotoPaths}) =>
                       maybeShowCashCollectionDialog(
                     ctx,
                     ref,
@@ -108,6 +108,7 @@ class CheckinTaskScreen extends ConsumerWidget {
                       if (ctx.mounted) ctx.pop();
                     },
                     mediaUrls: mediaUrls.isEmpty ? null : mediaUrls,
+                    localPhotoPaths: localPhotoPaths,
                   ),
                 ),
               ],

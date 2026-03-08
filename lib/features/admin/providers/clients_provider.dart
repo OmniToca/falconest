@@ -1,28 +1,108 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/models/client_address_model.dart';
 import 'package:falconest/core/models/client_model.dart';
+import 'package:falconest/core/repositories/client/client_repository.dart';
+import 'package:falconest/core/repositories/settlements/settlement_repository.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
-/// Provider načítající seznam klientů z tabulky [clients].
+/// Příznak, zda se načítá další stránka (nekonečný scroll).
+/// Notifier ho nastavuje v loadMore() pro zobrazení indikátoru na konci seznamu.
+final clientsLoadingMoreProvider = StateProvider<bool>((ref) => false);
+
+/// Notifier pro stránkovaný seznam klientů se server-side vyhledáváním.
 ///
-/// Filtr podle tenant_id zajišťuje multi-tenant izolaci.
-/// Soft delete: ignorujeme záznamy s deleted_at IS NOT NULL.
-/// Používá se na obrazovce Klienti a pro dropdown při vytváření externích úkolů.
-final clientsProvider = FutureProvider<List<ClientModel>>((ref) async {
+/// PROČ: Při 1000+ klientech nelze stahovat všechny naráz. build() načte první stránku,
+/// loadMore() připojuje další, search(query) resetuje a načte s filtrem.
+class PaginatedClientsNotifier extends AsyncNotifier<List<ClientModel>> {
+  int _offset = 0;
+  static const int _limit = 50;
+  bool _hasMore = true;
+  String _searchQuery = '';
+
+  @override
+  Future<List<ClientModel>> build() async {
+    _offset = 0;
+    _hasMore = true;
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return [];
+
+    final list = await ClientRepository.getPaginatedClients(
+      tenantId,
+      limit: _limit,
+      offset: 0,
+      searchQuery: _searchQuery.isEmpty ? null : _searchQuery,
+    );
+    _offset = list.length;
+    _hasMore = list.length >= _limit;
+    return list;
+  }
+
+  /// Načte další stránku a připojí ji k aktuálnímu seznamu.
+  /// Volá se při scrollu ke konci seznamu. Pokud _hasMore je false, nic nedělá.
+  Future<void> loadMore() async {
+    if (!_hasMore) return;
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return;
+
+    ref.read(clientsLoadingMoreProvider.notifier).state = true;
+    try {
+      final list = await ClientRepository.getPaginatedClients(
+        tenantId,
+        limit: _limit,
+        offset: _offset,
+        searchQuery: _searchQuery.isEmpty ? null : _searchQuery,
+      );
+      _offset += list.length;
+      _hasMore = list.length >= _limit;
+
+      final state = this.state;
+      if (state.hasValue && list.isNotEmpty) {
+        this.state = AsyncValue.data([...state.value!, ...list]);
+      }
+    } finally {
+      ref.read(clientsLoadingMoreProvider.notifier).state = false;
+    }
+  }
+
+  /// Server-side vyhledávání: reset offsetu, nastaví dotaz a načte první stránku.
+  /// Volá se z UI s debounce (např. 500 ms po posledním stisku).
+  Future<void> search(String query) async {
+    _searchQuery = query.trim();
+    _offset = 0;
+    _hasMore = true;
+    state = const AsyncValue.loading();
+    state = await AsyncValue.guard(() => build());
+  }
+}
+
+/// Provider stránkovaného seznamu klientů pro obrazovku Klienti.
+///
+/// Používá PaginatedClientsNotifier – build() načte první stránku, loadMore() a search()
+/// volá UI. ref.watch(clientsProvider) vrací AsyncValue<List<ClientModel>>.
+/// Ostatní obrazovky (dropdowny, detail) používají [clientsFullListProvider].
+final clientsProvider =
+    AsyncNotifierProvider<PaginatedClientsNotifier, List<ClientModel>>(
+  PaginatedClientsNotifier.new,
+);
+
+/// Plný seznam klientů (až 500) pro dropdowny a jiné moduly.
+///
+/// PROČ: Formuláře (výběr klienta, doporučující agentura) potřebují seznam klientů;
+/// stránkovaný provider vrací jen načtené stránky. Tento provider načte jedním dotazem
+/// až 500 záznamů bez vyhledávání – pro výběr z dropdownu stačí.
+final clientsFullListProvider = FutureProvider<List<ClientModel>>((ref) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];
 
-  final response = await SupabaseService.client
-      .from('clients')
-      .select('id, tenant_id, name, email, phone, client_type, profile_id, created_at, deleted_at')
-      .eq('tenant_id', tenantId)
-      .isFilter('deleted_at', null)
-      .order('name');
-
-  return (response as List)
-      .map((e) => ClientModel.fromJson(e as Map<String, dynamic>))
-      .toList();
+  final list = await ClientRepository.getPaginatedClients(
+    tenantId,
+    limit: 500,
+    offset: 0,
+    searchQuery: null,
+  );
+  return list;
 });
 
 /// Provider pro přidání nového klienta – vrací async funkci pro insert.
@@ -71,6 +151,7 @@ final updateClientProvider = Provider<Future<void> Function(ClientModel client)>
       if (client.phone != null) 'phone': client.phone,
       if (client.clientType != null) 'client_type': client.clientType,
       'profile_id': client.profileId,
+      'agency_id': client.agencyId,
     };
 
     await SupabaseService.client
@@ -89,7 +170,7 @@ final updateClientProvider = Provider<Future<void> Function(ClientModel client)>
 ///
 /// Vrací mapu: status (String), last_login (DateTime?), invite_link (String?).
 final clientPortalStatusProvider =
-    FutureProvider.family<Map<String, dynamic>?, String>((ref, profileId) async {
+    FutureProvider.autoDispose.family<Map<String, dynamic>?, String>((ref, profileId) async {
   if (profileId.isEmpty) return null;
 
   final res = await SupabaseService.client
@@ -99,7 +180,7 @@ final clientPortalStatusProvider =
       .maybeSingle();
 
   if (res == null) return null;
-  final map = res as Map<String, dynamic>;
+  final map = Map<String, dynamic>.from(res);
   final status = (map['status']?.toString() ?? 'pending').toLowerCase();
 
   DateTime? lastLogin;
@@ -127,6 +208,40 @@ final clientPortalStatusProvider =
   };
 });
 
+/// Provider načítající adresy klienta z tabulky [client_addresses].
+///
+/// Používá se v detailu klienta (typ agency) – Adresář pro transfery.
+/// Invaliduj po přidání nebo smazání adresy pro okamžité překreslení seznamu.
+final clientAddressesProvider =
+    FutureProvider.autoDispose.family<List<ClientAddressModel>, String>((ref, clientId) async {
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty || clientId.isEmpty) return [];
+  return ClientRepository.fetchAddressesForClient(tenantId, clientId);
+});
+
+/// Provider: seznam externích klientů doporučených danou agenturou.
+///
+/// PROČ: Tab "Doporučení klienti" u detailu agentury – zobrazí klienty s agency_id =
+/// ID této agentury. Slouží pro přehled, kdo nám klienta přivedl.
+final clientsRecommendedByAgencyProvider =
+    FutureProvider.autoDispose.family<List<ClientModel>, String>((ref, agencyId) async {
+  if (agencyId.trim().isEmpty) return [];
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return [];
+
+  final response = await SupabaseService.client
+      .from('clients')
+      .select('id, tenant_id, name, email, phone, client_type, profile_id, agency_id, created_at, deleted_at')
+      .eq('tenant_id', tenantId)
+      .eq('agency_id', agencyId)
+      .isFilter('deleted_at', null)
+      .order('name');
+
+  return (response as List)
+      .map((e) => ClientModel.fromJson(e as Map<String, dynamic>))
+      .toList();
+});
+
 /// Provider pro soft delete klienta – nastaví deleted_at.
 ///
 /// Důvod: Zachování historie pro úkoly, které na klienta odkazují (client_id).
@@ -146,4 +261,17 @@ final softDeleteClientProvider = Provider<Future<void> Function(String clientId)
         .eq('id', clientId)
         .eq('tenant_id', tenantId);
   };
+});
+
+/// Provider: historie provizí (task_commissions) vázaných na klienta – pro záložku Finance.
+///
+/// PROČ: V detailu klienta zobrazíme vyplacené i čekající částky z modulu Vyúčtování.
+/// Řazení od nejnovějších. Závisí na modulu settlements (zámek v UI).
+final clientFinancesProvider =
+    FutureProvider.autoDispose.family<List<Map<String, dynamic>>, String>((ref, clientId) async {
+  if (clientId.trim().isEmpty) return [];
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return [];
+
+  return SettlementRepository.instance.getCommissionsForClient(tenantId, clientId);
 });

@@ -173,6 +173,32 @@ class SuperAdminService {
     }
   }
 
+  /// Nastaví Lovec (tenants.acquired_by) – volá se z dropdownu v detailu tenanta; null vymaže přiřazení.
+  static Future<void> updateTenantAcquiredBy(String tenantId, String? acquiredBy) async {
+    if (tenantId.isEmpty) throw ArgumentError('tenantId musí být neprázdný');
+    await SupabaseService.client
+        .from('tenants')
+        .update({'acquired_by': acquiredBy?.trim().isEmpty == true ? null : acquiredBy})
+        .eq('id', tenantId)
+        .select();
+    if (kDebugMode) {
+      debugPrint('[SuperAdminService] updateTenantAcquiredBy: tenant=$tenantId acquiredBy=$acquiredBy');
+    }
+  }
+
+  /// Nastaví Farmář (tenants.managed_by) – volá se z dropdownu v detailu tenanta; null vymaže přiřazení.
+  static Future<void> updateTenantManagedBy(String tenantId, String? managedBy) async {
+    if (tenantId.isEmpty) throw ArgumentError('tenantId musí být neprázdný');
+    await SupabaseService.client
+        .from('tenants')
+        .update({'managed_by': managedBy?.trim().isEmpty == true ? null : managedBy})
+        .eq('id', tenantId)
+        .select();
+    if (kDebugMode) {
+      debugPrint('[SuperAdminService] updateTenantManagedBy: tenant=$tenantId managedBy=$managedBy');
+    }
+  }
+
   /// Aktualizuje trial a platnost modulu pro tenanta (tenant_modules.is_trial, trial_ends_at, valid_until).
   /// Volá se z ModuleSubscriptionDialog po uložení. Řádek musí existovat (modul musí být aktivní).
   static Future<void> updateTenantModuleTrial(

@@ -96,8 +96,16 @@ final ownerApartmentsProvider = FutureProvider<List<OwnerApartmentWithStatus>>((
 /// - První úkol v seznamu = ten s nejpozdějším datem = aktuálně nejrelevantnější.
 /// - completed → byt je čistý; in_progress → probíhá úklid; pending → čeká.
 /// - cancelled se přeskakuje – bereme další úkol (pokud existuje).
+///
+/// BUGFIX – před výpočtem stavu filtrujeme:
+/// A) Návrhy (draft/návrh): Úkol ve stavu návrh je jen k odsouhlasení – majitel vidí
+///    aktuální stav bytu podle potvrzených úkolů, ne podle návrhů.
+/// B) Dalekou budoucnost: Úkol se scheduled_start > konec dneška ignorujeme – úklid
+///    na příští týden nesmí způsobit, že dnes byt svítí „čeká na úklid".
 List<OwnerApartmentWithStatus> _parseAndComputeStatus(List<dynamic> raw) {
   final result = <OwnerApartmentWithStatus>[];
+  final now = DateTime.now();
+  final endOfToday = DateTime(now.year, now.month, now.day, 23, 59, 59, 999);
 
   for (final item in raw) {
     final map = item as Map<String, dynamic>;
@@ -112,6 +120,21 @@ List<OwnerApartmentWithStatus> _parseAndComputeStatus(List<dynamic> raw) {
       tasks = tasksRaw
           .whereType<Map<String, dynamic>>()
           .where((t) => t['scheduled_start'] != null)
+          .where((t) {
+            // A) Ignorujeme návrhy – majitel vidí stav podle potvrzených úkolů.
+            final s = (t['status'] as String? ?? '').trim().toLowerCase();
+            if (_isDraftOrProposalStatus(s)) return false;
+            // B) Ignorujeme úkoly v budoucnu – scheduled_start musí být ≤ konec dneška.
+            final raw = t['scheduled_start'];
+            DateTime? scheduled;
+            if (raw is String) {
+              scheduled = DateTime.tryParse(raw);
+            } else if (raw is DateTime) {
+              scheduled = raw;
+            }
+            if (scheduled == null || scheduled.isAfter(endOfToday)) return false;
+            return true;
+          })
           .toList();
     }
 
@@ -138,6 +161,11 @@ List<OwnerApartmentWithStatus> _parseAndComputeStatus(List<dynamic> raw) {
   return result;
 }
 
+/// Stav úkolu znamená „návrh k odsouhlasení" – pro výpočet stavu bytu ignorujeme.
+bool _isDraftOrProposalStatus(String status) {
+  return status == 'draft' || status == 'návrh' || status == 'navrh';
+}
+
 /// Vypočte stav bytu podle seznamu úkolů (už seřazených od nejnovějšího).
 ///
 /// První úkol v seznamu = nejnovější (nejpozdější scheduled_start).
@@ -149,12 +177,15 @@ OwnerApartmentStatus _computeStatus(List<Map<String, dynamic>> tasksSorted) {
   final lastTask = tasksSorted.first;
   final status = lastTask['status'] as String? ?? '';
 
-  switch (status) {
+  switch (status.toLowerCase().trim()) {
     case 'completed':
+    case 'done':
+    case 'hotovo':
       return OwnerApartmentStatus.clean;
     case 'in_progress':
       return OwnerApartmentStatus.cleaningInProgress;
     case 'pending':
+    case 'assigned':
       return OwnerApartmentStatus.pendingCleaning;
     case 'cancelled':
       // Zrušený úkol – vezmeme další v pořadí (pokud existuje)

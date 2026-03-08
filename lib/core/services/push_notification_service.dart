@@ -4,12 +4,12 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 
-import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/repositories/user_device/user_device_repository.dart';
 
-/// Služba pro sběr FCM tokenů zařízení a jejich zápis do Supabase.
+/// Služba pro sběr FCM tokenů zařízení a jejich zápis do databáze.
 ///
-/// FÁZE 2: Pouze sběr a evidence adres (zápis do user_devices). Zatím neřešíme
-/// odesílání zpráv ani zobrazení notifikací v pop-upu.
+/// ODPOVĚDNOST: Firebase API (requestPermission, getToken, onTokenRefresh).
+/// Zápis do Supabase provádí [UserDeviceRepository] – čisté oddělení vrstev.
 ///
 /// **Proč upsert tokenu:** Uživatel může mít více zařízení (telefon + tablet),
 /// může aplikaci přeinstalovat (nový token), nebo se může přihlásit na jiný
@@ -19,7 +19,6 @@ import 'package:falconest/core/services/supabase_service.dart';
 ///
 /// **Firebase konfigurace:** Pro funkčnost je nutné spustit `flutterfire configure`
 /// a mít v projektu Firebase projekt s povoleným Cloud Messaging.
-/// Na webu bez Firebase konfigurace se inicializace tiše přeskočí.
 class PushNotificationService {
   PushNotificationService._();
 
@@ -27,51 +26,38 @@ class PushNotificationService {
   static PushNotificationService get instance => _instance;
 
   StreamSubscription<String>? _tokenRefreshSubscription;
+  String? _currentProfileId;
+  String? _currentTenantId;
 
-  /// Typ platformy zařízení – pro zápis do user_devices.device_type.
-  /// dart:io Platform na webu není dostupný, proto používáme Flutter foundation.
-  static String _getDeviceType() {
-    if (kIsWeb) return 'web';
-    switch (defaultTargetPlatform) {
-      case TargetPlatform.iOS:
-        return 'ios';
-      case TargetPlatform.android:
-        return 'android';
-      default:
-        return 'web';
-    }
-  }
-
-  /// Inicializuje FCM a zaregistruje token zařízení v Supabase.
+  /// Inicializuje FCM a zaregistruje token zařízení v databázi.
   ///
   /// Volá se po úspěšném přihlášení, když máme platný [profileId] a [tenantId].
   /// 1) Požádá o oprávnění k notifikacím
   /// 2) Získá FCM token
-  /// 3) Provede upsert do tabulky user_devices (fcm_token jako unikátní klíč)
-  /// 4) Nastaví listener na obnovu tokenu – při změně (reinstall, logout/jiný účet)
-  ///    se nový token okamžitě zapíše do DB
+  /// 3) Zapíše token do user_devices přes [UserDeviceRepository]
+  /// 4) Nastaví listener na obnovu tokenu – při změně se nový token zapíše
   ///
-  /// Při chybě (Firebase nekonfigurován, odmítnuté oprávnění) se tiše vrátí
-  /// – neblokuje přihlášení uživatele.
+  /// Při chybě zápisu do DB vyhodí výjimku – volající (AuthNotifier) ji zachytí
+  /// a zaloguje. Při zamítnutí oprávnění nebo prázdném tokenu tiše vrátí (očekávané).
   Future<void> initialize(String profileId, String tenantId) async {
+    debugPrint('FCM TRACE 3: Start initialize()');
     if (profileId.isEmpty || tenantId.isEmpty) return;
 
+    _currentProfileId = profileId;
+    _currentTenantId = tenantId;
+
     try {
-      // Firebase může být již inicializovaný v main() – pak apps.isNotEmpty.
-      // Bez flutterfire configure může init selhat (chybí google-services.json apod.).
       if (Firebase.apps.isEmpty) {
         await Firebase.initializeApp();
       }
     } catch (e) {
       if (kDebugMode) {
-        // ignore: avoid_print
-        print('PushNotificationService: Firebase init failed (skip FCM): $e');
+        debugPrint('PushNotificationService: Firebase init failed (skip FCM): $e');
       }
       return;
     }
 
     try {
-      // 1) Požádat o oprávnění (iOS zobrazí systémový dialog).
       final settings = await FirebaseMessaging.instance.requestPermission(
         alert: true,
         badge: true,
@@ -79,77 +65,85 @@ class PushNotificationService {
       );
       if (settings.authorizationStatus == AuthorizationStatus.denied ||
           settings.authorizationStatus == AuthorizationStatus.notDetermined) {
-        if (kDebugMode) {
-          // ignore: avoid_print
-          print('PushNotificationService: Notification permission denied.');
-        }
         return;
       }
 
-      // 2) Získat aktuální token.
+      // FIX: Race condition na iOS – getToken() vyžaduje APNS token, který se
+      // inicializuje asynchronně. Bez čekání vzniká chyba [apns-token-not-set].
+      // Ochrana: Pokud APNS po čekání zůstane null, nevolat getToken() – vyhodil by
+      // apns-token-not-set a způsobil Riverpod crash v AuthNotifier.
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+        String? apnsToken = await FirebaseMessaging.instance.getAPNSToken();
+        if (apnsToken == null) {
+          await Future<void>.delayed(const Duration(seconds: 3));
+          apnsToken = await FirebaseMessaging.instance.getAPNSToken();
+        }
+        debugPrint('FCM TRACE 4: APNS token status: $apnsToken');
+        if (apnsToken == null) {
+          debugPrint(
+            'FCM WARNING: APNS token není k dispozici '
+            '(zkontrolujte Xcode Capabilities nebo Apple Developer účet). '
+            'Notifikace jsou pro tuto relaci deaktivovány.',
+          );
+          return;
+        }
+      }
+
       final token = await FirebaseMessaging.instance.getToken();
-      if (token == null || token.isEmpty) return;
+      if (token == null || token.isEmpty) {
+        debugPrint('FCM TRACE 5: FCM token je NULL, končím.');
+        return;
+      }
+      debugPrint('FCM TRACE 5: Získán FCM token: $token');
 
-      // 3) Upsert do Supabase – fcm_token je UNIQUE, při shodě se aktualizuje řádek.
-      await _upsertToken(
-        profileId: profileId,
-        tenantId: tenantId,
-        fcmToken: token,
-      );
+      await _writeTokenToDb(profileId, tenantId, token);
+      debugPrint('FCM TRACE 6: Token úspěšně zapsán do DB.');
 
-      // 4) Listener na obnovu tokenu – Firebase může token změnit (vypršení, reinstall).
       _tokenRefreshSubscription?.cancel();
       _tokenRefreshSubscription =
           FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
-        if (newToken.isNotEmpty) {
-          _upsertToken(
-            profileId: profileId,
-            tenantId: tenantId,
-            fcmToken: newToken,
-          ).catchError((e) {
+        if (newToken.isNotEmpty &&
+            _currentProfileId != null &&
+            _currentTenantId != null) {
+          _writeTokenToDb(
+            _currentProfileId!,
+            _currentTenantId!,
+            newToken,
+          ).catchError((e, st) {
+            debugPrint('CRITICAL FCM ERROR: onTokenRefresh upsert failed: $e');
             if (kDebugMode) {
-              // ignore: avoid_print
-              print('PushNotificationService: onTokenRefresh upsert failed: $e');
+              debugPrint('CRITICAL FCM ERROR: $st');
             }
           });
         }
       });
     } catch (e) {
-      if (kDebugMode) {
-        // ignore: avoid_print
-        print('PushNotificationService: initialize failed: $e');
-      }
+      rethrow;
     }
   }
 
-  /// Zruší listener na obnovu tokenu. Volat při odhlášení.
+  /// Zapíše token do DB přes repozitář. Při chybě vyhodí výjimku.
+  Future<void> _writeTokenToDb(
+    String profileId,
+    String tenantId,
+    String fcmToken,
+  ) async {
+    await UserDeviceRepository.instance.upsertToken(
+      profileId: profileId,
+      tenantId: tenantId,
+      fcmToken: fcmToken,
+      deviceType: UserDeviceRepository.getDeviceType(),
+    );
+  }
+
+  /// Zruší listener na obnovu tokenu a vymaže uložený profil.
+  /// Volat při odhlášení.
   void dispose() {
     _tokenRefreshSubscription?.cancel();
     _tokenRefreshSubscription = null;
-  }
-
-  /// Zapíše nebo aktualizuje token v tabulce user_devices.
-  ///
-  /// Upsert: při konfliktu na fcm_token se provede UPDATE (last_active_at,
-  /// profile_id, tenant_id). Tím se zachytí i přihlášení na stejné zařízení
-  /// s jiným účtem – token zůstane, ale přiřadí se novému profilu.
-  Future<void> _upsertToken({
-    required String profileId,
-    required String tenantId,
-    required String fcmToken,
-  }) async {
-    final deviceType = _getDeviceType();
-    final now = DateTime.now().toUtc().toIso8601String();
-
-    await SupabaseService.client.from('user_devices').upsert(
-      {
-        'tenant_id': tenantId,
-        'profile_id': profileId,
-        'fcm_token': fcmToken,
-        'device_type': deviceType,
-        'last_active_at': now,
-      },
-      onConflict: 'fcm_token',
-    );
+    _currentProfileId = null;
+    _currentTenantId = null;
   }
 }
+
+

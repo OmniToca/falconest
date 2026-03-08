@@ -1,5 +1,3 @@
-import 'dart:ui';
-
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,6 +7,7 @@ import 'package:falconest/core/audit/enterprise_audit_payload.dart';
 import 'package:falconest/features/super_admin/audit_log_display_helpers.dart';
 import 'package:falconest/features/super_admin/providers/all_tenants_provider.dart';
 import 'package:falconest/features/super_admin/providers/audit_log_provider.dart';
+import 'package:falconest/core/utils/app_modal_utils.dart';
 import 'package:falconest/features/super_admin/services/audit_log_repository.dart';
 
 /// Modální dialog Audit Log (Odpadkový koš) – vizuálně shodný s dialogem Nastavení.
@@ -22,26 +21,14 @@ class AuditLogModal {
   /// Otevře Audit Log jako modální dialog (blur, centrované okno se zakulacenými rohy).
   /// Používáme showGeneralDialog místo nové routy, aby uživatel zůstal na nástěnce a
   /// mohl po zavření dialogu pokračovat bez přepínání obrazovky.
+  /// Používá [showAppModal] pro jednotný vizuál napříč aplikací.
   static Future<void> show(BuildContext hostContext) {
-    return showGeneralDialog<void>(
+    return showAppModal<void>(
       context: hostContext,
-      barrierDismissible: true,
       barrierLabel: 'super_admin.barrier_audit'.tr(),
-      barrierColor: Colors.black54,
-      transitionDuration: const Duration(milliseconds: 250),
-      pageBuilder: (_, _, _) => const SizedBox.shrink(),
-      transitionBuilder: (_, animation, secondaryAnimation, child) {
-        return BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-          child: FadeTransition(
-            opacity: animation,
-            child: ScaleTransition(
-              scale: CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
-              child: _AuditLogModalContent(hostContext: hostContext),
-            ),
-          ),
-        );
-      },
+      maxWidth: 1000,
+      maxHeightPx: 800,
+      child: _AuditLogModalContent(hostContext: hostContext),
     );
   }
 }
@@ -59,29 +46,7 @@ class _AuditLogModalContent extends ConsumerWidget {
     final actorNamesAsync = ref.watch(auditLogActorNamesProvider);
     final selectedTenantId = ref.watch(auditLogTenantFilterProvider);
 
-    return Center(
-      child: Material(
-        color: Colors.transparent,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(
-            maxWidth: 1000,
-            maxHeight: 800,
-          ),
-          child: Container(
-            width: MediaQuery.of(context).size.width * 0.9,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(24),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.15),
-                  blurRadius: 24,
-                  offset: const Offset(0, 8),
-                ),
-              ],
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Column(
+    return Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 _buildHeader(context),
@@ -141,11 +106,7 @@ class _AuditLogModalContent extends ConsumerWidget {
                   ),
                 ),
               ],
-            ),
-          ),
-        ),
-      ),
-    );
+            );
   }
 
   void _onClose() {

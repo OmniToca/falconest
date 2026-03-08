@@ -17,6 +17,7 @@ import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/apartment_services_options_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/reservation_services_repository.dart';
+import 'package:falconest/features/calendar/providers/planning_calendar_provider.dart';
 
 /// Zda je typ služby transfer – pro zobrazení pole Číslo letu v rezervaci.
 bool _isTransferServiceType(String? type) {
@@ -61,12 +62,18 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
   String _reservationSource = 'Other';
   late String? _selectedApartmentId;
   bool _isSaving = false;
-  /// Tab 2: stav služeb (apartmentServiceId -> edit state). Naplní se z apartmentServicesOptionsProvider.
+  /// Progressive Save: po prvním uložení (při přepnutí na záložku Služby) má rezervace ID – tab 2 pak načte reservation_services.
+  String? _savedReservationId;
+  /// Explicitní TabController – umožňuje odchytit onTap a programaticky přepnout po uložení.
+  late TabController _tabController;
+  /// Tab 2: stav služeb; naplní se až po _savedReservationId z _loadServicesStateForSavedReservation.
   Map<String, ReservationServiceEditState> _servicesState = {};
+  bool _servicesLoaded = false;
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 2, vsync: this);
     _guestNameController = TextEditingController();
     _guestPhoneController = TextEditingController();
     _guestAdultsController = TextEditingController(text: '0');
@@ -91,6 +98,7 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
 
   @override
   void dispose() {
+    _tabController.dispose();
     _guestNameController.dispose();
     _guestPhoneController.dispose();
     _guestAdultsController.dispose();
@@ -102,10 +110,91 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
     super.dispose();
   }
 
-  /// [successMessage] – při automatické opravě kolize se zobrazí tento text místo výchozího.
-  Future<void> _onSave({String? successMessage}) async {
-    if (!_formKey.currentState!.validate()) return;
-    if (_isSaving) return;
+  /// Progressive Save: při kliknutí na záložku Služby bez ID spustí validaci a uložení, pak přepne na tab 1.
+  Future<void> _saveAndThenGoToTab1() async {
+    final newId = await _performInsertReservation();
+    if (!mounted) return;
+    if (newId != null && newId.isNotEmpty) {
+      setState(() {
+        _savedReservationId = newId;
+        _servicesLoaded = false;
+      });
+      _tabController.animateTo(1);
+    }
+  }
+
+  /// Načte služby uložené rezervace (reservation_services) a sloučí s nabídkou bytu do _servicesState.
+  /// Volá se z Tabu 2 po Progressive Save, když už máme _savedReservationId.
+  Future<void> _loadServicesStateForSavedReservation(List<ApartmentServiceOption> options) async {
+    final tenantId = widget.ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty || _savedReservationId == null) {
+      if (!mounted) return;
+      setState(() {
+        _servicesState = {
+          for (final o in options)
+            o.apartmentServiceId: ReservationServiceEditState(
+              apartmentServiceId: o.apartmentServiceId,
+              serviceName: o.serviceName,
+              defaultPriceEur: o.defaultPriceEur,
+              enabled: o.isMandatory,
+              chargedPriceEur: o.defaultPriceEur,
+              customNote: null,
+              flightNumber: null,
+              payerType: o.payerType,
+              requiresPhoto: null,
+            ),
+        };
+        _servicesLoaded = true;
+      });
+      return;
+    }
+    final rows = await fetchByReservationId(_savedReservationId!, tenantId);
+    final byApartmentServiceId = {for (final row in rows) row.apartmentServiceId: row};
+    if (!mounted) return;
+    setState(() {
+      _servicesState = {
+        for (final o in options)
+          o.apartmentServiceId: () {
+            final row = byApartmentServiceId[o.apartmentServiceId];
+            if (row == null) {
+              return ReservationServiceEditState(
+                apartmentServiceId: o.apartmentServiceId,
+                serviceName: o.serviceName,
+                defaultPriceEur: o.defaultPriceEur,
+                enabled: o.isMandatory,
+                chargedPriceEur: o.defaultPriceEur,
+                customNote: null,
+                flightNumber: null,
+                payerType: o.payerType,
+                requiresPhoto: null,
+              );
+            }
+            final payerType = (row.payerType == 'owner' || row.payerType == 'guest') ? row.payerType! : o.payerType;
+            final (parsedFlight, parsedNoteRest) = parseFlightFromCustomNote(row.customNote);
+            final flight = row.flightNumber ?? parsedFlight;
+            final noteRest = row.flightNumber != null && row.flightNumber!.isNotEmpty ? row.customNote : parsedNoteRest;
+            return ReservationServiceEditState(
+              apartmentServiceId: o.apartmentServiceId,
+              serviceName: o.serviceName,
+              defaultPriceEur: o.defaultPriceEur,
+              enabled: true,
+              chargedPriceEur: row.chargedPrice?.toDouble(),
+              customNote: noteRest,
+              flightNumber: flight,
+              payerType: payerType,
+              requiresPhoto: row.requiresPhoto,
+            );
+          }(),
+      };
+      _servicesLoaded = true;
+    });
+  }
+
+  /// Provede validaci, vložení rezervace a uložení služeb. Vrací newId při úspěchu, null při chybě (chyby zobrazí SnackBar).
+  /// Používá se z _onSave (pak se zavře dialog) i z _saveAndThenGoToTab1 (pak se přepne na záložku Služby).
+  Future<String?> _performInsertReservation() async {
+    if (!_formKey.currentState!.validate()) return null;
+    if (_isSaving) return null;
     if (_selectedApartmentId == null || _selectedApartmentId!.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -114,7 +203,7 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
           behavior: SnackBarBehavior.floating,
         ),
       );
-      return;
+      return null;
     }
 
     if (_dateRange == null) {
@@ -125,12 +214,11 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
           behavior: SnackBarBehavior.floating,
         ),
       );
-      return;
+      return null;
     }
     final startDate = '${_dateRange!.start.year}-${_dateRange!.start.month.toString().padLeft(2, '0')}-${_dateRange!.start.day.toString().padLeft(2, '0')}';
     final endDate = '${_dateRange!.end.year}-${_dateRange!.end.month.toString().padLeft(2, '0')}-${_dateRange!.end.day.toString().padLeft(2, '0')}';
 
-    // Složení UTC timestampů z data a časů: příjezd = start datum + arrival_time, odjezd = end datum + departure_time (pro kolize a DB).
     final arrivalParts = _arrivalTimeController.text.trim().split(':');
     final arrivalH = arrivalParts.length >= 2 ? (int.tryParse(arrivalParts[0]) ?? 15) : 15;
     final arrivalM = arrivalParts.length >= 2 ? (int.tryParse(arrivalParts[1]) ?? 0) : 0;
@@ -140,8 +228,7 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
     final depM = depParts.length >= 2 ? (int.tryParse(depParts[1]) ?? 0) : 0;
     final newCheckOut = DateTime(_dateRange!.end.year, _dateRange!.end.month, _dateRange!.end.day, depH, depM, 0);
 
-    if (newCheckOut.isBefore(newCheckIn) ||
-        newCheckOut.isAtSameMomentAs(newCheckIn)) {
+    if (newCheckOut.isBefore(newCheckIn) || newCheckOut.isAtSameMomentAs(newCheckIn)) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('admin.reservations_validation_departure_after_arrival'.tr()),
@@ -150,32 +237,23 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
           duration: const Duration(seconds: 4),
         ),
       );
-      return;
+      return null;
     }
 
     setState(() => _isSaving = true);
 
     try {
-      final reservations =
-          await widget.ref.read(adminReservationsProvider.future);
-      final apartments = await widget.ref.read(apartmentsProvider.future);
-      final apartmentList = apartments
-          .where((a) => a.id == _selectedApartmentId)
-          .toList();
-      final apartment =
-          apartmentList.isEmpty ? null : apartmentList.first;
-      // Sčítáme základní čas úklidu bytu a extra čas přikoupených služeb – pro přesnou kontrolu kolizí.
-      final options =
-          await widget.ref.read(apartmentServicesOptionsProvider(_selectedApartmentId!).future);
+      final reservations = await widget.ref.read(adminReservationsProvider.future);
+      final apartments = await widget.ref.read(apartmentsFullListProvider.future);
+      final apartmentList = apartments.where((a) => a.id == _selectedApartmentId).toList();
+      final apartment = apartmentList.isEmpty ? null : apartmentList.first;
+      final options = await widget.ref.read(apartmentServicesOptionsProvider(_selectedApartmentId!).future);
       int extraServiceMinutes = 0;
       for (final opt in options) {
         final state = _servicesState[opt.apartmentServiceId];
-        if (state != null && state.enabled) {
-          extraServiceMinutes += opt.durationMinutes;
-        }
+        if (state != null && state.enabled) extraServiceMinutes += opt.durationMinutes;
       }
-      final totalCleaningDuration =
-          (apartment?.standardCleaningDuration ?? 120) + extraServiceMinutes;
+      final totalCleaningDuration = (apartment?.standardCleaningDuration ?? 120) + extraServiceMinutes;
 
       checkReservationCollision(
         existingReservations: reservations,
@@ -186,13 +264,8 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
       );
 
       final tenantId = widget.ref.read(authNotifierProvider).tenantIdForData;
-      if (tenantId == null || tenantId.isEmpty) {
-        throw Exception('CRITICAL: tenantId is null before insert!');
-      }
-
-      if (_selectedApartmentId == null || _selectedApartmentId!.isEmpty) {
-        throw Exception('CRITICAL: apartment_id is null or empty before insert!');
-      }
+      if (tenantId == null || tenantId.isEmpty) throw Exception('CRITICAL: tenantId is null before insert!');
+      if (_selectedApartmentId == null || _selectedApartmentId!.isEmpty) throw Exception('CRITICAL: apartment_id is null or empty before insert!');
 
       final guestAdults = int.tryParse(_guestAdultsController.text.trim()) ?? 0;
       final guestChildren = int.tryParse(_guestChildrenController.text.trim()) ?? 0;
@@ -216,19 +289,9 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
           departureTimeUtc = DateTime(_dateRange!.end.year, _dateRange!.end.month, _dateRange!.end.day, h, m, 0).toUtc();
         }
       }
+      if (arrivalTimeUtc == null) arrivalTimeUtc = DateTime(_dateRange!.start.year, _dateRange!.start.month, _dateRange!.start.day, 15, 0, 0).toUtc();
+      if (departureTimeUtc == null) departureTimeUtc = DateTime(_dateRange!.end.year, _dateRange!.end.month, _dateRange!.end.day, 10, 0, 0).toUtc();
 
-      // Pokud není čas vyplněn, použijeme standardní hotelové časy 15:00 a 10:00.
-      // Do payloadu nesmí jít null – generátor úkolů očekává platné timestamptz.
-      if (arrivalTimeUtc == null) {
-        arrivalTimeUtc = DateTime(_dateRange!.start.year, _dateRange!.start.month, _dateRange!.start.day, 15, 0, 0).toUtc();
-      }
-      if (departureTimeUtc == null) {
-        departureTimeUtc = DateTime(_dateRange!.end.year, _dateRange!.end.month, _dateRange!.end.day, 10, 0, 0).toUtc();
-      }
-
-      // Dvoukrokové ukládání (Override Pattern Tier 3): nejdřív záznam v reservations,
-      // potom služby rezervace v reservation_services (závisí na reservation_id).
-      // KROK 1: Vložení rezervace a získání nového id (pro reservation_services).
       final payload = <String, dynamic>{
         'tenant_id': tenantId,
         'apartment_id': _selectedApartmentId,
@@ -236,49 +299,24 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
         'start_date': startDate,
         'end_date': endDate,
         'status': 'new',
-        'guest_name': _guestNameController.text.trim().isEmpty
-            ? null
-            : _guestNameController.text.trim(),
-        'guest_phone': _guestPhoneController.text.trim().isEmpty
-            ? null
-            : _guestPhoneController.text.trim(),
+        'guest_name': _guestNameController.text.trim().isEmpty ? null : _guestNameController.text.trim(),
+        'guest_phone': _guestPhoneController.text.trim().isEmpty ? null : _guestPhoneController.text.trim(),
         'reservation_source': _reservationSource,
         'guest_adults': guestAdults,
         'guest_children': guestChildren,
         'arrival_time': arrivalTimeUtc.toIso8601String(),
         'departure_time': departureTimeUtc.toIso8601String(),
-        'internal_note': _internalNoteController.text.trim().isEmpty
-            ? null
-            : _internalNoteController.text.trim(),
+        'internal_note': _internalNoteController.text.trim().isEmpty ? null : _internalNoteController.text.trim(),
       };
 
-      final res = await SupabaseService.client
-          .from('reservations')
-          .insert(payload)
-          .select('id')
-          .single();
+      final res = await SupabaseService.client.from('reservations').insert(payload).select('id').single();
       final newId = res['id'] as String?;
       if (newId == null || newId.isEmpty) throw Exception('Insert reservations nevrátil id');
 
-      // KROK 2: Uložení služeb rezervace (reservation_services) – delete + insert dle stavu Tabu 2 (charged_price v EUR, custom_note).
-      await saveForReservation(
-        reservationId: newId,
-        tenantId: tenantId,
-        states: _servicesState,
-      );
-
-      if (!mounted) return;
-      Navigator.of(context).pop();
-      widget.onSaved();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(successMessage ?? 'admin.reservations_saved'.tr()),
-          backgroundColor: Colors.green,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      await saveForReservation(reservationId: newId, tenantId: tenantId, states: _servicesState);
+      return newId;
     } on ReservationCollisionException catch (e) {
-      if (!mounted) return;
+      if (!mounted) return null;
       showReservationCollisionDialog(
         context: context,
         collisionSide: e.collisionSide,
@@ -288,63 +326,63 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
           setState(() {
             final t = e.suggestedDateTime!;
             if (e.collisionSide == CollisionSide.checkIn) {
-              _dateRange = DateTimeRange(
-                start: DateTime(t.year, t.month, t.day),
-                end: _dateRange!.end,
-              );
-              _arrivalTimeController.text =
-                  '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+              _dateRange = DateTimeRange(start: DateTime(t.year, t.month, t.day), end: _dateRange!.end);
+              _arrivalTimeController.text = '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
             } else {
-              _dateRange = DateTimeRange(
-                start: _dateRange!.start,
-                end: DateTime(t.year, t.month, t.day),
-              );
-              _departureTimeController.text =
-                  '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+              _dateRange = DateTimeRange(start: _dateRange!.start, end: DateTime(t.year, t.month, t.day));
+              _departureTimeController.text = '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
             }
           });
         },
       );
+      return null;
     } on PostgrestException catch (e) {
-      if (!mounted) return;
-      // ignore: avoid_print
-      print('--- CHYBA UKLÁDÁNÍ REZERVACE: $e');
-      if (e.code == '42703' || e.message.contains('column')) {
-        // ignore: avoid_print
-        print('>>> Chybí sloupce v tabulce reservations. Spusť: supabase/migrations/20250217_reservations_extended.sql');
-      }
+      if (!mounted) return null;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'admin.reservations_save_error'.tr(namedArgs: {'error': e.message}),
-          ),
+          content: Text('admin.reservations_save_error'.tr(namedArgs: {'error': e.message})),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
         ),
       );
+      return null;
     } catch (e) {
-      if (!mounted) return;
-      // ignore: avoid_print
-      print('--- CHYBA UKLÁDÁNÍ REZERVACE: $e');
+      if (!mounted) return null;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'admin.reservations_save_error'.tr(namedArgs: {'error': e.toString()}),
-          ),
+          content: Text('admin.reservations_save_error'.tr(namedArgs: {'error': e.toString()})),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
         ),
       );
+      return null;
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
   }
 
+  /// [successMessage] – při automatické opravě kolize se zobrazí tento text místo výchozího.
+  Future<void> _onSave({String? successMessage}) async {
+    final newId = await _performInsertReservation();
+    if (!mounted) return;
+    if (newId != null && newId.isNotEmpty) {
+      Navigator.of(context).pop();
+      widget.onSaved();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(successMessage ?? 'admin.reservations_saved'.tr()),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final apartmentsAsync = widget.ref.watch(apartmentsProvider);
+    final apartmentsAsync = widget.ref.watch(apartmentsFullListProvider);
 
     return ModernAdminPanel(
       title: 'admin.reservations_add'.tr(),
@@ -359,34 +397,40 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
                 style: TextStyle(color: Colors.grey.shade700),
               );
             }
-            return DefaultTabController(
-              length: 2,
-              child: Column(
-                mainAxisSize: MainAxisSize.max,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  TabBar(
-                    labelColor: Theme.of(context).colorScheme.primary,
-                    tabs: [
-                      Tab(icon: const Icon(Icons.info_outline), text: 'admin.reservations_tab_stay_details'.tr()),
-                      Tab(icon: const Icon(Icons.room_service_outlined), text: 'admin.reservations_tab_services_requests'.tr()),
+            return Column(
+              mainAxisSize: MainAxisSize.max,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TabBar(
+                  controller: _tabController,
+                  labelColor: Theme.of(context).colorScheme.primary,
+                  onTap: (index) {
+                    if (index == 1 && _savedReservationId == null) {
+                      _saveAndThenGoToTab1();
+                    } else {
+                      _tabController.animateTo(index);
+                    }
+                  },
+                  tabs: [
+                    Tab(icon: const Icon(Icons.info_outline), text: 'admin.reservations_tab_stay_details'.tr()),
+                    Tab(icon: const Icon(Icons.room_service_outlined), text: 'admin.reservations_tab_services_requests'.tr()),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: TabBarView(
+                    controller: _tabController,
+                    children: [
+                      SingleChildScrollView(
+                        child: _buildTab1StayDetails(context, apartments),
+                      ),
+                      SingleChildScrollView(
+                        child: _buildTab2ServicesRequests(context),
+                      ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child: TabBarView(
-                      children: [
-                        SingleChildScrollView(
-                          child: _buildTab1StayDetails(context, apartments),
-                        ),
-                        SingleChildScrollView(
-                          child: _buildTab2ServicesRequests(context),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             );
           },
           loading: () => const Center(child: CircularProgressIndicator()),
@@ -642,7 +686,8 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
     );
   }
 
-  /// Tab 2: Služby bytu (apartment_services) – Checkbox + účtovaná cena a poznámka. Reaguje na vybraný byt.
+  /// Tab 2: Služby a požadavky. Zobrazuje se až po Progressive Save (máme _savedReservationId).
+  /// Načte reservation_services pro uloženou rezervaci a sloučí s nabídkou bytu.
   Widget _buildTab2ServicesRequests(BuildContext context) {
     final apartmentId = _selectedApartmentId ?? '';
     final optionsAsync = widget.ref.watch(apartmentServicesOptionsProvider(apartmentId));
@@ -650,38 +695,22 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
     final currencies = widget.ref.watch(currenciesProvider).valueOrNull ?? [];
 
     return optionsAsync.when(
+      loading: () => const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())),
+      error: (err, _) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'common.error'.tr(),
+            style: TextStyle(color: Colors.red.shade700),
+          ),
+        ),
+      ),
       data: (options) {
-        if (_servicesState.isEmpty && options.isNotEmpty) {
+        if (_savedReservationId != null && !_servicesLoaded && options.isNotEmpty) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted) return;
-            setState(() {
-              _servicesState = {
-                for (final o in options)
-                  o.apartmentServiceId: ReservationServiceEditState(
-                    apartmentServiceId: o.apartmentServiceId,
-                    serviceName: o.serviceName,
-                    defaultPriceEur: o.defaultPriceEur,
-                    enabled: o.isMandatory,
-                    chargedPriceEur: o.defaultPriceEur,
-                    customNote: null,
-                    payerType: o.payerType,
-                    requiresPhoto: null,
-                  ),
-              };
-            });
+            _loadServicesStateForSavedReservation(options);
           });
-        }
-        if (apartmentId.isEmpty) {
-          return Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Text(
-                'admin.reservations_select_apartment_first'.tr(),
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey.shade600),
-              ),
-            ),
-          );
+          return const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()));
         }
         if (options.isEmpty) {
           return Center(
@@ -879,29 +908,26 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
           },
         );
       },
-      loading: () => const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())),
-      error: (_, _) => Center(
-        child: Text(
-          'admin.reservations_load_error'.tr(),
-          style: TextStyle(color: Colors.red.shade700),
-        ),
-      ),
     );
   }
 }
 
 /// Seznam úkolů souvisejících s rezervací – kompaktní ListTile s ikonou typu, tučným jménem a Chipem stavu.
+/// Data mohou pocházet z [tasksForReservationProvider] (bez měsíčního filtru), aby byly vidět i check-out úkoly v dalším měsíci.
 class RelatedTasksList extends StatelessWidget {
   const RelatedTasksList({
     super.key,
     required this.ref,
     required this.reservation,
     required this.tasksAsync,
+    this.onTaskSaved,
   });
 
   final WidgetRef ref;
   final ReservationRow reservation;
   final AsyncValue<List<TaskRow>> tasksAsync;
+  /// Voláno po uložení úkolu v dialogu úpravy – typicky invalidace [tasksForReservationProvider], aby se seznam znovu načetl.
+  final VoidCallback? onTaskSaved;
 
   @override
   Widget build(BuildContext context) {
@@ -951,6 +977,7 @@ class RelatedTasksList extends StatelessWidget {
                       context,
                       ref,
                       t,
+                      onSaved: onTaskSaved,
                       onReservationTap: null,
                     ),
                     leading: CircleAvatar(
@@ -1239,6 +1266,46 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
       return;
     }
 
+    // Detekce změny stavu na Zrušeno: uživatel musí potvrdit, pak soft-delete nesplněných úkolů rezervace.
+    final originalStatus = widget.reservation.status;
+    final statusChangeToCancelled = (originalStatus != _status && _status == 'cancelled');
+    if (statusChangeToCancelled) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: Text('admin.reservations_cancel_to_cancelled_title'.tr()),
+          content: Text('admin.reservations_cancel_to_cancelled_message'.tr()),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: Text('admin.reservations_cancel'.tr()),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: Text('admin.reservations_cancel_reservation_and_delete_tasks'.tr()),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      if (confirmed != true) return;
+
+      // Soft-delete úkolů navázaných na rezervaci – stejná logika jako při změně termínu.
+      // Odstraníme pouze úkoly, které nejsou „Probíhá“ ani „Hotovo“.
+      final deletedAt = DateTime.now().toUtc().toIso8601String();
+      final protectedStatuses = ['in_progress', 'completed', 'probíhá', 'hotovo', 'done', 'dokončeno'];
+      await SupabaseService.client
+          .from('tasks')
+          .update({'deleted_at': deletedAt})
+          .eq('reservation_id', widget.reservation.id)
+          .eq('tenant_id', tenantId)
+          .not('status', 'in', protectedStatuses);
+      ref.invalidate(adminTasksProvider);
+      ref.invalidate(planningCalendarAllTasksProvider);
+      ref.invalidate(planningCalendarAllTasksForMonthProvider);
+    }
+
     // Kontrola změny termínu: pokud se změnil check-in nebo check-out, smažeme návrhy úkolů
     final origStart = parseReservationDateTime(widget.reservation.checkIn);
     final origEnd = parseReservationDateTime(widget.reservation.checkOut);
@@ -1270,15 +1337,17 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
       if (!mounted) return;
       if (confirmed != true) return;
 
-      // Soft Delete: Návrhy úkolů navázané na tuto rezervaci – místo tvrdého mazání nastavíme deleted_at
-      // (Audit Log vyžaduje zachování historie; tvrdý DELETE by rozbil sledovatelnost).
+      // Soft Delete: Všechny nesplněné úkoly navázané na rezervaci (ne jen Návrh, ale i Zadáno/Přiřazeno).
+      // Nepřesahujeme úkoly „Probíhá“ a „Hotovo“ – jde o hotovou práci k fakturaci (Variant A z analýzy).
+      // Zachováváme deleted_at místo tvrdého DELETE kvůli auditu a sledovatelnosti.
       final deletedAt = DateTime.now().toUtc().toIso8601String();
+      final protectedStatuses = ['in_progress', 'completed', 'probíhá', 'hotovo', 'done', 'dokončeno'];
       await SupabaseService.client
           .from('tasks')
           .update({'deleted_at': deletedAt})
           .eq('reservation_id', widget.reservation.id)
-          .eq('status', 'Návrh')
-          .eq('tenant_id', tenantId);
+          .eq('tenant_id', tenantId)
+          .not('status', 'in', protectedStatuses);
       ref.invalidate(adminTasksProvider);
     }
 
@@ -1287,7 +1356,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
     try {
       final reservations =
           await ref.read(adminReservationsProvider.future);
-      final apartments = await ref.read(apartmentsProvider.future);
+      final apartments = await ref.read(apartmentsFullListProvider.future);
       final apartmentList = apartments
           .where((a) => a.id == _selectedApartmentId)
           .toList();
@@ -1444,7 +1513,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
     }
   }
 
-  Widget _buildEditTab1StayDetails(BuildContext context, List<ApartmentRow> apartments, AsyncValue<List<TaskRow>> tasksAsync) {
+  Widget _buildEditTab1StayDetails(BuildContext context, List<ApartmentRow> apartments, AsyncValue<List<TaskRow>> tasksAsync, bool isReadOnly) {
     final validId = apartments.any((a) => a.id == _selectedApartmentId)
         ? _selectedApartmentId
         : (apartments.isNotEmpty ? apartments.first.id : null);
@@ -1469,7 +1538,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
           items: apartments
               .map((a) => DropdownMenuItem(value: a.id, child: Text(a.name)))
               .toList(),
-          onChanged: (v) {
+          onChanged: isReadOnly ? null : (v) {
             if (v != null) setState(() => _selectedApartmentId = v);
           },
           validator: (v) => v == null ? 'admin.validation_apartment_required_short'.tr() : null,
@@ -1485,13 +1554,14 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
           items: reservationStatusValues
               .map((s) => DropdownMenuItem(value: s, child: Text(reservationStatusLabelKey(s).tr())))
               .toList(),
-          onChanged: (v) {
+          onChanged: isReadOnly ? null : (v) {
             if (v != null) setState(() => _status = v);
           },
         ),
         const SizedBox(height: 12),
         TextFormField(
           controller: _guestNameController,
+          readOnly: isReadOnly,
           decoration: InputDecoration(
             prefixIcon: const Icon(Icons.person_outline),
             labelText: 'admin.reservations_field_guest_name'.tr(),
@@ -1503,6 +1573,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
         const SizedBox(height: 12),
         TextFormField(
           controller: _guestPhoneController,
+          readOnly: isReadOnly,
           decoration: InputDecoration(
             prefixIcon: const Icon(Icons.phone_outlined),
             labelText: 'admin.reservations_field_guest_phone'.tr(),
@@ -1524,7 +1595,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                     child: Text('admin.reservation_source_$s'.tr()),
                   ))
               .toList(),
-          onChanged: (v) {
+          onChanged: isReadOnly ? null : (v) {
             if (v != null) setState(() => _reservationSource = v);
           },
         ),
@@ -1534,6 +1605,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
             Expanded(
               child: TextFormField(
                 controller: _guestAdultsController,
+                readOnly: isReadOnly,
                 decoration: InputDecoration(
                   prefixIcon: const Icon(Icons.people_alt_outlined),
                   labelText: 'admin.reservations_field_guest_adults'.tr(),
@@ -1546,6 +1618,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
             Expanded(
               child: TextFormField(
                 controller: _guestChildrenController,
+                readOnly: isReadOnly,
                 decoration: InputDecoration(
                   prefixIcon: const Icon(Icons.numbers_outlined),
                   labelText: 'admin.reservations_field_guest_children'.tr(),
@@ -1570,7 +1643,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
         TextFormField(
           controller: _stayPeriodController,
           readOnly: true,
-          onTap: () async {
+          onTap: isReadOnly ? null : () async {
             final now = DateTime.now();
             final initialStart = _dateRange?.start ?? now;
             final initialEnd = _dateRange?.end ?? now.add(const Duration(days: 1));
@@ -1615,7 +1688,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                   border: const OutlineInputBorder(),
                   suffixIcon: const Icon(Icons.access_time_outlined),
                 ),
-                onTap: () async {
+                onTap: isReadOnly ? null : () async {
                   final parts = _arrivalTimeController.text.trim().split(':');
                   TimeOfDay initial = const TimeOfDay(hour: 15, minute: 0);
                   if (parts.length >= 2) {
@@ -1646,7 +1719,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                   border: const OutlineInputBorder(),
                   suffixIcon: const Icon(Icons.access_time_outlined),
                 ),
-                onTap: () async {
+                onTap: isReadOnly ? null : () async {
                   final parts = _departureTimeController.text.trim().split(':');
                   TimeOfDay initial = const TimeOfDay(hour: 10, minute: 0);
                   if (parts.length >= 2) {
@@ -1680,6 +1753,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
           ),
           minLines: 3,
           maxLines: 5,
+          readOnly: isReadOnly,
         ),
         const SizedBox(height: 20),
         const Divider(),
@@ -1695,7 +1769,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                   ),
             ),
             TextButton.icon(
-              onPressed: () {
+              onPressed: isReadOnly ? null : () {
                 final r = widget.reservation;
                 final guest = r.guestName?.trim().isNotEmpty == true
                     ? r.guestName!.trim()
@@ -1717,6 +1791,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                   onSaved: () {
                     ref.invalidate(adminTasksProvider);
                     ref.invalidate(adminTasksStreamProvider);
+                    ref.invalidate(tasksForReservationProvider(widget.reservation.id));
                   },
                 );
               },
@@ -1730,18 +1805,39 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
           ref: ref,
           reservation: widget.reservation,
           tasksAsync: tasksAsync,
+          onTaskSaved: () => ref.invalidate(tasksForReservationProvider(widget.reservation.id)),
         ),
       ],
     );
   }
 
-  Widget _buildEditTab2ServicesRequests(BuildContext context) {
+  Widget _buildEditTab2ServicesRequests(BuildContext context, bool isReadOnly) {
     final apartmentId = _selectedApartmentId;
     final optionsAsync = ref.watch(apartmentServicesOptionsProvider(apartmentId));
     final preferredCurrency = ref.watch(authNotifierProvider).state.preferredCurrency ?? 'EUR';
     final currencies = ref.watch(currenciesProvider).valueOrNull ?? [];
 
+    if (apartmentId.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'admin.reservations_services_select_apartment_to_load'.tr(),
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey.shade600),
+          ),
+        ),
+      );
+    }
+
     return optionsAsync.when(
+      loading: () => const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())),
+      error: (err, _) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text('common.error'.tr(), style: TextStyle(color: Colors.red.shade700)),
+        ),
+      ),
       data: (options) {
         if (!_servicesLoaded && options.isNotEmpty) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1788,7 +1884,8 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
               initiallyExpanded: false,
               controlAffinity: ListTileControlAffinity.leading,
               title: GestureDetector(
-                onTap: o.isMandatory
+                // Auditing: Zámek editace - při isReadOnly nelze měnit výběr služeb
+                onTap: o.isMandatory || isReadOnly
                     ? null
                     : () {
                         setState(() {
@@ -1801,7 +1898,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                   children: [
                     Checkbox(
                       value: effectiveEnabled,
-                      onChanged: o.isMandatory
+                      onChanged: o.isMandatory || isReadOnly
                           ? null
                           : (v) {
                               setState(() {
@@ -1837,7 +1934,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                   ],
                 ),
               ),
-              children: effectiveEnabled
+              children: effectiveEnabled && !isReadOnly
                   ? [
                       Padding(
                         padding: const EdgeInsets.all(16.0),
@@ -1849,6 +1946,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                               margin: const EdgeInsets.only(bottom: 24.0),
                               child: TextFormField(
                                 initialValue: displayPriceStr,
+                                readOnly: isReadOnly,
                                 decoration: InputDecoration(
                                   prefixIcon: Icon(Icons.payments_outlined, color: Colors.grey.shade500),
                                   labelText: 'admin.reservations_field_charged_price'.tr(namedArgs: {'code': preferredCurrency}),
@@ -1858,7 +1956,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                                   contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                                 ),
                                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                                onChanged: (v) {
+                                onChanged: isReadOnly ? null : (v) {
                                   final parsed = double.tryParse(v.replaceAll(',', '.'));
                                   if (parsed == null) return;
                                   final eur = CurrencyService.toEur(parsed, preferredCurrency, currencies);
@@ -1884,7 +1982,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                                   DropdownMenuItem(value: 'owner', child: Text('admin.payer_owner'.tr())),
                                   DropdownMenuItem(value: 'guest', child: Text('admin.payer_guest'.tr())),
                                 ],
-                                onChanged: (v) {
+                                onChanged: isReadOnly ? null : (v) {
                                   if (v == null) return;
                                   setState(() {
                                     _servicesState[o.apartmentServiceId] =
@@ -1897,6 +1995,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                               margin: const EdgeInsets.only(bottom: 24.0),
                               child: TextFormField(
                                 initialValue: state.customNote ?? '',
+                                readOnly: isReadOnly,
                                 decoration: InputDecoration(
                                   prefixIcon: Icon(Icons.notes_outlined, color: Colors.grey.shade500),
                                   labelText: 'admin.reservations_field_custom_note'.tr(),
@@ -1907,7 +2006,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                                   alignLabelWithHint: true,
                                 ),
                                 maxLines: 2,
-                                onChanged: (v) {
+                                onChanged: isReadOnly ? null : (v) {
                                   setState(() {
                                     _servicesState[o.apartmentServiceId] = state.copyWith(customNote: v.isEmpty ? null : v);
                                   });
@@ -1923,20 +2022,19 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
           },
         );
       },
-      loading: () => const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())),
-      error: (_, _) => Center(
-        child: Text(
-          'admin.reservations_load_error'.tr(),
-          style: TextStyle(color: Colors.red.shade700),
-        ),
-      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final apartmentsAsync = ref.watch(apartmentsProvider);
-    final tasksAsync = ref.watch(adminTasksStreamProvider);
+    final apartmentsAsync = ref.watch(apartmentsFullListProvider);
+    // Související úkoly: načítáme VŠECHNY úkoly s reservation_id == tato rezervace (bez měsíčního filtru),
+    // aby se zobrazily i check-out úkoly v dalším měsíci. [adminTasksStreamProvider] je omezen na vybraný měsíc.
+    final tasksAsync = ref.watch(tasksForReservationProvider(widget.reservation.id));
+
+    // Auditing: Zámek editace pro ukončené rezervace – neměnnost historie pro účetní audit.
+    final isReadOnly = widget.reservation.status == 'checked_out' ||
+        widget.reservation.status == 'cancelled';
 
     final refNum = widget.reservation.referenceNumber?.trim();
     final title = refNum != null && refNum.isNotEmpty
@@ -1961,6 +2059,33 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                 mainAxisSize: MainAxisSize.max,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  if (isReadOnly) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      margin: const EdgeInsets.only(bottom: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.blue.shade200),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.lock, color: Colors.blue.shade700, size: 24),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'admin.reservations_reservation_locked_info'.tr(),
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.blue.shade900,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                   TabBar(
                     labelColor: Theme.of(context).colorScheme.primary,
                     tabs: [
@@ -1973,10 +2098,10 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                     child: TabBarView(
                       children: [
                         SingleChildScrollView(
-                          child: _buildEditTab1StayDetails(context, apartments, tasksAsync),
+                          child: _buildEditTab1StayDetails(context, apartments, tasksAsync, isReadOnly),
                         ),
                         SingleChildScrollView(
-                          child: _buildEditTab2ServicesRequests(context),
+                          child: _buildEditTab2ServicesRequests(context, isReadOnly),
                         ),
                       ],
                     ),
@@ -1995,8 +2120,9 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
       actions: [
         TextButton(
           onPressed: _isSaving ? null : () => Navigator.of(context).pop(),
-          child: Text('admin.reservations_cancel'.tr()),
+          child: Text(isReadOnly ? 'common.close'.tr() : 'admin.reservations_cancel'.tr()),
         ),
+        if (!isReadOnly) ...[
         const SizedBox(width: 8),
         FilledButton(
           onPressed: _isSaving ? null : _onSave,
@@ -2008,6 +2134,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                 )
               : Text('admin.reservations_save_button'.tr()),
         ),
+        ],
       ],
     );
   }

@@ -1,10 +1,9 @@
-import 'dart:ui';
-
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/utils/app_modal_utils.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/features/admin/models/module_model.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
@@ -26,29 +25,14 @@ class SuperAdminSettingsModal {
 
   /// Otevře Nastavení Super Admina jako modální dialog (blur, centrované okno).
   /// Voláno z horní lišty [SuperAdminDashboard] při kliknutí na ikonu ozubeného kola.
+  /// Používá [showAppModal] pro jednotný vizuál napříč aplikací.
   static Future<void> show(BuildContext hostContext) {
-    return showGeneralDialog<void>(
+    return showAppModal<void>(
       context: hostContext,
-      barrierDismissible: true,
       barrierLabel: 'super_admin.barrier_settings'.tr(),
-      barrierColor: Colors.black54,
-      transitionDuration: const Duration(milliseconds: 250),
-      pageBuilder: (_, _, _) => const SizedBox.shrink(),
-      transitionBuilder: (_, animation, secondaryAnimation, child) {
-        return BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-          child: FadeTransition(
-            opacity: animation,
-            child: ScaleTransition(
-              scale: CurvedAnimation(
-                parent: animation,
-                curve: Curves.easeOutCubic,
-              ),
-              child: const _SuperAdminSettingsContent(),
-            ),
-          ),
-        );
-      },
+      maxWidth: 900,
+      maxHeightFraction: 0.88,
+      child: const _SuperAdminSettingsContent(),
     );
   }
 }
@@ -60,29 +44,7 @@ class _SuperAdminSettingsContent extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return Center(
-      child: Material(
-        color: Colors.transparent,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: 900,
-            maxHeight: MediaQuery.of(context).size.height * 0.88,
-          ),
-          child: Container(
-            width: MediaQuery.of(context).size.width * 0.9,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(24),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.15),
-                  blurRadius: 24,
-                  offset: const Offset(0, 8),
-                ),
-              ],
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Column(
+    return Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 _buildHeader(context),
@@ -122,11 +84,7 @@ class _SuperAdminSettingsContent extends ConsumerWidget {
                   ),
                 ),
               ],
-            ),
-          ),
-        ),
-      ),
-    );
+            );
   }
 
   void _onClose(BuildContext context) {
@@ -824,7 +782,7 @@ class _SuperAdminExchangeRatesCard extends ConsumerWidget {
                 controller: codeController,
                 decoration: InputDecoration(
                   labelText: 'settings.currency_code'.tr(),
-                  hintText: 'PLN',
+                  hintText: 'super_admin.default_currency_code_hint'.tr(),
                   border: const OutlineInputBorder(),
                 ),
                 textCapitalization: TextCapitalization.characters,
@@ -834,7 +792,7 @@ class _SuperAdminExchangeRatesCard extends ConsumerWidget {
                 controller: symbolController,
                 decoration: InputDecoration(
                   labelText: 'settings.currency_symbol'.tr(),
-                  hintText: 'zł',
+                  hintText: 'super_admin.default_currency_symbol_hint'.tr(),
                   border: const OutlineInputBorder(),
                 ),
               ),
@@ -843,7 +801,7 @@ class _SuperAdminExchangeRatesCard extends ConsumerWidget {
                 controller: rateController,
                 decoration: InputDecoration(
                   labelText: 'settings.currency_rate'.tr(),
-                  hintText: '25',
+                  hintText: 'super_admin.default_currency_rate_hint'.tr(),
                   border: const OutlineInputBorder(),
                 ),
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),

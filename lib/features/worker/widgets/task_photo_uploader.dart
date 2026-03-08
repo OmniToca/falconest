@@ -10,14 +10,16 @@ import 'package:falconest/core/services/media_service.dart';
 /// Znovupoužitelný widget pro pořízení a zobrazení fotek úkolu (např. stav apartmánu, pasy).
 ///
 /// PROČ: DRY – logika pro výběr z kamery, miniatury a mazání sdílená s issue_reporter_dialog.
-/// Slouží pro úkoly s requires_photo (katalog služeb). Callback [onFilesChanged] předává
-/// aktuální seznam souborů rodiči – ten při Dokončit nahraje na Supabase a uloží URL do tasks.media_urls.
+/// Slouží pro úkoly s requires_photo i bez – sekce fotodokumentace je vždy dostupná.
+/// Callback [onFilesChanged] předává aktuální seznam souborů rodiči – ten při Dokončit
+/// nahraje na Supabase a uloží URL do tasks.media_urls.
 class TaskPhotoUploader extends StatefulWidget {
   const TaskPhotoUploader({
     super.key,
     required this.onFilesChanged,
     this.maxPhotos = 3,
     this.existingUrls = const [],
+    this.isRequired = false,
   });
 
   /// Volá se při každé změně seznamu (přidání/smazání). Rodič může číst soubory před dokončením.
@@ -28,6 +30,9 @@ class TaskPhotoUploader extends StatefulWidget {
 
   /// Již nahrané URL – zobrazí se jako miniatury (bez mazání – nelze mazat serverová data z tohoto UI).
   final List<String> existingUrls;
+
+  /// true = fotka je povinná k dokončení; false = volitelná dokumentace (škoda, stav).
+  final bool isRequired;
 
   @override
   State<TaskPhotoUploader> createState() => _TaskPhotoUploaderState();
@@ -72,10 +77,21 @@ class _TaskPhotoUploaderState extends State<TaskPhotoUploader> {
   @override
   Widget build(BuildContext context) {
     final canAdd = !kIsWeb && _photoFiles.length < widget.maxPhotos;
+    final requiredLabel = widget.isRequired
+        ? 'worker.photo_required_label'.tr()
+        : 'worker.photo_optional_label'.tr();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        Text(
+          '${'worker.photo_section_title'.tr()} $requiredLabel',
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: Colors.grey.shade700,
+              ),
+        ),
+        const SizedBox(height: 8),
         OutlinedButton.icon(
           onPressed: canAdd ? _addPhoto : null,
           icon: const Icon(Icons.camera_alt_outlined),

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -17,13 +19,18 @@ import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/core/models/client_model.dart';
 import 'package:falconest/features/admin/providers/apartment_owners_provider.dart';
 import 'package:falconest/features/admin/providers/clients_provider.dart';
+import 'package:falconest/features/admin/providers/ical_sync_provider.dart';
+import 'package:falconest/features/admin/services/ical_sync_service.dart';
 import 'package:falconest/features/admin/providers/apartment_services_repository.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/apartment_status_provider.dart';
 import 'package:falconest/features/admin/providers/zones_provider.dart';
+import 'package:falconest/features/admin/admin_reservations_screen.dart';
+import 'package:falconest/features/admin/admin_tasks_screen.dart';
 import 'package:falconest/features/calendar/providers/planning_calendar_provider.dart';
 import 'package:falconest/features/settings/models/tenant_service_model.dart';
 import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
+import 'package:flutter/foundation.dart';
 
 /// Otevře dialog pro úpravu apartmánu. Volá se z AdminApartmentsScreen i z ClientDetailDialog.
 void showApartmentEditDialog(
@@ -37,7 +44,10 @@ void showApartmentEditDialog(
     builder: (ctx) => _EditApartmentDialog(
       ref: ref,
       apartment: apartment,
-      onSaved: onSaved ?? () => ref.invalidate(apartmentsProvider),
+      onSaved: onSaved ?? () {
+        ref.invalidate(apartmentsProvider);
+        ref.invalidate(apartmentsFullListProvider);
+      },
     ),
   );
 }
@@ -55,7 +65,10 @@ void showAddApartmentDialog(
     context: context,
     builder: (ctx) => _AddApartmentDialog(
       ref: ref,
-      onSaved: onSaved ?? () => ref.invalidate(apartmentsProvider),
+      onSaved: onSaved ?? () {
+        ref.invalidate(apartmentsProvider);
+        ref.invalidate(apartmentsFullListProvider);
+      },
       prefilledClient: prefilledClient,
     ),
   );
@@ -188,42 +201,59 @@ class AdminApartmentsScreen extends ConsumerStatefulWidget {
 
 class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
   final _searchController = TextEditingController();
+  Timer? _searchDebounce;
+  final _scrollController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController.addListener(_onScroll);
+  }
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _searchController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
-  /// Vypočte filtrovaný seznam podle vyhledávacího dotazu – bez ukládání do stavu.
-  List<ApartmentRow> _computeFiltered(List<ApartmentRow> apartments) {
-    final query = _searchController.text.trim().toLowerCase();
-    if (query.isEmpty) return apartments;
-    return apartments.where((a) {
-      final name = (a.name).toLowerCase();
-      final addr = (a.address ?? '').toLowerCase();
-      return name.contains(query) || addr.contains(query);
-    }).toList();
+  /// Při scrollu ke konci (90 % maxScrollExtent) načte další stránku.
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    if (pos.pixels >= pos.maxScrollExtent * 0.9) {
+      ref.read(apartmentsProvider.notifier).loadMore();
+    }
+  }
+
+  /// Server-side vyhledávání s debounce 500 ms – neposílá dotaz při každém stisku.
+  void _onSearchChanged() {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 500), () {
+      final query = _searchController.text.trim();
+      ref.read(apartmentsProvider.notifier).search(query);
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final apartmentsAsync = ref.watch(apartmentsProvider);
+    final loadingMore = ref.watch(apartmentsLoadingMoreProvider);
 
     return Scaffold(
       body: apartmentsAsync.when(
         data: (apartments) {
-          final filtered = _computeFiltered(apartments);
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _TopActionBar(
                 searchController: _searchController,
-                onSearchChanged: () => setState(() {}),
+                onSearchChanged: _onSearchChanged,
                 onAdd: () => _showAddDialog(context, ref),
               ),
               Expanded(
-                child: filtered.isEmpty
+                child: apartments.isEmpty && !loadingMore
                     ? Center(
                         child: Text(
                           _searchController.text.trim().isEmpty
@@ -233,7 +263,9 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
                         ),
                       )
                     : _ApartmentsCardList(
-                        apartments: filtered,
+                        apartments: apartments,
+                        scrollController: _scrollController,
+                        isLoadingMore: loadingMore,
                         onEdit: (a) => _showEditDialog(context, ref, a),
                         onDelete: (a) => _showDeleteConfirm(context, ref, a),
                       ),
@@ -255,7 +287,10 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
               ),
               const SizedBox(height: 16),
               FilledButton(
-                onPressed: () => ref.invalidate(apartmentsProvider),
+                onPressed: () {
+                    ref.invalidate(apartmentsProvider);
+                    ref.invalidate(apartmentsFullListProvider);
+                  },
                 child: Text('common.retry'.tr()),
               ),
             ],
@@ -266,7 +301,10 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
   }
 
   void _showAddDialog(BuildContext context, WidgetRef ref) {
-    showAddApartmentDialog(context, ref, onSaved: () => ref.invalidate(apartmentsProvider));
+    showAddApartmentDialog(context, ref, onSaved: () {
+      ref.invalidate(apartmentsProvider);
+      ref.invalidate(apartmentsFullListProvider);
+    });
   }
 
   void _showEditDialog(
@@ -293,12 +331,53 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
             child: Text('common.cancel'.tr()),
           ),
           FilledButton(
-            onPressed: () => _doDelete(ctx, ref, [apartment]),
+            onPressed: () async {
+              Navigator.of(ctx).pop();
+              final blocked = await _hasActiveFutureReservations(ref, apartment.id);
+              if (!context.mounted) return;
+              if (blocked) {
+                await showDialog<void>(
+                  context: context,
+                  builder: (ctx2) => AlertDialog(
+                    title: Text('admin.apartment_delete_blocked_title'.tr()),
+                    content: Text('admin.apartment_delete_blocked_message'.tr()),
+                    actions: [
+                      FilledButton(
+                        onPressed: () => Navigator.of(ctx2).pop(),
+                        child: Text('common.ok'.tr()),
+                      ),
+                    ],
+                  ),
+                );
+                return;
+              }
+              await _doDelete(context, ref, [apartment]);
+            },
             child: Text('admin.apartments_delete'.tr()),
           ),
         ],
       ),
     );
+  }
+
+  /// Ochranný štít: Vrací true, pokud na byt existují aktivní budoucí rezervace
+  /// (end_date >= dnes, status != 'cancelled'). V takovém případě byt nesmí jít smazat.
+  Future<bool> _hasActiveFutureReservations(WidgetRef ref, String apartmentId) async {
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty || apartmentId.isEmpty) return false;
+    final today = DateTime.now();
+    final todayIso = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+    final res = await SupabaseService.client
+        .from('reservations')
+        .select('id')
+        .eq('apartment_id', apartmentId)
+        .eq('tenant_id', tenantId)
+        .isFilter('deleted_at', null)
+        .neq('status', 'cancelled')
+        .gte('end_date', todayIso)
+        .limit(1);
+    final list = res is List ? res : <dynamic>[];
+    return list.isNotEmpty;
   }
 
   /// Neprůstřelná kaskáda Soft Delete při mazání bytu – žádné sirotčí úkoly ani rezervace.
@@ -316,7 +395,7 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
   /// Každá smazaná entita se zapíše do Enterprise Audit Logu (logEnterprise) s triggeredBy: cascade,
   /// record_name a reason z i18n.
   Future<void> _doDelete(
-    BuildContext dialogContext,
+    BuildContext context,
     WidgetRef ref,
     List<ApartmentRow> apartments,
   ) async {
@@ -423,14 +502,15 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
         } catch (_) {}
       }
 
-      if (!dialogContext.mounted) return;
-      Navigator.of(dialogContext).pop();
+      if (!context.mounted) return;
       ref.invalidate(apartmentsProvider);
+      ref.invalidate(apartmentsFullListProvider);
       ref.invalidate(adminReservationsProvider);
       ref.invalidate(adminTasksProvider);
+      ref.invalidate(adminTasksStreamProvider);
       ref.invalidate(planningCalendarAllTasksProvider);
       ref.invalidate(planningCalendarAllTasksForMonthProvider);
-      ScaffoldMessenger.of(dialogContext).showSnackBar(
+      ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('common.saved'.tr()),
           backgroundColor: Colors.green,
@@ -438,13 +518,14 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
         ),
       );
     } catch (e) {
-      if (!dialogContext.mounted) return;
-      Navigator.of(dialogContext).pop();
-      // ignore: avoid_print
-      print('--- CHYBA MAZÁNÍ APARTMÁNŮ: $e');
-      ScaffoldMessenger.of(dialogContext).showSnackBar(
+      if (!context.mounted) return;
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('Apartment delete error: $e');
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('${'common.error'.tr()}: $e'),
+          content: Text('admin.apartments_delete_error'.tr(namedArgs: {'error': e.toString()})),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
@@ -511,14 +592,19 @@ class _TopActionBar extends StatelessWidget {
 }
 
 /// Responzivní mřížka karet – 3 sloupce na desktopu, 2 na notebooku, 1 na mobilu (Apple Vibe).
+/// [scrollController] slouží pro nekonečný scroll (loadMore při dosažení 90 %).
 class _ApartmentsCardList extends StatelessWidget {
   const _ApartmentsCardList({
     required this.apartments,
+    required this.scrollController,
+    required this.isLoadingMore,
     required this.onEdit,
     required this.onDelete,
   });
 
   final List<ApartmentRow> apartments;
+  final ScrollController scrollController;
+  final bool isLoadingMore;
   final ValueChanged<ApartmentRow> onEdit;
   final ValueChanged<ApartmentRow> onDelete;
 
@@ -538,29 +624,45 @@ class _ApartmentsCardList extends StatelessWidget {
             isWide ? (availableWidth - spacing) / 2 : availableWidth;
 
         // Responzivní mřížka využívající 95 % šířky obrazovky bez zbytečných prázdných pruhů.
-        return SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(
-            horizontalPadding,
-            0,
-            horizontalPadding,
-            24,
-          ),
-          child: Wrap(
-            spacing: spacing,
-            runSpacing: spacing,
-            children: apartments
-                .map(
-                  (apt) => SizedBox(
-                    width: cardWidth,
-                    child: _ApartmentCard(
-                      apartment: apt,
-                      onEdit: onEdit,
-                      onDelete: onDelete,
-                    ),
-                  ),
-                )
-                .toList(),
-          ),
+        return Column(
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                controller: scrollController,
+                padding: EdgeInsets.fromLTRB(
+                  horizontalPadding,
+                  0,
+                  horizontalPadding,
+                  24,
+                ),
+                child: Wrap(
+                  spacing: spacing,
+                  runSpacing: spacing,
+                  children: apartments
+                      .map(
+                        (apt) => SizedBox(
+                          width: cardWidth,
+                          child: _ApartmentCard(
+                            apartment: apt,
+                            onEdit: onEdit,
+                            onDelete: onDelete,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
+              ),
+            ),
+            if (isLoadingMore)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+          ],
         );
       },
     );
@@ -952,7 +1054,9 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
           .select('id')
           .single();
       final newId = res['id'] as String?;
-      if (newId == null || newId.isEmpty) throw Exception('Insert apartments nevrátil id');
+      if (newId == null || newId.isEmpty) {
+        throw StateError('admin.apartments_error_insert_no_id');
+      }
 
       // KROK 1b: Pokud byl předán prefilledClient (owner), přiřaď ho jako majitele bytu.
       final prefilled = widget.prefilledClient;
@@ -986,19 +1090,13 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
       );
     } on PostgrestException catch (e) {
       if (!mounted) return;
-      // ignore: avoid_print
-      print('--- CHYBA UKLÁDÁNÍ (Byty/Apartmány): $e');
-      if (e.message.contains('column') || e.code == '42703') {
+      if (kDebugMode) {
         // ignore: avoid_print
-        print('>>> Sloupce v tabulce apartments ještě neexistují. Spusť v Supabase SQL Editoru:');
-        // ignore: avoid_print
-        print('>>> supabase/migrations/20250216_apartments_extended.sql');
-        // ignore: avoid_print
-        print('>>> Nebo: ALTER TABLE apartments ADD COLUMN IF NOT EXISTS status TEXT DEFAULT \'Uklizeno\', '
-            'ADD COLUMN IF NOT EXISTS check_in_time TEXT DEFAULT \'15:00\', '
-            'ADD COLUMN IF NOT EXISTS check_out_time TEXT DEFAULT \'10:00\', '
-            'ADD COLUMN IF NOT EXISTS standard_cleaning_duration INTEGER DEFAULT 120, '
-            'ADD COLUMN IF NOT EXISTS owner_notes TEXT;');
+        print('Apartment save error (Postgrest): $e');
+        if (e.message.contains('column') || e.code == '42703') {
+          // ignore: avoid_print
+          print('Missing columns? Run supabase/migrations/20250216_apartments_extended.sql');
+        }
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -1012,14 +1110,17 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
       );
     } catch (e) {
       if (!mounted) return;
-      // ignore: avoid_print
-      print('--- CHYBA UKLÁDÁNÍ (Byty/Apartmány): $e');
-      // ignore: avoid_print
-      print('>>> Pokud chybí sloupce v DB, spusť: supabase/migrations/20250216_apartments_extended.sql');
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('Apartment add save error: $e');
+      }
+      final errorMsg = (e is StateError && e.message == 'admin.apartments_error_insert_no_id')
+          ? 'admin.apartments_error_insert_no_id'.tr()
+          : e.toString();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'admin.apartments_save_error'.tr(namedArgs: {'error': '$e'}),
+            'admin.apartments_save_error'.tr(namedArgs: {'error': errorMsg}),
           ),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
@@ -1033,34 +1134,36 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
 
   /// Tab 1: základní informace (název, adresa, kód, check-in/out, doba úklidu, instrukce).
   Widget _buildTab1Basic(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          'admin.section_basic'.tr(),
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                color: Colors.grey.shade700,
-                fontWeight: FontWeight.w600,
-              ),
-        ),
-        const SizedBox(height: 8),
-        TextFormField(
-          controller: _nameController,
-          decoration: _appleVibeInputDecoration(
-            context,
-            prefixIcon: const Icon(Icons.label_outline),
-            labelText: 'admin.field_name'.tr(),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'admin.tab_basic_info'.tr(),
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black87,
+                ),
           ),
-          textCapitalization: TextCapitalization.words,
-          validator: (v) =>
-              (v == null || v.trim().isEmpty)
-                  ? 'admin.validation_name_required'.tr()
-                  : null,
-        ),
-        const SizedBox(height: 12),
-        TextFormField(
-          controller: _addressController,
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: _nameController,
+            decoration: _appleVibeInputDecoration(
+              context,
+              prefixIcon: const Icon(Icons.label_outline),
+              labelText: 'admin.field_name'.tr(),
+            ),
+            textCapitalization: TextCapitalization.words,
+            validator: (v) =>
+                (v == null || v.trim().isEmpty)
+                    ? 'admin.validation_name_required'.tr()
+                    : null,
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: _addressController,
           decoration: _appleVibeInputDecoration(
             context,
             prefixIcon: const Icon(Icons.location_on_outlined),
@@ -1079,7 +1182,7 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
             context,
             prefixIcon: const Icon(Icons.tag_outlined),
             labelText: 'admin.field_apartment_code'.tr(),
-            hintText: 'SUN-01',
+            hintText: 'admin.apartments_code_hint'.tr(),
           ),
           textCapitalization: TextCapitalization.characters,
         ),
@@ -1196,7 +1299,8 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
           ),
           maxLines: 4,
         ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -1230,19 +1334,50 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
     }
 
     if (tenantServices.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(
-            'admin.apartment_services_empty'.tr(),
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey.shade600),
-          ),
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'admin.tab_services_pricing'.tr(),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black87,
+                  ),
+            ),
+            const SizedBox(height: 16),
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'admin.apartment_services_empty'.tr(),
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey.shade600),
+                ),
+              ),
+            ),
+          ],
         ),
       );
     }
 
-    return ListView.builder(
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'admin.tab_services_pricing'.tr(),
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black87,
+                ),
+          ),
+          const SizedBox(height: 16),
+          ListView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       itemCount: tenantServices.length,
@@ -1423,6 +1558,9 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
               : [],
         );
       },
+    ),
+        ],
+      ),
     );
   }
 
@@ -1612,11 +1750,13 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
       );
     } on PostgrestException catch (e) {
       if (!mounted) return;
-      // ignore: avoid_print
-      print('--- CHYBA ÚPRAVY APARTMÁNU: $e');
-      if (e.message.contains('column') || e.code == '42703') {
+      if (kDebugMode) {
         // ignore: avoid_print
-        print('>>> Sloupce v tabulce apartments neexistují. Spusť: supabase/migrations/20250216_apartments_extended.sql');
+        print('Apartment edit error (Postgrest): $e');
+        if (e.message.contains('column') || e.code == '42703') {
+          // ignore: avoid_print
+          print('Missing columns? Run supabase/migrations/20250216_apartments_extended.sql');
+        }
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -1630,12 +1770,14 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
       );
     } catch (e) {
       if (!mounted) return;
-      // ignore: avoid_print
-      print('--- CHYBA ÚPRAVY APARTMÁNU: $e');
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('Apartment edit error: $e');
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'admin.apartments_save_error'.tr(namedArgs: {'error': '$e'}),
+            'admin.apartments_save_error'.tr(namedArgs: {'error': e.toString()}),
           ),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
@@ -1695,34 +1837,36 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
   }
 
   Widget _buildTab1Basic(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          'admin.section_basic'.tr(),
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                color: Colors.grey.shade700,
-                fontWeight: FontWeight.w600,
-              ),
-        ),
-        const SizedBox(height: 8),
-        TextFormField(
-          controller: _nameController,
-          decoration: _appleVibeInputDecoration(
-            context,
-            prefixIcon: const Icon(Icons.label_outline),
-            labelText: 'admin.field_name'.tr(),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'admin.tab_basic_info'.tr(),
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black87,
+                ),
           ),
-          textCapitalization: TextCapitalization.words,
-          validator: (v) =>
-              (v == null || v.trim().isEmpty)
-                  ? 'admin.validation_name_required'.tr()
-                  : null,
-        ),
-        const SizedBox(height: 12),
-        TextFormField(
-          controller: _addressController,
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: _nameController,
+            decoration: _appleVibeInputDecoration(
+              context,
+              prefixIcon: const Icon(Icons.label_outline),
+              labelText: 'admin.field_name'.tr(),
+            ),
+            textCapitalization: TextCapitalization.words,
+            validator: (v) =>
+                (v == null || v.trim().isEmpty)
+                    ? 'admin.validation_name_required'.tr()
+                    : null,
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: _addressController,
           decoration: _appleVibeInputDecoration(
             context,
             prefixIcon: const Icon(Icons.location_on_outlined),
@@ -1741,7 +1885,7 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
             context,
             prefixIcon: const Icon(Icons.tag_outlined),
             labelText: 'admin.field_apartment_code'.tr(),
-            hintText: 'SUN-01',
+            hintText: 'admin.apartments_code_hint'.tr(),
           ),
           textCapitalization: TextCapitalization.characters,
         ),
@@ -1858,7 +2002,8 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
           ),
           maxLines: 4,
         ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -1874,23 +2019,71 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
     }
 
     if (tenantServices.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(
-            'admin.apartment_services_empty'.tr(),
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey.shade600),
-          ),
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'admin.tab_services_pricing'.tr(),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black87,
+                  ),
+            ),
+            const SizedBox(height: 16),
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'admin.apartment_services_empty'.tr(),
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey.shade600),
+                ),
+              ),
+            ),
+          ],
         ),
       );
     }
 
     if (!_servicesLoaded) {
-      return const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()));
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'admin.tab_services_pricing'.tr(),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black87,
+                  ),
+            ),
+            const SizedBox(height: 16),
+            const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())),
+          ],
+        ),
+      );
     }
 
-    return ListView.builder(
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'admin.tab_services_pricing'.tr(),
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black87,
+                ),
+          ),
+          const SizedBox(height: 16),
+          ListView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       itemCount: tenantServices.length,
@@ -2099,6 +2292,9 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
               : [],
         );
       },
+    ),
+        ],
+      ),
     );
   }
 
@@ -2112,19 +2308,21 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
   Widget _buildTab3Owners(BuildContext context) {
     final ownersAsync = ref.watch(apartmentOwnersForApartmentProvider(widget.apartment.id));
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          'admin.section_owners'.tr(),
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                color: Colors.grey.shade700,
-                fontWeight: FontWeight.w600,
-              ),
-        ),
-        const SizedBox(height: 12),
-        ownersAsync.when(
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'admin.tab_owners'.tr(),
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black87,
+                ),
+          ),
+          const SizedBox(height: 16),
+          ownersAsync.when(
           data: (owners) {
             if (owners.isEmpty) {
               return Padding(
@@ -2161,7 +2359,8 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
           icon: const Icon(Icons.person_add_outlined, size: 20),
           label: Text('admin.btn_assign_owner_from_clients'.tr()),
         ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -2219,6 +2418,7 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
         onAssigned: (inviteLink) {
           ref.invalidate(apartmentOwnersForApartmentProvider(widget.apartment.id));
           ref.invalidate(clientsProvider);
+          ref.invalidate(clientsFullListProvider);
           if (!context.mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -2250,17 +2450,22 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
       content: Form(
         key: _formKey,
         child: DefaultTabController(
-          length: 3,
+          length: 6,
           child: Column(
             mainAxisSize: MainAxisSize.max,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               TabBar(
+                isScrollable: true,
+                tabAlignment: TabAlignment.start,
                 labelColor: Theme.of(context).colorScheme.primary,
                 tabs: [
                   Tab(icon: const Icon(Icons.info_outline), text: 'admin.tab_basic_info'.tr()),
                   Tab(icon: const Icon(Icons.room_service_outlined), text: 'admin.tab_services_pricing'.tr()),
                   Tab(icon: const Icon(Icons.person_outline), text: 'admin.tab_owners'.tr()),
+                  Tab(icon: const Icon(Icons.calendar_month), text: 'admin.tab_reservations'.tr()),
+                  Tab(icon: const Icon(Icons.task_alt), text: 'admin.tab_tasks'.tr()),
+                  Tab(icon: const Icon(Icons.calendar_today_outlined), text: 'admin.tab_ical_sync'.tr()),
                 ],
               ),
               const SizedBox(height: 8),
@@ -2270,6 +2475,21 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
                     SingleChildScrollView(child: _buildTab1Basic(context)),
                     SingleChildScrollView(child: _buildTab2Services(context)),
                     SingleChildScrollView(child: _buildTab3Owners(context)),
+                    _ApartmentReservationsTab(
+                      ref: ref,
+                      apartment: widget.apartment,
+                    ),
+                    _ApartmentTasksTab(
+                      ref: ref,
+                      apartment: widget.apartment,
+                    ),
+                    SingleChildScrollView(
+                      child: _IcalSyncTabContent(
+                        ref: ref,
+                        apartmentId: widget.apartment.id,
+                        tenantId: widget.apartment.tenantId,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -2294,6 +2514,660 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
               : Text('common.save'.tr()),
         ),
       ],
+    );
+  }
+}
+
+/// Tab 4: iCal synchronizace – seznam zdrojů, přidání odkazu, tlačítko Synchronizovat.
+class _IcalSyncTabContent extends ConsumerStatefulWidget {
+  const _IcalSyncTabContent({
+    required this.ref,
+    required this.apartmentId,
+    required this.tenantId,
+  });
+
+  final WidgetRef ref;
+  final String apartmentId;
+  final String tenantId;
+
+  @override
+  ConsumerState<_IcalSyncTabContent> createState() => _IcalSyncTabContentState();
+}
+
+class _IcalSyncTabContentState extends ConsumerState<_IcalSyncTabContent> {
+  late final TextEditingController _urlController;
+  late final TextEditingController _labelController;
+
+  @override
+  void initState() {
+    super.initState();
+    _urlController = TextEditingController();
+    _labelController = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    _labelController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _onAddSource() async {
+    final url = _urlController.text.trim();
+    if (url.isEmpty) return;
+    final label = _labelController.text.trim().isEmpty ? 'iCal' : _labelController.text.trim();
+    final error = await ref.read(icalSyncNotifierProvider.notifier).addSource(
+      apartmentId: widget.apartmentId,
+      url: url,
+      label: label,
+    );
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    if (error == null) {
+      _urlController.clear();
+      _labelController.clear();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('admin.ical_add_success'.tr()),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(error),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _onSync(IcalSourceRow source) async {
+    final result = await ref.read(icalSyncNotifierProvider.notifier).syncUrl(
+      apartmentId: widget.apartmentId,
+      tenantId: widget.tenantId,
+      icalUrl: source.icalUrl,
+      sourceId: source.id,
+    );
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    if (result.error != null) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('admin.ical_sync_error'.tr(namedArgs: {'error': result.error!})),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else if (result.insertedCount > 0) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('admin.ical_sync_success'.tr(namedArgs: {'count': '${result.insertedCount}'})),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('admin.ical_sync_no_new'.tr()),
+          backgroundColor: Colors.grey.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _onRemoveSource(IcalSourceRow source) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('admin.ical_remove_source'.tr()),
+        content: Text('admin.ical_remove_confirm'.tr(namedArgs: {'label': source.sourceLabel})),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text('common.cancel'.tr())),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: Text('admin.ical_remove_source'.tr())),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    await ref.read(icalSyncNotifierProvider.notifier).removeSource(widget.apartmentId, source.id);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sourcesAsync = ref.watch(icalSourcesProvider(widget.apartmentId));
+    final syncState = ref.watch(icalSyncNotifierProvider);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'admin.tab_ical_sync'.tr(),
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black87,
+                ),
+          ),
+          const SizedBox(height: 16),
+          // Formulář pro přidání zdroje
+          TextFormField(
+            controller: _urlController,
+            decoration: InputDecoration(
+              labelText: 'admin.ical_url_hint'.tr(),
+              border: const OutlineInputBorder(),
+            ),
+            keyboardType: TextInputType.url,
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: _labelController,
+            decoration: InputDecoration(
+              labelText: 'admin.ical_source_label'.tr(),
+              border: const OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: syncState.isAddingSource ? null : _onAddSource,
+            icon: syncState.isAddingSource
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.add_link, size: 20),
+            label: Text('admin.ical_add_source'.tr()),
+          ),
+          const SizedBox(height: 24),
+          // Seznam zdrojů
+          sourcesAsync.when(
+            data: (sources) {
+              if (sources.isEmpty) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  child: Text(
+                    'admin.ical_sources_empty'.tr(),
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
+                  ),
+                );
+              }
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: sources.map((s) {
+                  final isSyncing = syncState.syncingSourceId == s.id;
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    child: ListTile(
+                      title: Text(s.sourceLabel),
+                      subtitle: Text(
+                        s.icalUrl,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          FilledButton.tonal(
+                            onPressed: isSyncing ? null : () => _onSync(s),
+                            child: isSyncing
+                                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                                : Text('admin.ical_sync_btn'.tr()),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            icon: const Icon(Icons.delete_outline),
+                            onPressed: () => _onRemoveSource(s),
+                            tooltip: 'admin.ical_remove_source'.tr(),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }).toList(),
+              );
+            },
+            loading: () => const Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+            error: (e, _) => Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                'common.error_with_message'.tr(namedArgs: {'message': e.toString()}),
+                style: TextStyle(color: Colors.red.shade700),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// --- Pomocné funkce pro záložky Rezervace a Úkoly (stejná logika jako v ClientDetailDialog) ---
+
+DateTime? _parseReservationStartDateForApartment(String? checkIn) {
+  if (checkIn == null || checkIn.trim().isEmpty) return null;
+  final parts = checkIn.trim().split(' ');
+  final dParts = parts[0].split('.');
+  if (dParts.length < 3) return null;
+  try {
+    return DateTime(
+      int.parse(dParts[2]),
+      int.parse(dParts[1]),
+      int.parse(dParts[0]),
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
+bool _isReservationCompletedForApartment(ReservationRow r) {
+  final s = r.status.trim().toLowerCase();
+  return s == 'checked_out' || s == 'cancelled';
+}
+
+List<ReservationRow> _sortReservationsForApartmentTab(List<ReservationRow> list) {
+  final sorted = List<ReservationRow>.from(list);
+  sorted.sort((a, b) {
+    final aDate = _parseReservationStartDateForApartment(a.checkIn);
+    final bDate = _parseReservationStartDateForApartment(b.checkIn);
+    final aEnd = _isReservationCompletedForApartment(a) ? 1 : 0;
+    final bEnd = _isReservationCompletedForApartment(b) ? 1 : 0;
+    if (aEnd != bEnd) return aEnd.compareTo(bEnd);
+    if (aDate == null && bDate == null) return 0;
+    if (aDate == null) return 1;
+    if (bDate == null) return -1;
+    return aDate.compareTo(bDate);
+  });
+  return sorted;
+}
+
+String _taskStatusKeyForApartment(String? status) {
+  if (status == null || status.trim().isEmpty) return 'task_status.pending';
+  final s = status.trim().toLowerCase();
+  if (s == 'pending' || s == 'draft' || s == 'návrh') return 'task_status.pending';
+  if (s == 'assigned' || s == 'new' || s == 'nový' || s == 'zadáno') return 'task_status.assigned';
+  if (s == 'in_progress' || s == 'probíhá') return 'task_status.in_progress';
+  if (s == 'completed' || s == 'done' || s == 'hotovo' || s == 'dokončeno') return 'task_status.completed';
+  if (s == 'problém' || s == 'problem' || s == 'issue') return 'task_status.problem';
+  return 'task_status.pending';
+}
+
+bool _isTaskCompletedOrCancelledForApartment(TaskRow t) {
+  final s = t.status.trim().toLowerCase();
+  return s == 'completed' || s == 'done' || s == 'hotovo' || s == 'dokončeno' || s == 'cancelled';
+}
+
+DateTime _taskSortDateForApartment(TaskRow t) {
+  final start = t.scheduledStart;
+  if (start != null) return start;
+  return t.dueDate;
+}
+
+List<TaskRow> _sortTasksForApartmentTab(List<TaskRow> list) {
+  final sorted = List<TaskRow>.from(list);
+  sorted.sort((a, b) {
+    final aEnd = _isTaskCompletedOrCancelledForApartment(a) ? 1 : 0;
+    final bEnd = _isTaskCompletedOrCancelledForApartment(b) ? 1 : 0;
+    if (aEnd != bEnd) return aEnd.compareTo(bEnd);
+    return _taskSortDateForApartment(a).compareTo(_taskSortDateForApartment(b));
+  });
+  return sorted;
+}
+
+/// Záložka Rezervace v detailu apartmánu – seznam rezervací pro tento byt.
+///
+/// Řazení a tlačítko „Zobrazit historii dokončených“ stejné jako v ClientDetailDialog.
+class _ApartmentReservationsTab extends ConsumerStatefulWidget {
+  const _ApartmentReservationsTab({
+    required this.ref,
+    required this.apartment,
+  });
+
+  final WidgetRef ref;
+  final ApartmentRow apartment;
+
+  @override
+  ConsumerState<_ApartmentReservationsTab> createState() => _ApartmentReservationsTabState();
+}
+
+class _ApartmentReservationsTabState extends ConsumerState<_ApartmentReservationsTab> {
+  bool _showHistory = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final reservationsAsync = ref.watch(reservationsForApartmentProvider(widget.apartment.id));
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'admin.tab_reservations'.tr(),
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black87,
+                    ),
+              ),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.add, size: 18),
+                label: Text('clients.btn_add_reservation_context'.tr()),
+                onPressed: () {
+                  AdminReservationsScreen.showAddReservationDialog(
+                    context,
+                    ref,
+                    initialApartmentId: widget.apartment.id,
+                    onSaved: () {
+                      ref.invalidate(reservationsForApartmentProvider(widget.apartment.id));
+                      ref.invalidate(adminReservationsProvider);
+                    },
+                  );
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Expanded(
+          child: reservationsAsync.when(
+            data: (reservations) {
+              if (reservations.isEmpty) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      'admin.apartments_no_reservations'.tr(),
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                            color: Colors.grey.shade600,
+                          ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                );
+              }
+              final sorted = _sortReservationsForApartmentTab(reservations);
+              final completed = sorted.where(_isReservationCompletedForApartment).toList();
+              final active = sorted.where((r) => !_isReservationCompletedForApartment(r)).toList();
+              final visible = _showHistory ? sorted : active;
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: visible.isEmpty
+                        ? Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Text(
+                                'admin.apartments_no_reservations'.tr(),
+                                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                      color: Colors.grey.shade600,
+                                    ),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          )
+                        : ListView.builder(
+                            padding: const EdgeInsets.all(16),
+                            itemCount: visible.length,
+                            itemBuilder: (context, index) {
+                              final r = visible[index];
+                              final term = [
+                                r.checkIn ?? '–',
+                                r.checkOut ?? '–',
+                              ].join(' – ');
+                              return Card(
+                                margin: const EdgeInsets.only(bottom: 8),
+                                child: ListTile(
+                                  leading: Icon(Icons.calendar_month, color: Colors.teal.shade700),
+                                  title: Text(term),
+                                  subtitle: Text(
+                                    [
+                                      (r.guestName ?? '').trim().isNotEmpty ? r.guestName! : '–',
+                                      reservationStatusLabelKey(r.status).tr(),
+                                    ].join(' • '),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  trailing: const Icon(Icons.chevron_right),
+                                  onTap: () {
+                                    AdminReservationsScreen.showEditReservationDialog(
+                                      context,
+                                      ref,
+                                      r,
+                                      onSaved: () {
+                                        ref.invalidate(reservationsForApartmentProvider(widget.apartment.id));
+                                        ref.invalidate(adminReservationsProvider);
+                                      },
+                                    );
+                                  },
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                  if (completed.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                      child: TextButton.icon(
+                        icon: Icon(
+                          _showHistory ? Icons.expand_less : Icons.expand_more,
+                          size: 20,
+                        ),
+                        label: Text(
+                          _showHistory
+                              ? 'common.hide_history'.tr()
+                              : 'common.show_history_count'.tr(namedArgs: {'count': '${completed.length}'}),
+                        ),
+                        onPressed: () => setState(() => _showHistory = !_showHistory),
+                      ),
+                    ),
+                ],
+              );
+            },
+            loading: () => const Center(child: CircularProgressIndicator()),
+            error: (err, __) => Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
+                    const SizedBox(height: 16),
+                    Text(
+                      'common.error_with_message'.tr(namedArgs: {'message': err.toString()}),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.red.shade700, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Záložka Úkoly v detailu apartmánu – seznam úkolů pro tento byt.
+///
+/// Řazení a tlačítko „Zobrazit historii dokončených“ stejné jako v ClientDetailDialog.
+class _ApartmentTasksTab extends ConsumerStatefulWidget {
+  const _ApartmentTasksTab({
+    required this.ref,
+    required this.apartment,
+  });
+
+  final WidgetRef ref;
+  final ApartmentRow apartment;
+
+  @override
+  ConsumerState<_ApartmentTasksTab> createState() => _ApartmentTasksTabState();
+}
+
+class _ApartmentTasksTabState extends ConsumerState<_ApartmentTasksTab> {
+  bool _showHistory = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final tasksAsync = ref.watch(tasksForApartmentProvider(widget.apartment.id));
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'admin.tab_tasks'.tr(),
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black87,
+                    ),
+              ),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.add, size: 18),
+                label: Text('clients.btn_add_task_context'.tr()),
+                onPressed: () {
+                  AdminTasksScreen.showAddTaskDialog(
+                    context,
+                    ref,
+                    initialApartmentId: widget.apartment.id,
+                    onSaved: () {
+                      ref.invalidate(tasksForApartmentProvider(widget.apartment.id));
+                      ref.invalidate(adminTasksProvider);
+                      ref.invalidate(adminTasksStreamProvider);
+                    },
+                  );
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Expanded(
+            child: tasksAsync.when(
+            data: (tasks) {
+              if (tasks.isEmpty) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      'admin.apartments_no_tasks'.tr(),
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                            color: Colors.grey.shade600,
+                          ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                );
+              }
+              final sorted = _sortTasksForApartmentTab(tasks);
+              final completed = sorted.where(_isTaskCompletedOrCancelledForApartment).toList();
+              final active = sorted.where((t) => !_isTaskCompletedOrCancelledForApartment(t)).toList();
+              final visible = _showHistory ? sorted : active;
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: visible.isEmpty
+                        ? Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Text(
+                                'admin.apartments_no_tasks'.tr(),
+                                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                      color: Colors.grey.shade600,
+                                    ),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          )
+                        : ListView.builder(
+                            padding: const EdgeInsets.all(16),
+                            itemCount: visible.length,
+                            itemBuilder: (context, index) {
+                              final t = visible[index];
+                              final displayTitle = (t.customTitle ?? t.title).trim().isNotEmpty
+                                  ? (t.customTitle ?? t.title)
+                                  : (t.apartmentName ?? t.apartmentId);
+                              return Card(
+                                margin: const EdgeInsets.only(bottom: 8),
+                                child: ListTile(
+                                  leading: Icon(Icons.task_alt, color: Colors.teal.shade700),
+                                  title: Text(displayTitle, overflow: TextOverflow.ellipsis),
+                                  subtitle: Text(
+                                    _taskStatusKeyForApartment(t.status).tr(),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  trailing: const Icon(Icons.chevron_right),
+                                  onTap: () {
+                                    AdminTasksScreen.showEditTaskDialog(
+                                      context,
+                                      ref,
+                                      t,
+                                      onSaved: () {
+                                        ref.invalidate(tasksForApartmentProvider(widget.apartment.id));
+                                        ref.invalidate(adminTasksProvider);
+                                        ref.invalidate(adminTasksStreamProvider);
+                                      },
+                                    );
+                                  },
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                  if (completed.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                      child: TextButton.icon(
+                        icon: Icon(
+                          _showHistory ? Icons.expand_less : Icons.expand_more,
+                          size: 20,
+                        ),
+                        label: Text(
+                          _showHistory
+                              ? 'common.hide_history'.tr()
+                              : 'common.show_history_count'.tr(namedArgs: {'count': '${completed.length}'}),
+                        ),
+                        onPressed: () => setState(() => _showHistory = !_showHistory),
+                      ),
+                    ),
+                ],
+              );
+            },
+            loading: () => const Center(child: CircularProgressIndicator()),
+            error: (err, __) => Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
+                    const SizedBox(height: 16),
+                    Text(
+                      'common.error_with_message'.tr(namedArgs: {'message': err.toString()}),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.red.shade700, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        ],
+      ),
     );
   }
 }
@@ -2458,9 +3332,12 @@ class _AssignOwnerFromClientsDialogState extends ConsumerState<_AssignOwnerFromC
     } catch (e) {
       if (!mounted) return;
       setState(() => _isSaving = false);
+      final displayError = (e is StateError && e.message == 'admin.owners_error_profile_not_created')
+          ? 'admin.owners_error_profile_not_created'.tr()
+          : 'admin.owners_add_error'.tr(namedArgs: {'error': e.toString()});
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('admin.owners_add_error'.tr(namedArgs: {'error': '$e'})),
+          content: Text(displayError),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
         ),

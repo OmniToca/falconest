@@ -13,13 +13,14 @@ class TaskRepositoryWeb implements ITaskRepository {
     final futureLimit = now.add(const Duration(days: 14)).toIso8601String();
 
     // PROČ: Archivace. Vyfakturované úkoly (invoiced_at != null) schováváme z aktivních pohledů.
+    // Worker vidí úkol, pokud je v assigned_to NEBO v assigned_user_ids.
     final tasksData = await SupabaseService.client
         .from('tasks')
         .select(
-          'id, tenant_id, apartment_id, assigned_to, title, description, task_type, scheduled_start, status, photo_url, reference_number',
+          'id, tenant_id, apartment_id, assigned_to, assigned_user_ids, title, description, task_type, scheduled_start, status, photo_url, reference_number',
         )
         .eq('tenant_id', tenantId)
-        .eq('assigned_to', workerId)
+        .or('assigned_to.eq.$workerId,assigned_user_ids.cs.{$workerId}')
         .isFilter('deleted_at', null)
         .isFilter('invoiced_at', null)
         .gte('scheduled_start', pastLimit)
@@ -127,17 +128,20 @@ class TaskRepositoryWeb implements ITaskRepository {
         }
       }
       String? clientName;
+      String? clientPhone;
       final clientId = map['client_id']?.toString().trim();
       if (clientId != null && clientId.isNotEmpty) {
         final clientRes = await SupabaseService.client
             .from('clients')
-            .select('name')
+            .select('name, phone')
             .eq('id', clientId)
             .isFilter('deleted_at', null)
             .maybeSingle();
         if (clientRes != null && clientRes is Map) {
           final n = (clientRes['name'] as String?)?.trim();
           if (n != null && n.isNotEmpty) clientName = n;
+          final p = (clientRes['phone'] as String?)?.trim();
+          if (p != null && p.isNotEmpty) clientPhone = p;
         }
       }
       String? guestName;
@@ -190,6 +194,7 @@ class TaskRepositoryWeb implements ITaskRepository {
         customLocation: customLoc?.isEmpty ?? true ? null : customLoc,
         customTitle: customTtl?.isEmpty ?? true ? null : customTtl,
         clientName: clientName,
+        clientPhone: clientPhone,
         keybox: keybox?.isEmpty ?? true ? null : keybox,
         ownerNotes: ownerNotes?.isEmpty ?? true ? null : ownerNotes,
         guestName: guestName,
@@ -214,6 +219,8 @@ class TaskRepositoryWeb implements ITaskRepository {
     DateTime? completedAt,
     Map<String, dynamic>? metadataOverlay,
     List<String>? mediaUrls,
+    List<String>? localPhotoPaths,
+    List<String>? existingMediaUrls,
   }) async {
     final updates = <String, dynamic>{'status': status};
     if (startedAt != null) updates['started_at'] = startedAt.toUtc().toIso8601String();

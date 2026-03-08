@@ -9,7 +9,10 @@ class WorkerSyncService {
     String workerId,
     String tenantId, {
     void Function(String)? onSyncError,
-  }) async {}
+    Object? driftRepos,
+  }) async {
+    // Web je vždy online – Drift nepotřebuje.
+  }
 
   static Future<void> pushPendingUpdates(
     String tenantId, {
@@ -21,6 +24,6 @@ class WorkerSyncService {
     void Function(String)? onSyncError,
   }) async {}
 
-  /// Na webu vždy 0 – není Isar.
-  static Future<int> getPendingSyncCount(String tenantId) async => 0;
+  /// Na webu vždy 0 – není lokální databáze.
+  static Future<int> getPendingSyncCount(String tenantId, {Object? driftRepos}) async => 0;
 }

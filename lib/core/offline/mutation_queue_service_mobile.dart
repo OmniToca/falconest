@@ -1,151 +1,55 @@
-import 'dart:convert';
-
+/// Mobilní implementace MutationQueueService – výhradně Drift (SQLite).
+///
+/// Isar odstraněn – nestabilní na iOS. Provider vrací DriftMutationQueueService.
+/// MutationQueueService.instance deleguje na registrovanou instanci (nastavenou providerem).
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:isar/isar.dart';
 
-import 'package:falconest/core/database/isar_service.dart';
-import 'package:falconest/core/database/models/pending_mutation_local.dart';
-import 'package:falconest/core/offline/offline_cash_collection_processor.dart';
-import 'package:falconest/core/offline/offline_company_expense_processor.dart';
-import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/database/drift/database_provider.dart';
+import 'package:falconest/core/offline/drift_mutation_queue_service.dart';
+import 'package:falconest/core/offline/mutation_queue_interface.dart';
 
-/// Mobilní implementace MutationQueueService – zapisuje do Isar, odesílá při processQueue.
-///
-/// Univerzální fronta pro offline operace. Admin (a budoucí moduly) sem ukládají
-/// mutace při síťové chybě; NetworkSyncWatcher při návratu sítě volá processQueue.
-class MutationQueueService {
+/// Globální instance – nastaví provider při prvním read. Používá se z CashWalletRepository atd.
+MutationQueueServiceInterface? _mutationQueueInstance;
+
+/// Nastaví instanci pro MutationQueueService.instance (volá provider).
+void setMutationQueueInstance(MutationQueueServiceInterface? impl) {
+  _mutationQueueInstance = impl;
+}
+
+/// Třída pro zpětnou kompatibilitu – CashWalletRepository.instance.enqueueMutation atd.
+class MutationQueueService implements MutationQueueServiceInterface {
   MutationQueueService._();
 
-  static final MutationQueueService instance = MutationQueueService._();
+  static final MutationQueueService _singleton = MutationQueueService._();
 
-  /// Uloží mutaci do lokální fronty (PendingMutationLocal).
-  ///
-  /// Volá se z Admin repozitáře při zachycení SocketException/TimeoutException –
-  /// data se neztratí a čekají na odeslání po obnovení sítě.
+  /// Vrací registrovanou Drift implementaci. Musí být již načten mutationQueueServiceProvider.
+  static MutationQueueServiceInterface get instance {
+    final i = _mutationQueueInstance;
+    if (i == null) {
+      throw StateError(
+        'MutationQueueService není inicializován. Zajisti, že mutationQueueServiceProvider byl načten (např. SyncStatusIcon).',
+      );
+    }
+    return i;
+  }
+
+  @override
   Future<void> enqueueMutation({
     required String table,
     required String action,
     required Map<String, dynamic> payload,
     String? recordId,
-  }) async {
-    try {
-      final isar = IsarService.instance;
-      final mutation = PendingMutationLocal()
-        ..tableName = table
-        ..actionType = action
-        ..payloadJson = jsonEncode(payload)
-        ..recordId = recordId
-        ..createdAt = DateTime.now().toUtc();
-      await isar.writeTxn(() async => isar.pendingMutationLocals.put(mutation));
-    } catch (e) {
-      if (kDebugMode) {
-        // ignore: avoid_print
-        print('MutationQueueService.enqueueMutation ERROR: $e');
-      }
-    }
-  }
+  }) =>
+      instance.enqueueMutation(table: table, action: action, payload: payload, recordId: recordId);
 
-  /// Načte frontu, seřadí podle createdAt a odešle do Supabase.
-  ///
-  /// Při síťové chybě okamžitě přeruší (zachová pořadí). Úspěšné záznamy se mažou.
-  Future<void> processQueue() async {
-    Isar isar;
-    try {
-      isar = IsarService.instance;
-    } on StateError {
-      return;
-    }
+  @override
+  Future<void> processQueue() => instance.processQueue();
 
-    final pending = await isar.pendingMutationLocals
-        .filter()
-        .idGreaterThan(0)
-        .findAll();
-    pending.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+  @override
+  Future<int> getPendingCount() => instance.getPendingCount();
 
-    for (final m in pending) {
-      try {
-        final payload = jsonDecode(m.payloadJson) as Map<String, dynamic>?;
-        if (payload == null || payload.isEmpty) {
-          await isar.writeTxn(() async => isar.pendingMutationLocals.delete(m.id));
-          continue;
-        }
-
-        switch (m.actionType.toUpperCase()) {
-          case 'OFFLINE_CASH_COLLECTION':
-            await processOfflineCashCollection(payload);
-            break;
-          case 'OFFLINE_COMPANY_EXPENSE':
-            await processOfflineCompanyExpense(payload);
-            break;
-          case 'INSERT':
-            await SupabaseService.client.from(m.tableName).insert(payload);
-            break;
-          case 'UPDATE':
-            if (m.recordId == null || m.recordId!.isEmpty) continue;
-            var updateQuery = SupabaseService.client
-                .from(m.tableName)
-                .update(payload)
-                .eq('id', m.recordId!);
-            final tenantId = payload['tenant_id']?.toString();
-            if (tenantId != null && tenantId.isNotEmpty) {
-              updateQuery = updateQuery.eq('tenant_id', tenantId);
-            }
-            await updateQuery;
-            break;
-          case 'DELETE':
-            if (m.recordId == null || m.recordId!.isEmpty) continue;
-            var deleteQuery = SupabaseService.client
-                .from(m.tableName)
-                .delete()
-                .eq('id', m.recordId!);
-            final tenantId = payload['tenant_id']?.toString();
-            if (tenantId != null && tenantId.isNotEmpty) {
-              deleteQuery = deleteQuery.eq('tenant_id', tenantId);
-            }
-            await deleteQuery;
-            break;
-          default:
-            continue;
-        }
-
-        await isar.writeTxn(() async => isar.pendingMutationLocals.delete(m.id));
-      } catch (e) {
-        // Síťová chyba – přerušit a počkat na další pokus (zachovat pořadí).
-        if (MutationQueueService.isNetworkError(e)) {
-          if (kDebugMode) {
-            // ignore: avoid_print
-            print('MutationQueueService.processQueue: network error, stopping: $e');
-          }
-          return;
-        }
-        // Jiná chyba (validace, RLS) – záznam odstranit, aby neblokoval frontu.
-        if (kDebugMode) {
-          // ignore: avoid_print
-          print('MutationQueueService.processQueue: non-network error, removing: $e');
-        }
-        await isar.writeTxn(() async => isar.pendingMutationLocals.delete(m.id));
-      }
-    }
-  }
-
-  /// Vrací počet záznamů ve frontě (PendingMutationLocal).
-  /// PROČ: Pro SyncStatusIcon – uživatel vidí, kolik změn čeká na odeslání.
-  Future<int> getPendingCount() async {
-    try {
-      final isar = IsarService.instance;
-      final pending = await isar.pendingMutationLocals
-          .filter()
-          .idGreaterThan(0)
-          .count();
-      return pending;
-    } on StateError {
-      return 0;
-    }
-  }
-
-  /// Rozpozná, zda výjimka odpovídá síťové chybě (offline, timeout).
-  /// Veřejné pro CashWalletRepository – záchrana výběru hotovosti při offline.
+  /// Rozpozná síťovou chybu – používá se z CashWalletRepository.
   static bool isNetworkError(Object e) {
     final type = e.runtimeType.toString();
     if (type.contains('SocketException')) return true;
@@ -163,6 +67,13 @@ class MutationQueueService {
   }
 }
 
-final mutationQueueServiceProvider = Provider<MutationQueueService>((ref) {
-  return MutationQueueService.instance;
+/// Provider pro frontu mutací – Drift (SQLite), Isar odstraněn.
+final mutationQueueServiceProvider = Provider<MutationQueueServiceInterface>((ref) {
+  final taskRepo = ref.watch(driftTaskRepositoryProvider);
+  final service = DriftMutationQueueService(
+    ref.watch(driftPendingMutationRepositoryProvider),
+    taskRepo,
+  );
+  setMutationQueueInstance(service);
+  return service;
 });

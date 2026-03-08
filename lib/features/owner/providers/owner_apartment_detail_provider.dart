@@ -35,7 +35,7 @@ class OwnerApartmentDetail {
 /// SECURITY: Double Guard – načte apartmán jen pokud je v seznamu vlastněných bytů.
 /// Pokud apartmentId není mezi ownedApartmentIds, vrátí null (404).
 final ownerApartmentDetailProvider =
-    FutureProvider.family<OwnerApartmentDetail?, String>((ref, apartmentId) async {
+    FutureProvider.autoDispose.family<OwnerApartmentDetail?, String>((ref, apartmentId) async {
   if (apartmentId.isEmpty) return null;
 
   final apartments = await ref.read(ownerApartmentsProvider.future);

@@ -1,21 +1,20 @@
-/// IO implementace – načtení měny tenanta z Isaru (mobil/desktop).
+/// IO implementace – načtení měny tenanta z Drift (mobil/desktop).
 ///
-/// Tento soubor se kompiluje pouze pro dart:io. Obsahuje Isar – na webu se nekompiluje.
-import 'package:falconest/core/database/isar_service.dart';
-import 'package:falconest/core/database/models/tenant_local.dart';
+/// Isar odstraněn – Drift (SQLite) zajišťuje stabilitu na iOS.
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-/// Načte měnu tenanta z TenantLocal v Isaru.
+import 'package:falconest/core/database/drift/database_provider.dart';
+
+/// Načte měnu tenanta z Drift databáze.
 /// Vrací null, pokud záznam neexistuje nebo nemá currency.
-Future<String?> getTenantCurrencyFromLocal(String tenantId) async {
+Future<String?> getTenantCurrencyFromLocal(Ref ref, String tenantId) async {
   if (tenantId.isEmpty) return null;
   try {
-    final isar = IsarService.instance;
-    final tenant = await isar.tenantLocals.getBySupabaseId(tenantId);
+    final repo = ref.read(driftTenantRepositoryProvider);
+    final tenant = await repo.getBySupabaseId(tenantId);
     if (tenant?.currency != null && tenant!.currency!.trim().isNotEmpty) {
       return tenant.currency!.trim().toUpperCase();
     }
-  } on StateError {
-    // Isar není inicializován.
   } catch (_) {}
   return null;
 }

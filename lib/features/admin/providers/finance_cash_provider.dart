@@ -1,3 +1,4 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
@@ -18,7 +19,7 @@ final employeeCashWalletsProvider =
     return;
   }
 
-  final team = await ref.watch(adminTeamProvider.future);
+  final team = await ref.watch(teamFullListProvider.future);
   final nameByProfileId = <String, String>{};
   for (final m in team) {
     final pid = m.profileId ?? m.id;
@@ -31,7 +32,7 @@ final employeeCashWalletsProvider =
       final id = (raw['id'] as String?)?.trim() ?? '';
       final profileId = (raw['profile_id'] as String?)?.trim() ?? '';
       final balance = _toDouble(raw['balance']) ?? 0;
-      final workerName = nameByProfileId[profileId] ?? '—';
+      final workerName = nameByProfileId[profileId] ?? 'common.removed_user'.tr();
       return EmployeeCashWalletRow(
         id: id,
         profileId: profileId,
@@ -116,7 +117,7 @@ final myCashTransactionsProvider =
 /// Nové transakce z terénu se zobrazí okamžitě bez refreshe.
 /// Načítá apartmentName a guestName z tasks pro COLLECTED_FROM_GUEST.
 final walletTransactionsProvider =
-    StreamProvider.family<List<CashTransactionUIModel>, String>((ref, walletId) async* {
+    StreamProvider.autoDispose.family<List<CashTransactionUIModel>, String>((ref, walletId) async* {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty || walletId.isEmpty) {
     yield [];
@@ -132,10 +133,11 @@ final walletTransactionsProvider =
   }
 });
 
-/// Obohací syrové transakce o kontext z úkolů (apartmán, host).
+/// Obohací syrové transakce o kontext z úkolů (apartmán, host) a klientů (jméno, typ).
 ///
 /// PROČ: Supabase stream neumožňuje join v realtime. Po obdržení transakcí
-/// načteme tasks s apartments(name) a reservations(guest_name) jedním dotazem.
+/// načteme tasks s apartments(name) a reservations(guest_name) jedním dotazem,
+/// a clients (name, client_type) pro transakce s client_id.
 Future<List<CashTransactionUIModel>> _enrichTransactions(
   String tenantId,
   List<Map<String, dynamic>> rows,
@@ -147,13 +149,13 @@ Future<List<CashTransactionUIModel>> _enrichTransactions(
       .toSet()
       .toList();
 
-  final taskContext = <String, ({String? apartmentName, String? guestName})>{};
+  final taskInfo = <String, ({String? apartmentName, String? guestName, String? taskTitle})>{};
 
   if (taskIds.isNotEmpty) {
     try {
       final res = await SupabaseService.client
           .from('tasks')
-          .select('id, apartments(name), reservations(guest_name)')
+          .select('id, title, apartments(name), reservations(guest_name)')
           .eq('tenant_id', tenantId)
           .inFilter('id', taskIds)
           .isFilter('deleted_at', null);
@@ -165,6 +167,10 @@ Future<List<CashTransactionUIModel>> _enrichTransactions(
 
         String? apartmentName;
         String? guestName;
+        String? taskTitle;
+
+        final title = (m['title'] as String?)?.trim();
+        if (title != null && title.isNotEmpty) taskTitle = title;
 
         final apt = m['apartments'];
         if (apt != null && apt is Map) {
@@ -177,20 +183,63 @@ Future<List<CashTransactionUIModel>> _enrichTransactions(
           if (guestName?.isEmpty == true) guestName = null;
         }
 
-        taskContext[id] = (apartmentName: apartmentName, guestName: guestName);
+        taskInfo[id] = (apartmentName: apartmentName, guestName: guestName, taskTitle: taskTitle);
       }
     } catch (_) {
       // BACKWARD COMPATIBILITY: Selhání enrichementu nesmí rozbít UI – vrátíme transakce bez kontextu.
     }
   }
 
+  // Načtení kontextu klientů – pro transakce s client_id (např. externí platba).
+  final clientIds = rows
+      .map((r) => (r['client_id'] as String?)?.trim())
+      .whereType<String>()
+      .where((id) => id.isNotEmpty)
+      .toSet()
+      .toList();
+
+  final clientInfo = <String, ({String? name, String? clientType})>{};
+
+  if (clientIds.isNotEmpty) {
+    try {
+      final res = await SupabaseService.client
+          .from('clients')
+          .select('id, name, client_type')
+          .eq('tenant_id', tenantId)
+          .inFilter('id', clientIds)
+          .isFilter('deleted_at', null);
+
+      for (final c in res as List) {
+        final m = Map<String, dynamic>.from(c);
+        final id = (m['id'] as String?)?.trim();
+        if (id == null || id.isEmpty) continue;
+
+        final name = (m['name'] as String?)?.trim();
+        final clientType = (m['client_type'] as String?)?.trim();
+
+        clientInfo[id] = (
+          name: name != null && name.isNotEmpty ? name : null,
+          clientType: clientType != null && clientType.isNotEmpty ? clientType : null,
+        );
+      }
+    } catch (_) {
+      // BACKWARD COMPATIBILITY: Selhání enrichementu klientů nesmí rozbít UI.
+    }
+  }
+
   return rows.map((r) {
     final taskId = (r['task_id'] as String?)?.trim();
-    final ctx = taskId != null ? taskContext[taskId] : null;
+    final clientId = (r['client_id'] as String?)?.trim();
+    final taskCtx = taskId != null && taskId.isNotEmpty ? taskInfo[taskId] : null;
+    final clientCtx = clientId != null && clientId.isNotEmpty ? clientInfo[clientId] : null;
+
     return CashTransactionUIModel(
       raw: Map<String, dynamic>.from(r),
-      apartmentName: ctx?.apartmentName,
-      guestName: ctx?.guestName,
+      apartmentName: taskCtx?.apartmentName,
+      guestName: taskCtx?.guestName,
+      taskTitle: taskCtx?.taskTitle,
+      clientName: clientCtx?.name,
+      clientType: clientCtx?.clientType,
     );
   }).toList();
 }
@@ -249,7 +298,7 @@ final failedCashCollectionsProvider =
       if (amount == null || amount <= 0) continue;
 
       final title = (map['title'] as String?)?.trim() ?? '—';
-      String workerName = '—';
+      String workerName = 'common.removed_user'.tr();
       // BUGFIX: PostgREST vrací pod profiles!tasks_assigned_to_fkey při explicitním FK.
       final profilesData = map['profiles'] ?? map['profiles!tasks_assigned_to_fkey'];
       if (profilesData != null && profilesData is Map) {
@@ -260,7 +309,7 @@ final failedCashCollectionsProvider =
         } else {
           final first = (p['first_name'] as String?)?.trim() ?? '';
           final last = (p['last_name'] as String?)?.trim() ?? '';
-          workerName = '$first $last'.trim().isEmpty ? '—' : '$first $last'.trim();
+          workerName = '$first $last'.trim().isEmpty ? 'common.removed_user'.tr() : '$first $last'.trim();
         }
       }
 

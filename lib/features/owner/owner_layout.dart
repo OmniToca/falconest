@@ -4,9 +4,10 @@ import 'package:go_router/go_router.dart';
 
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/owner/owner_apartments_screen.dart';
+import 'package:falconest/features/owner/owner_billing_screen.dart';
+import 'package:falconest/features/owner/owner_planning_calendar_screen.dart';
 import 'package:falconest/features/owner/owner_reservations_screen.dart';
 import 'package:falconest/features/owner/owner_tasks_screen.dart';
-import 'package:falconest/features/owner/owner_planning_calendar_screen.dart';
 
 /// Práh šířky v pixelech – pod ním Drawer, nad ním permanentní Sidebar.
 const double _breakpointWidth = 800;
@@ -22,6 +23,7 @@ const int _ownerTabApartments = 0;
 const int _ownerTabReservations = 1;
 const int _ownerTabTasks = 2;
 const int _ownerTabCalendar = 3;
+const int _ownerTabBilling = 4;
 
 /// Responzivní layout pro klientský portál majitelů bytů (role property_owner).
 ///
@@ -52,6 +54,7 @@ class _OwnerLayoutState extends State<OwnerLayout> {
         OwnerReservationsScreen(),
         OwnerTasksScreen(),
         OwnerPlanningCalendarScreen(),
+        OwnerBillingScreen(),
       ],
     );
     return LayoutBuilder(
@@ -182,6 +185,12 @@ class _OwnerSidebar extends StatelessWidget {
                 label: 'owner.menu_calendar'.tr(),
                 isDrawer: isDrawer,
                 onTap: () => onIndexChanged(_ownerTabCalendar),
+              ),
+              _OwnerNavItem(
+                icon: Icons.receipt_long,
+                label: 'owner.menu_billing'.tr(),
+                isDrawer: isDrawer,
+                onTap: () => onIndexChanged(_ownerTabBilling),
               ),
               const Spacer(),
               const Divider(height: 1, indent: 24, endIndent: 24),

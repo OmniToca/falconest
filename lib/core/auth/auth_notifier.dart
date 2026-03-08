@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:falconest/core/auth/profile_cache_service.dart';
 import 'package:falconest/core/services/push_notification_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/features/super_admin/services/support_interventions_repository.dart';
 
 /// Stav přihlášeného uživatele (efektivní „profile model“) – role a tenant_id z profiles.
 ///
@@ -87,15 +88,23 @@ class AppAuthState {
 /// Nikdy neupozorníme router dříve – tím zajistíme, že redirect má vždy
 /// kompletní data (role, tenant_id) a nedojde k race condition.
 class AuthNotifier extends ChangeNotifier {
-  AuthNotifier() {
+  AuthNotifier([SupportInterventionsRepository? repository]) : _repository = repository {
     _init();
   }
 
   AppAuthState _state = const AppAuthState();
   StreamSubscription? _authSubscription;
 
+  /// Repozitář zásahů podpory – při převtělení vytvoří záznam a při ukončení ho uzavře výkazem práce.
+  /// PROČ: Prevence zneužití Magic Loginu a podklady pro fakturaci/provize. Null = neinjektováno (testy).
+  final SupportInterventionsRepository? _repository;
+
   /// Pouze v paměti: Super Admin si vybere agenturu ze seznamu. NIKDY neukládat do DB.
   String? _selectedTenantId;
+
+  /// ID aktivního zásahu v support_interventions – nastaví se při startIntervention, vymaže při endIntervention.
+  /// Slouží k ukončení zásahu výkazem práce při stopImpersonating.
+  String? _activeInterventionId;
 
   /// True = Supabase má currentUser, ale profil (role, tenant_id) ještě není načten.
   /// Router NESMÍ dělat rozhodnutí o přesměrování, dokud je true.
@@ -115,8 +124,11 @@ class AuthNotifier extends ChangeNotifier {
 
   /// Tenant ID pro načítání dat a filtry v dotazech. Běžný uživatel: tenant_id z profilu.
   /// Super Admin: _selectedTenantId. Null = prázdná data (super_admin bez výběru).
+  /// Pro super_admin a account_manager při převtělení = vybraná agentura; jinak tenant z DB.
   String? get tenantIdForData =>
-      _state.role == 'super_admin' ? _selectedTenantId : _state.tenantId;
+      (_state.role == 'super_admin' || _state.role == 'account_manager')
+          ? _selectedTenantId
+          : _state.tenantId;
 
   /// Zda ještě probíhá načítání profilu. Pokud true, router má zobrazit loading.
   bool get isProfileLoading => _isProfileLoading;
@@ -161,13 +173,25 @@ class AuthNotifier extends ChangeNotifier {
     }
   }
 
-  /// Převtělení Super Admina do vybrané agentury: uloží výběr POUZE v paměti
-  /// (_selectedTenantId). NIKDY neukládáme do DB (profiles zůstává tenant_id: null).
-  /// Volající má po await přesměrovat na context.go('/admin').
+  /// Převtělení HQ (Super Admin nebo Account Manager) do vybrané agentury: vytvoří záznam
+  /// v support_interventions (audit), uloží výběr v paměti. Volající má po await přesměrovat na context.go('/admin').
   Future<void> impersonateTenant(String tenantId) async {
-    if (_state.role != 'super_admin') return;
+    if (_state.role != 'super_admin' && _state.role != 'account_manager') return;
     final id = tenantId.trim();
     if (id.isEmpty) return;
+
+    final profileId = _state.profileId;
+    if (profileId != null && profileId.isNotEmpty && _repository != null) {
+      try {
+        final interventionId = await _repository.startIntervention(profileId, id);
+        _activeInterventionId = interventionId;
+      } catch (e, st) {
+        // Zabraňuje tichému pohlcení chyby při selhání zápisu do support_interventions (P2 audit fix).
+        debugPrint('Chyba při zápisu auditu převtělení (startIntervention): $e');
+        debugPrint('Stack: $st');
+        _activeInterventionId = null;
+      }
+    }
 
     bool? isTenantActive;
     DateTime? paidUntil;
@@ -200,10 +224,21 @@ class AuthNotifier extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Ukončení režimu převtělení: vymaže pouze _selectedTenantId v paměti.
-  /// Do DB se nic nezapisuje. Volající má po await zavolat context.go('/super-admin').
-  Future<void> stopImpersonating() async {
-    if (_state.role != 'super_admin') return;
+  /// Ukončení režimu převtělení: uzavře zásah v support_interventions (výkaz práce),
+  /// vymaže _selectedTenantId a _activeInterventionId. Volající má po await zavolat context.go('/super-admin').
+  Future<void> stopImpersonating({String? workReport}) async {
+    if (_state.role != 'super_admin' && _state.role != 'account_manager') return;
+    final interventionId = _activeInterventionId;
+    if (interventionId != null && _repository != null) {
+      try {
+        await _repository.endIntervention(interventionId, workReport);
+      } catch (e, st) {
+        // Zabraňuje tichému pohlcení chyby při selhání zápisu do support_interventions (P2 audit fix).
+        debugPrint('Chyba při zápisu auditu převtělení (endIntervention): $e');
+        debugPrint('Stack: $st');
+      }
+    }
+    _activeInterventionId = null;
     _selectedTenantId = null;
     _state = AppAuthState(
       user: _state.user,
@@ -502,21 +537,68 @@ class AuthNotifier extends ChangeNotifier {
         preferredCurrency: preferredCurrencyStr,
       );
 
+      // Obnovení převtělení po obnovení stránky: pokud HQ (Super Admin nebo Account Manager) měl
+      // aktivní zásah (Magic Login), obnovíme _selectedTenantId a _activeInterventionId a stav isImpersonating.
+      if ((role == 'super_admin' || role == 'account_manager') &&
+          profileIdStr != null &&
+          profileIdStr.isNotEmpty &&
+          _repository != null) {
+        try {
+          final active = await _repository.getActiveIntervention(profileIdStr);
+          if (active != null) {
+            _activeInterventionId = active.id;
+            _selectedTenantId = active.tenantId;
+            bool? ia;
+            DateTime? pu;
+            try {
+              final tr = await SupabaseService.client
+                  .from('tenants')
+                  .select('is_active, paid_until')
+                  .eq('id', active.tenantId)
+                  .maybeSingle();
+              if (tr != null) {
+                final m = tr as Map;
+                ia = m['is_active'] == true || m['is_active'] == 'true';
+                pu = _parseOptionalDateTime(m['paid_until']);
+              }
+            } catch (_) {}
+            _state = AppAuthState(
+              user: user,
+              role: role,
+              tenantId: tenantIdStr,
+              profileId: profileIdStr,
+              isImpersonating: true,
+              isTenantActive: ia,
+              paidUntil: pu,
+              languageCode: languageCodeStr,
+              preferredCurrency: preferredCurrencyStr,
+            );
+          }
+        } catch (_) {}
+      }
+
       // Push notifikace: zaregistrovat FCM token zařízení do user_devices.
       // Pouze pro uživatele s tenantem (Worker, Admin) – Super Admin bez tenanta přeskočíme.
-      // Fire-and-forget – neblokuje přihlášení při chybě (např. Firebase není nakonfigurován).
+      // Spouštíme úmyslně na pozadí (unawaited), aby inicializace neblokovala bleskový start
+      // aplikace – uživatel se dostane ihned na Nástěnku místo čekání na APNS token a síť.
+      debugPrint('FCM TRACE 1: Profil načten. profileId: $profileIdStr, tenantId: $tenantIdStr');
       if (profileIdStr != null &&
           profileIdStr.isNotEmpty &&
           tenantIdStr != null &&
           tenantIdStr.isNotEmpty) {
-        PushNotificationService.instance
-            .initialize(profileIdStr, tenantIdStr)
-            .catchError((e) {
-          if (kDebugMode) {
-            // ignore: avoid_print
-            print('FCM token registration failed: $e');
-          }
-        });
+        debugPrint('FCM TRACE 2: Volám PushNotificationService.initialize() na pozadí');
+        unawaited(
+          PushNotificationService.instance
+              .initialize(profileIdStr, tenantIdStr)
+              .catchError((e, st) {
+            debugPrint('CRITICAL FCM ERROR: FCM token registration failed: $e');
+            if (kDebugMode) {
+              debugPrint('CRITICAL FCM ERROR: $st');
+            }
+          }),
+        );
+      } else {
+        debugPrint('FCM TRACE 1B: Přeskakuji FCM inicializaci (chybí profil nebo tenant).');
       }
 
       // OFFLINE-FIRST: Uložit profil do lokální cache. Při příštím startu bez sítě

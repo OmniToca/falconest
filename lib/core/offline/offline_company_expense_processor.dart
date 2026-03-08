@@ -12,6 +12,10 @@ Future<void> processOfflineCompanyExpense(Map<String, dynamic> payload) async {
   final profileId = payload['profile_id']?.toString();
   final amountRaw = payload['amount'];
   final note = (payload['note']?.toString() ?? '').trim();
+  final apartmentIdRaw = (payload['apartment_id']?.toString() ?? '').trim();
+  final apartmentId = apartmentIdRaw.isNotEmpty ? apartmentIdRaw : null;
+  final clientIdRaw = (payload['client_id']?.toString() ?? '').trim();
+  final clientId = clientIdRaw.isNotEmpty ? clientIdRaw : null;
   if (tenantId == null ||
       tenantId.isEmpty ||
       profileId == null ||
@@ -34,5 +38,7 @@ Future<void> processOfflineCompanyExpense(Map<String, dynamic> payload) async {
     amount: amount,
     note: note,
     receiptImageUrl: receiptImageUrl,
+    apartmentId: apartmentId,
+    clientId: clientId,
   );
 }

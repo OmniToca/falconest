@@ -25,23 +25,26 @@ class ReportsScreen extends ConsumerWidget {
       ),
       body: ref.watch(reportsDataProvider).when(
             loading: () => const Center(child: CircularProgressIndicator()),
-            error: (err, _) => Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
-                    const SizedBox(height: 16),
-                    Text(
-                      err.toString(),
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    ),
-                  ],
+            error: (err, _) {
+              debugPrint('Reports load error: $err');
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
+                      const SizedBox(height: 16),
+                      Text(
+                        'admin.reports_load_error'.tr(),
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ),
+              );
+            },
             data: (summary) => _ReportsDashboardContent(
               summary: summary,
               ref: ref,
@@ -76,6 +79,11 @@ class _ReportsDashboardContent extends ConsumerWidget {
           _KpiSection(
             totalRevenue: summary.totalMonthRevenue,
             totalTasks: totalTasks,
+            ref: ref,
+          ),
+          const SizedBox(height: 24),
+          _ClientRevenueChart(
+            clientRevenues: summary.clientRevenues,
             ref: ref,
           ),
           const SizedBox(height: 24),
@@ -231,8 +239,168 @@ class _KpiSection extends ConsumerWidget {
   }
 }
 
+/// BarChart ziskovosti klientů (CRM).
+/// Zobrazuje tržby podle klienta – majitele (z apartment_owners) nebo externího (task.client_id).
+/// Klíče 'external' a 'unknown' se překládají přes i18n.
+class _ClientRevenueChart extends ConsumerWidget {
+  const _ClientRevenueChart({
+    required this.clientRevenues,
+    required this.ref,
+  });
+
+  final List<ClientRevenue> clientRevenues;
+  final WidgetRef ref;
+
+  String _displayName(ClientRevenue rev) {
+    if (rev.clientId == 'external') return 'admin.reports_external_services'.tr();
+    if (rev.clientId == 'unknown') return 'admin.reports_unknown_client'.tr();
+    return rev.clientName.isNotEmpty ? rev.clientName : rev.clientId;
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (clientRevenues.isEmpty) {
+      return AppCard(
+        padding: const EdgeInsets.all(24),
+        child: Center(
+          child: Text(
+            'admin.reports_no_data'.tr(),
+            style: TextStyle(color: Colors.grey.shade600),
+          ),
+        ),
+      );
+    }
+
+    final maxRevenue = clientRevenues
+        .map((a) => a.totalRevenue)
+        .fold<double>(0, (a, b) => a > b ? a : b);
+    final displayList = clientRevenues.length > 10
+        ? clientRevenues.sublist(0, 10)
+        : clientRevenues;
+
+    final barGroups = displayList.asMap().entries.map((e) {
+      final i = e.key;
+      final rev = e.value;
+      return BarChartGroupData(
+        x: i,
+        barRods: [
+          BarChartRodData(
+            toY: maxRevenue > 0 ? rev.totalRevenue : 0,
+            color: Colors.teal.shade600,
+            width: 20,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+          ),
+        ],
+        showingTooltipIndicators: [0],
+      );
+    }).toList();
+
+    return AppCard(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'admin.reports_client_profitability'.tr(),
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.grey.shade900,
+                ),
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            height: 220,
+            child: BarChart(
+              BarChartData(
+                alignment: BarChartAlignment.spaceAround,
+                maxY: maxRevenue > 0 ? maxRevenue * 1.2 : 1,
+                barTouchData: BarTouchData(
+                  touchTooltipData: BarTouchTooltipData(
+                    getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                      final rev = displayList[group.x.toInt()];
+                      final name = _displayName(rev);
+                      return BarTooltipItem(
+                        '$name\n${formatTaskAmount(context, ref, rev.totalRevenue)}',
+                        TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12,
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                titlesData: FlTitlesData(
+                  show: true,
+                  bottomTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      getTitlesWidget: (value, meta) {
+                        if (value.toInt() >= 0 &&
+                            value.toInt() < displayList.length) {
+                          final rev = displayList[value.toInt()];
+                          final name = _displayName(rev);
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Text(
+                              name.length > 12 ? '${name.substring(0, 12)}…' : name,
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: Colors.grey.shade700,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          );
+                        }
+                        return const SizedBox.shrink();
+                      },
+                      reservedSize: 32,
+                      interval: 1,
+                    ),
+                  ),
+                  leftTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      reservedSize: 40,
+                      getTitlesWidget: (value, meta) => Text(
+                        value.toInt().toString(),
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                    ),
+                  ),
+                  topTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                  rightTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                ),
+                gridData: FlGridData(
+                  show: true,
+                  drawVerticalLine: false,
+                  getDrawingHorizontalLine: (_) => FlLine(
+                    color: Colors.grey.shade200,
+                    strokeWidth: 1,
+                  ),
+                ),
+                borderData: FlBorderData(show: false),
+                barGroups: barGroups,
+              ),
+              duration: const Duration(milliseconds: 300),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// BarChart ziskovosti apartmánů.
-/// Překlad ID na název: [apartmentsProvider] dává Map id->name; fallback = zkrácené UUID.
+/// Překlad ID na název: [apartmentsFullListProvider] dává Map id->name; fallback = zkrácené UUID.
 /// Responsivita: výška 220px; při >10 bytech zobrazíme jen top 10 (největší tržby).
 class _ApartmentRevenueChart extends ConsumerWidget {
   const _ApartmentRevenueChart({
@@ -245,7 +413,7 @@ class _ApartmentRevenueChart extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final apartments = ref.watch(apartmentsProvider).valueOrNull ?? [];
+    final apartments = ref.watch(apartmentsFullListProvider).valueOrNull ?? [];
     final apartmentById = {for (final a in apartments) a.id: a.name};
 
     if (apartmentRevenues.isEmpty) {
@@ -307,8 +475,9 @@ class _ApartmentRevenueChart extends ConsumerWidget {
                   touchTooltipData: BarTouchTooltipData(
                     getTooltipItem: (group, groupIndex, rod, rodIndex) {
                       final rev = displayList[group.x.toInt()];
-                      final name =
-                          apartmentById[rev.apartmentId] ?? rev.apartmentId;
+                      final name = rev.apartmentId == 'external'
+                          ? 'admin.reports_external_services'.tr()
+                          : (apartmentById[rev.apartmentId] ?? rev.apartmentId);
                       return BarTooltipItem(
                         '$name\n${formatTaskAmount(context, ref, rev.totalRevenue)}',
                         TextStyle(
@@ -329,8 +498,12 @@ class _ApartmentRevenueChart extends ConsumerWidget {
                         if (value.toInt() >= 0 &&
                             value.toInt() < displayList.length) {
                           final rev = displayList[value.toInt()];
-                          final name = apartmentById[rev.apartmentId] ??
-                              rev.apartmentId.substring(0, 8);
+                          final name = rev.apartmentId == 'external'
+                              ? 'admin.reports_external_services'.tr()
+                              : (apartmentById[rev.apartmentId] ??
+                                  (rev.apartmentId.length >= 8
+                                      ? rev.apartmentId.substring(0, 8)
+                                      : rev.apartmentId));
                           return Padding(
                             padding: const EdgeInsets.only(top: 8),
                             child: Text(
@@ -391,7 +564,7 @@ class _ApartmentRevenueChart extends ConsumerWidget {
 }
 
 /// Seznam výkonnosti personálu – jméno, počet úkolů, odpracované hodiny.
-/// Překlad ID na jméno: [adminTeamProvider] mapuje profile.id->name; assigneeId="" → "Nepřiřazeno".
+/// Překlad ID na jméno: [teamFullListProvider] mapuje profile.id->name; assigneeId="" → "Nepřiřazeno".
 class _StaffPerformanceSection extends ConsumerWidget {
   const _StaffPerformanceSection({
     required this.employeePerformances,
@@ -403,7 +576,7 @@ class _StaffPerformanceSection extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final team = ref.watch(adminTeamProvider).valueOrNull ?? [];
+    final team = ref.watch(teamFullListProvider).valueOrNull ?? [];
     final nameByAssigneeId = <String, String>{};
     for (final m in team) {
       final id = m.profileId ?? m.id;
@@ -438,7 +611,7 @@ class _StaffPerformanceSection extends ConsumerWidget {
           ...employeePerformances.map((e) {
             final name = e.assigneeId.isEmpty
                 ? 'admin.reports_unassigned'.tr()
-                : (nameByAssigneeId[e.assigneeId] ?? e.assigneeId);
+                : (nameByAssigneeId[e.assigneeId] ?? 'common.removed_user'.tr());
             return Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: Row(

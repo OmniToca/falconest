@@ -16,6 +16,7 @@ import 'package:falconest/features/admin/admin_team_screen.dart';
 import 'package:falconest/features/admin/finance_dashboard_screen.dart';
 import 'package:falconest/features/admin/screens/admin_clients_screen.dart';
 import 'package:falconest/features/admin/screens/reports_screen.dart';
+import 'package:falconest/features/communication/screens/communication_templates_screen.dart';
 import 'package:falconest/features/calendar/screens/planning_calendar_screen.dart';
 import 'package:falconest/features/admin/models/module_model.dart';
 import 'package:falconest/features/admin/providers/current_tenant_name_provider.dart';
@@ -25,6 +26,56 @@ import 'package:falconest/features/settings/settings_screen.dart';
 
 /// Práh šířky v pixelech – pod ním Drawer, nad ním permanentní Sidebar.
 const double _breakpointWidth = 800;
+
+/// Zobrazí dialog „Výkaz práce“ a po výběru uživatele ukončí převtělení a přesměruje do velína.
+///
+/// PROČ: Každé ukončení Magic Loginu má vyzvat k výkazu práce (audit, podklady pro provize).
+/// „Ukončit bez poznámky“ = stop s null; „Uložit a ukončit“ = stop s textem.
+Future<void> _showWorkReportDialogThenStop(BuildContext context, WidgetRef ref) async {
+  final controller = TextEditingController();
+  final report = await showDialog<String?>(
+    context: context,
+    barrierDismissible: false,
+    builder: (ctx) => AlertDialog(
+      title: Text('admin.work_report_dialog_title'.tr()),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'admin.work_report_dialog_prompt'.tr(),
+              style: Theme.of(ctx).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              maxLines: 4,
+              decoration: InputDecoration(
+                hintText: 'admin.work_report_dialog_hint'.tr(),
+                border: const OutlineInputBorder(),
+                alignLabelWithHint: true,
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(null),
+          child: Text('admin.work_report_dialog_skip'.tr()),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(ctx).pop(controller.text.trim().isEmpty ? null : controller.text.trim()),
+          child: Text('admin.work_report_dialog_save'.tr()),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  await ref.read(authNotifierProvider).stopImpersonating(workReport: report);
+  if (context.mounted) context.go('/super-admin');
+}
 
 /// Indexy záložek v admin sekci – export pro dashboard (přepnutí na Rezervace/Úkoly).
 const int adminTabIndexDashboard = 0;
@@ -36,6 +87,7 @@ const int adminTabIndexPlanningCalendar = 5;
 const int adminTabIndexFinance = 6;
 const int adminTabIndexReports = 7;
 const int adminTabIndexClients = 8;
+const int adminTabIndexCommunication = 9;
 
 /// Umožňuje přepnutí záložky z vnořených obrazovek (např. z dashboardu po kliknutí na akci).
 class AdminTabScope extends InheritedWidget {
@@ -86,6 +138,7 @@ class _AdminLayoutState extends State<AdminLayout> {
     const FinanceDashboardScreen(),
     const ReportsScreen(),
     const AdminClientsScreen(),
+    const CommunicationTemplatesScreen(),
   ];
 
   void _switchToTab(int index) {
@@ -100,8 +153,9 @@ class _AdminLayoutState extends State<AdminLayout> {
         builder: (context, ref, _) {
           final auth = ref.watch(authNotifierProvider);
           final isImpersonating = auth.state.isImpersonating;
-          // Super Admin smí na /admin jen s vybranou agenturou – jinak přesměrovat na přehled.
-          if (auth.state.role == 'super_admin' && auth.tenantIdForData == null) {
+          // Super Admin a Account Manager smí na /admin jen s vybranou agenturou (převtělení) – jinak na velín.
+          if ((auth.state.role == 'super_admin' || auth.state.role == 'account_manager') &&
+              auth.tenantIdForData == null) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (context.mounted) context.go('/super-admin');
             });
@@ -154,10 +208,7 @@ class _AdminLayoutState extends State<AdminLayout> {
                   if (isImpersonating)
                     _ImpersonationBanner(
                       tenantName: tenantName,
-                      onStop: () async {
-                        await auth.stopImpersonating();
-                        if (context.mounted) context.go('/super-admin');
-                      },
+                      onStop: () => _showWorkReportDialogThenStop(context, ref),
                     ),
                   if (announcement != null && announcement.isNotEmpty)
                     _SystemAnnouncementBanner(message: announcement),
@@ -613,8 +664,7 @@ class _AdminTopBar extends ConsumerWidget {
                 } else if (value == 'settings') {
                   SettingsModal.show(context);
                 } else if (value == 'back') {
-                  await auth.stopImpersonating();
-                  if (context.mounted) context.go('/super-admin');
+                  await _showWorkReportDialogThenStop(context, ref);
                 } else if (value == 'logout') {
                   await SupabaseService.client.auth.signOut();
                   if (context.mounted) context.go('/');
@@ -765,8 +815,7 @@ class _NarrowLayout extends ConsumerWidget {
                 : 'admin.menu_logout'.tr(),
             onPressed: () async {
               if (isImpersonating) {
-                await auth.stopImpersonating();
-                if (context.mounted) context.go('/super-admin');
+                await _showWorkReportDialogThenStop(context, ref);
               } else {
                 await SupabaseService.client.auth.signOut();
                 if (context.mounted) context.go('/');
@@ -843,6 +892,8 @@ class _AdminSidebar extends ConsumerWidget {
                           color: Colors.white,
                           fontWeight: FontWeight.bold,
                         ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 4),
                   Text(
@@ -871,46 +922,51 @@ class _AdminSidebar extends ConsumerWidget {
                 ),
               )
             else
-              ...visibleModules.map((module) {
-                final tenantHasModule = activeKeys.contains(module.key);
-                final isActive = isSuperAdmin || tenantHasModule;
-                final isGhost = isSuperAdmin && !tenantHasModule;
-                final tabIndex = ModuleIconMapper.getTabIndex(module.key);
-                final label = ModuleIconMapper.getLabelKey(module.key).tr();
-                return _ModuleNavItem(
-                  module: module,
-                  label: label,
-                  isActive: isActive,
-                  isGhost: isGhost,
-                  selectedIndex: selectedIndex,
-                  isDrawer: isDrawer,
-                  onTapActive: () {
-                    if (isDrawer && Scaffold.maybeOf(context)?.isDrawerOpen == true) {
-                      Navigator.of(context).pop();
-                    }
-                    if (tabIndex != null) {
-                      onIndexChanged(tabIndex.clamp(0, adminTabIndexClients));
-                    } else {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('$label – ${'admin.module_coming_soon'.tr()}'),
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
-                    }
-                  },
-                  onTapLocked: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('admin.module_locked_toast'.tr(namedArgs: {'name': label})),
-                        backgroundColor: Colors.orange.shade800,
-                        behavior: SnackBarBehavior.floating,
-                      ),
+              Expanded(
+                child: ListView(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  children: visibleModules.map((module) {
+                    final tenantHasModule = activeKeys.contains(module.key);
+                    final isActive = isSuperAdmin || tenantHasModule;
+                    final isGhost = isSuperAdmin && !tenantHasModule;
+                    final tabIndex = ModuleIconMapper.getTabIndex(module.key);
+                    final label = ModuleIconMapper.getLabelKey(module.key).tr();
+                    return _ModuleNavItem(
+                      module: module,
+                      label: label,
+                      isActive: isActive,
+                      isGhost: isGhost,
+                      selectedIndex: selectedIndex,
+                      isDrawer: isDrawer,
+                      onTapActive: () {
+                        if (isDrawer && Scaffold.maybeOf(context)?.isDrawerOpen == true) {
+                          Navigator.of(context).pop();
+                        }
+                        if (tabIndex != null) {
+                          onIndexChanged(tabIndex.clamp(0, adminTabIndexCommunication));
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('$label – ${'admin.module_coming_soon'.tr()}'),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        }
+                      },
+                      onTapLocked: () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('admin.module_locked_toast'.tr(namedArgs: {'name': label})),
+                            backgroundColor: Colors.orange.shade800,
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      },
                     );
-                  },
-                );
-              }),
-            const Spacer(),
+                  }).toList(),
+                ),
+              ),
             // Přepínač na mobilní zobrazení – dostupný v Sidebar i Drawer (úzké obrazovky).
             const Divider(color: Colors.white24, height: 1),
             ListTile(

@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/repositories/task/task_repository.dart';
-import 'package:falconest/core/repositories/task/task_repository_export.dart';
+import 'package:falconest/core/repositories/task/task_repository_provider_export.dart';
 import 'package:falconest/features/worker/data/services/worker_sync_service.dart';
 import 'package:falconest/features/worker/providers/worker_dashboard_provider.dart';
 import 'package:falconest/features/worker/providers/worker_sync_state_provider.dart';
@@ -31,7 +31,7 @@ extension WorkerTaskDetailExt on WorkerTaskDetail {
   }
 }
 
-/// Načte detail úkolu – používá ITaskRepository (web: Supabase, mobil: Isar).
+/// Načte detail úkolu – používá taskRepositoryProvider (web: Supabase, mobil: Drift).
 final workerTaskDetailProvider =
     FutureProvider.family<WorkerTaskDetail?, String>((ref, taskId) async {
   if (taskId.isEmpty) return null;
@@ -39,7 +39,7 @@ final workerTaskDetailProvider =
   if (tenantId == null || tenantId.isEmpty) return null;
 
   try {
-    final repo = getTaskRepository();
+    final repo = ref.watch(taskRepositoryProvider);
     return repo.getWorkerTaskDetail(tenantId, taskId);
   } catch (e) {
     if (kDebugMode) {
@@ -60,6 +60,8 @@ class WorkerTaskStatusNotifier extends StateNotifier<AsyncValue<void>> {
   /// [completedAt] – při přechodu do completed (Time Tracking).
   /// [metadataOverlay] – volitelně sloučí klíče do metadata (např. cash_collection_failed).
   /// [mediaUrls] – URL fotek z Supabase Storage (úkoly s requires_photo).
+  /// [localPhotoPaths] – při offline cesty k zkopírovaným fotkám (mobil).
+  /// [existingMediaUrls] – již nahrané URL při offline flow pro merge v procesoru.
   Future<void> updateStatus(
     String taskId,
     String status, {
@@ -67,6 +69,8 @@ class WorkerTaskStatusNotifier extends StateNotifier<AsyncValue<void>> {
     DateTime? completedAt,
     Map<String, dynamic>? metadataOverlay,
     List<String>? mediaUrls,
+    List<String>? localPhotoPaths,
+    List<String>? existingMediaUrls,
   }) async {
     state = const AsyncValue.loading();
     final tenantId = _ref.read(authNotifierProvider).tenantIdForData;
@@ -80,7 +84,7 @@ class WorkerTaskStatusNotifier extends StateNotifier<AsyncValue<void>> {
         return;
       }
 
-      final repo = getTaskRepository();
+      final repo = _ref.read(taskRepositoryProvider);
       await repo.updateTaskStatus(
         tenantId,
         taskId,
@@ -89,6 +93,8 @@ class WorkerTaskStatusNotifier extends StateNotifier<AsyncValue<void>> {
         completedAt: completedAt,
         metadataOverlay: metadataOverlay,
         mediaUrls: mediaUrls,
+        localPhotoPaths: localPhotoPaths,
+        existingMediaUrls: existingMediaUrls,
       );
 
       _ref.invalidate(workerTaskDetailProvider(taskId));

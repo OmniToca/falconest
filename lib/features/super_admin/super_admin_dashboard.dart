@@ -7,7 +7,6 @@ import 'package:go_router/go_router.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
-import 'package:falconest/core/utils/id_generator.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
@@ -16,8 +15,12 @@ import 'package:falconest/features/admin/providers/current_tenant_name_provider.
 import 'package:falconest/features/super_admin/super_admin_billing_modal.dart';
 import 'package:falconest/features/super_admin/super_admin_settings_modal.dart';
 import 'package:falconest/features/super_admin/audit_log_screen.dart';
+import 'package:falconest/features/super_admin/agency_settlements_screen.dart';
+import 'package:falconest/features/super_admin/work_reports_screen.dart';
 import 'package:falconest/features/super_admin/providers/all_tenants_provider.dart';
 import 'package:falconest/features/super_admin/providers/dashboard_mrr_provider.dart';
+import 'package:falconest/features/super_admin/screens/hq_team_screen.dart';
+import 'package:falconest/features/super_admin/services/onboarding_export_service.dart';
 import 'package:falconest/features/super_admin/tenant_detail_screen.dart';
 
 /// Stav vyhledávacího řetězce na nástěnce Super Admina (fulltext v názvech agentur).
@@ -40,10 +43,29 @@ enum TenantSortType {
 class SuperAdminDashboard extends ConsumerWidget {
   const SuperAdminDashboard({super.key});
 
+  /// P1 (audit): Jednou za session zobrazíme SnackBar při přesměrování z nepovoleného detailu tenanta.
+  static final _shownAccessDeniedKeys = <String>{};
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // P1 (audit): Pokud byl Account Manager přesměrován z nepovoleného detailu agentury, zobrazíme nenápadný SnackBar.
+    final accessDeniedKey = GoRouterState.of(context).uri.queryParameters['access_denied'];
+    if (accessDeniedKey != null &&
+        accessDeniedKey.isNotEmpty &&
+        !_shownAccessDeniedKeys.contains(accessDeniedKey)) {
+      _shownAccessDeniedKeys.add(accessDeniedKey);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('super_admin.tenant_access_denied'.tr())),
+        );
+        context.go('/super-admin');
+      });
+    }
+
     final tenantsAsync = ref.watch(tenantsWithStatusProvider);
     final searchQuery = ref.watch(superAdminSearchQueryProvider);
+    final isSuperAdmin = ref.watch(authNotifierProvider).state.role == 'super_admin';
 
     return Scaffold(
       backgroundColor: Colors.grey[50],
@@ -56,15 +78,29 @@ class SuperAdminDashboard extends ConsumerWidget {
             onPressed: () => AuditLogModal.show(context),
           ),
           IconButton(
-            icon: const Icon(Icons.receipt_long),
-            tooltip: 'super_admin.billing_menu'.tr(),
-            onPressed: () => SuperAdminBillingModal.show(context),
+            icon: const Icon(Icons.assignment_outlined),
+            tooltip: 'super_admin.work_reports_menu'.tr(),
+            onPressed: () => WorkReportsModal.show(context),
           ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            tooltip: 'settings.menu_settings'.tr(),
-            onPressed: () => SuperAdminSettingsModal.show(context),
-          ),
+          // Zúčtování odměn, Fakturace a Nastavení smí pouze super_admin – ochrana citlivých dat
+          // a zamezení tomu, aby si obchoďák (account_manager) sám sobě schvaloval provize.
+          if (isSuperAdmin) ...[
+            IconButton(
+              icon: const Icon(Icons.account_balance_wallet_outlined),
+              tooltip: 'super_admin.settlements_menu'.tr(),
+              onPressed: () => AgencySettlementsModal.show(context),
+            ),
+            IconButton(
+              icon: const Icon(Icons.receipt_long),
+              tooltip: 'super_admin.billing_menu'.tr(),
+              onPressed: () => SuperAdminBillingModal.show(context),
+            ),
+            IconButton(
+              icon: const Icon(Icons.settings),
+              tooltip: 'settings.menu_settings'.tr(),
+              onPressed: () => SuperAdminSettingsModal.show(context),
+            ),
+          ],
           IconButton(
             icon: const Icon(Icons.logout),
             tooltip: 'super_admin.logout'.tr(),
@@ -86,7 +122,7 @@ class SuperAdminDashboard extends ConsumerWidget {
             allItems: items,
             searchQuery: searchQuery,
             ref: ref,
-            onAddAgency: () => _showAddAgencyDialog(context, ref),
+            onAddAgency: isSuperAdmin ? () => _showAddAgencyDialog(context, ref) : null,
           );
         },
         loading: () => const Center(child: CircularProgressIndicator()),
@@ -130,12 +166,12 @@ class SuperAdminDashboard extends ConsumerWidget {
   }
 
   /// Otevře scrollovatelný formulář pro vytvoření nové agentury a pozvánky.
-  /// Po úspěchu OKAMŽITĚ obnoví seznam (ref.refresh) a zobrazí zelený SnackBar.
+  /// Po úspěchu obnoví seznam, zobrazí SnackBar a přesměruje na White-Glove Excel import.
   void _showAddAgencyDialog(BuildContext context, WidgetRef ref) {
     showDialog<void>(
       context: context,
       builder: (ctx) => _AddAgencyDialog(
-        onCreated: () {
+        onCreated: (tenantId) {
           // ignore: unused_result - refresh způsobí rebuild přes watch
           ref.refresh(tenantsWithStatusProvider);
           if (context.mounted) {
@@ -146,6 +182,8 @@ class SuperAdminDashboard extends ConsumerWidget {
                 behavior: SnackBarBehavior.floating,
               ),
             );
+            // Přesměrování na White-Glove Excel import
+            context.push('/super-admin/tenant/$tenantId/onboarding');
           }
         },
       ),
@@ -160,7 +198,7 @@ class SuperAdminDashboard extends ConsumerWidget {
 class _AddAgencyDialog extends StatefulWidget {
   const _AddAgencyDialog({required this.onCreated});
 
-  final VoidCallback onCreated;
+  final void Function(String tenantId) onCreated;
 
   @override
   State<_AddAgencyDialog> createState() => _AddAgencyDialogState();
@@ -174,6 +212,8 @@ class _AddAgencyDialogState extends State<_AddAgencyDialog> {
 
   final _formKey = GlobalKey<FormState>();
   bool _isLoading = false;
+  /// Stav stahování prázdné šablony – zamyká tlačítko a zobrazí indikátor.
+  bool _isDownloadingTemplate = false;
 
   /// Globální chybová hláška – zobrazuje se nad formulářem a ZALAMUJE se
   /// na více řádků (bez overflow), aby dlouhé chyby byly čitelné.
@@ -221,6 +261,34 @@ class _AddAgencyDialogState extends State<_AddAgencyDialog> {
     return null;
   }
 
+  /// Stáhne prázdnou Excel šablonu (bez DB). Zobrazí indikátor a při chybě SnackBar.
+  Future<void> _downloadEmptyTemplate(BuildContext context) async {
+    setState(() => _isDownloadingTemplate = true);
+    try {
+      await OnboardingExportService.downloadEmptyTemplate();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('super_admin.download_template_success'.tr()),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('super_admin.download_template_error'.tr(namedArgs: {'error': e.toString()})),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isDownloadingTemplate = false);
+    }
+  }
+
   Future<void> _submit() async {
     _globalError = null;
 
@@ -246,17 +314,17 @@ class _AddAgencyDialogState extends State<_AddAgencyDialog> {
         throw Exception('super_admin.create_agency_id_error'.tr());
       }
 
-      // b) Core moduly – každá nová agentura má od začátku přístup (tenant_modules používá module_id UUID).
+      // b) Dynamické zapnutí všech modulů s cenou 0 – každá nová agentura dostane zdarma moduly.
       try {
-        const coreKeys = ['dashboard', 'apartments', 'reservations', 'tasks'];
-        final modulesRes = await SupabaseService.client
+        final modulesData = await SupabaseService.client
             .from('modules')
-            .select('id')
-            .inFilter('key', coreKeys);
-        final modulesList = modulesRes as List;
-        for (final row in modulesList) {
-          final id = (row is Map ? row['id'] : null)?.toString();
-          if (id == null || id.isEmpty) continue;
+            .select('id, price_eur') as List;
+        final freeModuleIds = modulesData
+            .where((m) => ((m is Map ? m['price_eur'] : null) ?? 0) == 0)
+            .map((m) => (m is Map ? m['id'] : null)?.toString() ?? '')
+            .where((id) => id.isNotEmpty)
+            .toList();
+        for (final id in freeModuleIds) {
           await SupabaseService.client.from('tenant_modules').insert({
             'tenant_id': tenantId,
             'module_id': id,
@@ -265,59 +333,11 @@ class _AddAgencyDialogState extends State<_AddAgencyDialog> {
       } catch (e) {
         if (kDebugMode) {
           // ignore: avoid_print
-          print('Warning: Failed to seed core modules: $e');
+          print('Warning: Failed to seed free modules: $e');
         }
       }
 
-      // c) Startovací balíček: demo apartmán + rezervace + úkol. Při chybě pouze log, agentura se vytvoří.
-      try {
-        final demoName = 'super_admin.demo_apartment_name'.tr();
-        final demoAddress = 'super_admin.demo_apartment_address'.tr();
-        final apartmentRes = await SupabaseService.client
-            .from('apartments')
-            .insert({
-              'name': demoName,
-              'address': demoAddress,
-              'tenant_id': tenantId,
-            })
-            .select('id')
-            .single();
-        final apartmentId = apartmentRes['id'];
-        if (apartmentId != null) {
-          final now = DateTime.now();
-          final today = DateTime(now.year, now.month, now.day);
-          final endDate = today.add(const Duration(days: 3));
-          final tomorrow = today.add(const Duration(days: 1));
-          final guestName = 'super_admin.demo_guest_name'.tr();
-          await SupabaseService.client.from('reservations').insert({
-            'apartment_id': apartmentId,
-            'reference_number': generateReservationRef(),
-            'guest_name': guestName,
-            'start_date': today.toIso8601String(),
-            'end_date': endDate.toIso8601String(),
-            'status': 'confirmed',
-          });
-          final tomorrowIso = tomorrow.toIso8601String();
-          await SupabaseService.client.from('tasks').insert({
-            'tenant_id': tenantId,
-            'apartment_id': apartmentId,
-            'reference_number': generateTaskRef(),
-            'title': 'super_admin.demo_task_title'.tr(),
-            'description': 'super_admin.demo_task_description'.tr(),
-            'status': 'Nový',
-            'task_type': 'cleaning',
-            'due_date': tomorrowIso,
-            'scheduled_start': tomorrowIso,
-          });
-        }
-      } catch (e) {
-        if (kDebugMode) {
-          // ignore: avoid_print
-          print('Warning: Failed to seed demo data: $e');
-        }
-      }
-
-      // d) Ghost Profile Strategy: nejprve profil (status=pending), pak pozvánka
+      // c) Vytvoření profilu s rolí Admin – Ghost Profile Strategy: nejprve profil (status=pending), pak pozvánka
       final profileRes = await SupabaseService.client
           .from('profiles')
           .insert({
@@ -327,6 +347,7 @@ class _AddAgencyDialogState extends State<_AddAgencyDialog> {
             'last_name': lastName,
             'name': '$firstName $lastName'.trim(),
             'status': 'pending',
+            'role': 'admin',
           })
           .select('id')
           .single();
@@ -345,7 +366,7 @@ class _AddAgencyDialogState extends State<_AddAgencyDialog> {
 
       if (!mounted) return;
       Navigator.of(context).pop();
-      widget.onCreated();
+      widget.onCreated(tenantId);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -413,6 +434,21 @@ class _AddAgencyDialogState extends State<_AddAgencyDialog> {
                         ),
                         const SizedBox(height: 16),
                       ],
+                      // Stažení prázdné šablony – volitelný krok pro klienty, kteří ji ještě nemají.
+                      FilledButton.tonalIcon(
+                        onPressed: (_isLoading || _isDownloadingTemplate)
+                            ? null
+                            : () => _downloadEmptyTemplate(context),
+                        icon: _isDownloadingTemplate
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.download),
+                        label: Text('super_admin.download_empty_template'.tr()),
+                      ),
+                      const SizedBox(height: 20),
                       TextFormField(
                         controller: _agencyNameController,
                         decoration: InputDecoration(
@@ -705,14 +741,15 @@ class _DashboardBody extends ConsumerStatefulWidget {
     required this.allItems,
     required this.searchQuery,
     required this.ref,
-    required this.onAddAgency,
+    this.onAddAgency,
   });
 
   final List<TenantWithStatus> items;
   final List<TenantWithStatus> allItems;
   final String searchQuery;
   final WidgetRef ref;
-  final VoidCallback onAddAgency;
+  /// Pouze super_admin smí přidávat agentury; account_manager má null – tlačítko se skryje.
+  final VoidCallback? onAddAgency;
 
   @override
   ConsumerState<_DashboardBody> createState() => _DashboardBodyState();
@@ -931,15 +968,27 @@ class _DashboardBodyState extends ConsumerState<_DashboardBody> {
                 ),
               ),
               const SizedBox(width: 16),
-              FilledButton.icon(
-                onPressed: widget.onAddAgency,
-                icon: const Icon(Icons.add),
-                label: Text('super_admin.add_agency'.tr()),
-                style: FilledButton.styleFrom(
+              OutlinedButton.icon(
+                onPressed: () => HqTeamModal.show(context, widget.ref),
+                icon: const Icon(Icons.groups_outlined),
+                label: Text('super_admin.hq_team_btn'.tr()),
+                style: OutlinedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 ),
               ),
+              if (widget.onAddAgency != null) ...[
+                const SizedBox(width: 16),
+                FilledButton.icon(
+                  onPressed: widget.onAddAgency,
+                  icon: const Icon(Icons.add),
+                  label: Text('super_admin.add_agency'.tr()),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ],
             ],
           ),
           const SizedBox(height: 24),
@@ -1234,46 +1283,58 @@ class _TenantCard extends StatelessWidget {
                   ),
                 ],
                 const SizedBox(height: 12),
-                // Jeden řádek: vlevo metriky (lidé, byty, moduly), vpravo MRR + sleva + Health (využití šířky karty)
+                // Jeden řádek: vlevo metriky (lidé, byty, moduly), vpravo MRR + sleva + Health. Expanded pro overflow.
                 Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.people_outline, size: 16, color: Colors.grey.shade600),
-                        Text(
-                          ' $activeUsersCount${pendingInvitationsCount > 0 ? ' (+$pendingInvitationsCount)' : ''}',
-                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey.shade800),
-                        ),
-                        const SizedBox(width: 12),
-                        Icon(Icons.apartment_outlined, size: 16, color: Colors.grey.shade600),
-                        Text(
-                          ' $apartmentCount',
-                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey.shade800),
-                        ),
-                        const SizedBox(width: 12),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.blue.shade50,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
+                    Expanded(
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        children: [
+                          Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.diamond, size: 12, color: Colors.blue.shade700),
+                              Icon(Icons.people_outline, size: 16, color: Colors.grey.shade600),
                               Text(
-                                ' $activeMod/$totalMod',
-                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.blue.shade800),
+                                ' $activeUsersCount${pendingInvitationsCount > 0 ? ' (+$pendingInvitationsCount)' : ''}',
+                                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey.shade800),
                               ),
                             ],
                           ),
-                        ),
-                      ],
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.apartment_outlined, size: 16, color: Colors.grey.shade600),
+                              Text(
+                                ' $apartmentCount',
+                                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey.shade800),
+                              ),
+                            ],
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.blue.shade50,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.diamond, size: 12, color: Colors.blue.shade700),
+                                Text(
+                                  ' $activeMod/$totalMod',
+                                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.blue.shade800),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    const Spacer(),
-                    Column(
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Column(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1282,12 +1343,15 @@ class _TenantCard extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.baseline,
                           textBaseline: TextBaseline.alphabetic,
                           children: [
-                            Text(
-                              mrrFormatted,
-                              style: TextStyle(
-                                fontSize: 22,
-                                fontWeight: FontWeight.w900,
-                                color: Colors.green.shade800,
+                            Flexible(
+                              child: Text(
+                                mrrFormatted,
+                                style: TextStyle(
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.w900,
+                                  color: Colors.green.shade800,
+                                ),
+                                overflow: TextOverflow.ellipsis,
                               ),
                             ),
                             if (tenant.discountPercentage > 0) ...[
@@ -1334,22 +1398,28 @@ class _TenantCard extends StatelessWidget {
                           children: [
                             Icon(Icons.calendar_today, size: 12, color: Colors.grey.shade600),
                             const SizedBox(width: 4),
-                            Text(
-                              '${'super_admin.billing_paid_until'.tr()}: ${_formatPaidUntil(tenant.paidUntil)}',
-                              style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                            Flexible(
+                              child: Text(
+                                '${'super_admin.billing_paid_until'.tr()}: ${_formatPaidUntil(tenant.paidUntil)}',
+                                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
                           ],
                         ),
                       ],
                     ),
+                  ),
                   ],
                 ),
                 const SizedBox(height: 12),
                 Divider(height: 1, color: Colors.grey.shade200),
                 const SizedBox(height: 12),
-                // Řádek 4: Přepínač + Delete + Převtělit se
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                // Řádek 4: Přepínač + Delete + Převtělit se. Wrap na úzkých kartách.
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.spaceBetween,
                   children: [
                     Row(
                       mainAxisSize: MainAxisSize.min,
@@ -1491,7 +1561,9 @@ class _TenantCard extends StatelessWidget {
       ref.invalidate(adminTasksProvider);
       ref.invalidate(adminReservationsProvider);
       ref.invalidate(apartmentsProvider);
+      ref.invalidate(apartmentsFullListProvider);
       ref.invalidate(adminTeamProvider);
+      ref.invalidate(teamFullListProvider);
       ref.invalidate(staffAbsencesProvider);
       ref.invalidate(currentTenantNameProvider);
 

@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/repositories/settlements/settlement_repository.dart';
+import 'package:falconest/core/repositories/team/team_repository.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
 /// Bezpečně parsuje datum z ISO nebo evropského dd.MM.yyyy. Při selhání vrací null (nevyřazujeme uživatele).
@@ -25,8 +27,14 @@ DateTime? _parseDateSafe(dynamic v) {
   return null;
 }
 
+/// Hodnoty sloupce status v staff_absences. NULL = legacy, považováno za approved.
+const String staffAbsenceStatusPending = 'pending';
+const String staffAbsenceStatusApproved = 'approved';
+const String staffAbsenceStatusRejected = 'rejected';
+
 /// Záznam nepřítomnosti personálu (dovolená, nemoc) – tabulka staff_absences.
 /// Odpovídá buď aktivnímu uživateli (profile_id) nebo pozvánce (invitation_id).
+/// [status]: pending = čeká na schválení, approved = schváleno, rejected = zamítnuto. Null = legacy (approved).
 class StaffAbsence {
   const StaffAbsence({
     required this.id,
@@ -35,6 +43,7 @@ class StaffAbsence {
     this.startDate,
     this.endDate,
     this.reason,
+    this.status,
   });
 
   final String id;
@@ -46,6 +55,15 @@ class StaffAbsence {
   final DateTime? startDate;
   final DateTime? endDate;
   final String? reason;
+  /// pending | approved | rejected. Null = zpětná kompatibilita (považováno za approved).
+  final String? status;
+
+  /// True, pokud je absence schválená (nebo legacy bez status) – platí pro plánování a odpojení úkolů.
+  bool get isApproved =>
+      status == null || status!.isEmpty || status == staffAbsenceStatusApproved;
+
+  /// True, pokud čeká na schválení dispečera.
+  bool get isPending => status == staffAbsenceStatusPending;
 
   factory StaffAbsence.fromJson(Map<String, dynamic> json) {
     return StaffAbsence(
@@ -55,6 +73,7 @@ class StaffAbsence {
       startDate: _parseDateSafe(json['start_date']),
       endDate: _parseDateSafe(json['end_date']),
       reason: (json['reason'] as String?)?.trim(),
+      status: (json['status'] as String?)?.trim(),
     );
   }
 
@@ -79,7 +98,7 @@ final staffAbsencesProvider = FutureProvider<List<StaffAbsence>>((ref) async {
   try {
     final res = await SupabaseService.client
         .from('staff_absences')
-        .select('id, profile_id, invitation_id, start_date, end_date, reason')
+        .select('id, profile_id, invitation_id, start_date, end_date, reason, status')
         .eq('tenant_id', tenantId);
     final list = res as List;
     return list
@@ -250,116 +269,222 @@ List<String> _parseJobRolesFromJson(Map<String, dynamic> json) {
   return [];
 }
 
-/// Provider načítající členy týmu – JEN profiles (Ghost Profile Strategy).
+/// Parsuje jeden řádek z profiles (Map z Supabase) na [TeamMember].
+/// Vrací null, pokud řádek přeskočit (super_admin, property_owner, chyba parsování).
+/// PROČ: Sdílená logika pro stránkovaný i plný seznam – jedna definice pravidel (jméno, role, kapacita).
+TeamMember? _parseProfileMapToTeamMember(Map<String, dynamic> map) {
+  try {
+    final id = map['id']?.toString() ?? '';
+    final appRole = map['role']?.toString().trim() ?? '';
+    if (id.isEmpty) return null;
+    if (appRole == 'super_admin') return null;
+    if (appRole == 'property_owner') return null;
+
+    final first = (map['first_name']?.toString() ?? '').trim();
+    final last = (map['last_name']?.toString() ?? '').trim();
+    var name = '$first $last'.trim();
+    if (name.isEmpty) name = (map['name']?.toString() ?? '').trim();
+    if (name.isEmpty) name = (map['email']?.toString() ?? '').trim();
+
+    final status = (map['status']?.toString() ?? 'active').toLowerCase();
+    final isPending = status == 'pending';
+
+    final systemRole = appRole == 'property_owner'
+        ? 'property_owner'
+        : (appRole == 'admin' || appRole == 'manager')
+            ? 'admin'
+            : 'worker';
+    List<String> jobRoles = appRole == 'property_owner' ? [] : _parseJobRolesFromJson(map);
+    if (jobRoles.isEmpty && appRole == 'worker') jobRoles = ['cleaner'];
+
+    final rawHours = map['weekly_hours'];
+    int hours = 40;
+    if (rawHours != null) {
+      if (rawHours is int) {
+        hours = rawHours;
+      } else if (rawHours is num) {
+        hours = rawHours.toInt();
+      }
+    }
+    final startDate = _parseDateOptional(map['start_date']);
+    final endDate = _parseDateOptional(map['end_date']);
+    final zonePreferences = _parseZonePreferences(map['zone_preferences']);
+    final lastSignInAt = _parseDateTimeOptional(map['last_sign_in_at']);
+
+    return TeamMember(
+      id: id,
+      name: name.isNotEmpty ? name : 'admin.team_unknown_name'.tr(),
+      email: (map['email']?.toString() ?? '').trim().isEmpty ? null : map['email']?.toString(),
+      role: systemRole,
+      roles: jobRoles,
+      isFromInvitation: isPending,
+      profileId: id,
+      invitationId: null,
+      weeklyHours: hours,
+      startDate: startDate,
+      endDate: endDate,
+      zonePreferences: zonePreferences,
+      lastSignInAt: lastSignInAt,
+      systemRole: appRole.isNotEmpty ? appRole : systemRole,
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Příznak, zda se načítá další stránka (nekonečný scroll).
+final teamLoadingMoreProvider = StateProvider<bool>((ref) => false);
+
+/// Notifier pro stránkovaný seznam personálu se server-side vyhledáváním.
 ///
-/// Každý zaměstnanec (Active i Pending) má řádek v profiles.
-/// status='pending' = čeká na registraci, status='active' = přihlášen.
-final adminTeamProvider = FutureProvider<List<TeamMember>>((ref) async {
+/// PROČ: Při desítkách zaměstnanců nelze stahovat všechny naráz. build() načte první stránku,
+/// loadMore() připojuje další, search(query) resetuje a načte s filtrem.
+class PaginatedTeamNotifier extends AsyncNotifier<List<TeamMember>> {
+  int _offset = 0;
+  static const int _limit = 50;
+  bool _hasMore = true;
+  String _searchQuery = '';
+
+  @override
+  Future<List<TeamMember>> build() async {
+    _offset = 0;
+    _hasMore = true;
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return [];
+
+    final raw = await TeamRepository.getPaginatedTeamMembers(
+      tenantId,
+      limit: _limit,
+      offset: 0,
+      searchQuery: _searchQuery.isEmpty ? null : _searchQuery,
+    );
+    final list = raw
+        .map((e) => _parseProfileMapToTeamMember(e))
+        .whereType<TeamMember>()
+        .toList();
+    list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    _offset = list.length;
+    _hasMore = list.length >= _limit;
+    return list;
+  }
+
+  /// Načte další stránku a připojí ji k aktuálnímu seznamu.
+  Future<void> loadMore() async {
+    if (!_hasMore) return;
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return;
+
+    ref.read(teamLoadingMoreProvider.notifier).state = true;
+    try {
+      final raw = await TeamRepository.getPaginatedTeamMembers(
+        tenantId,
+        limit: _limit,
+        offset: _offset,
+        searchQuery: _searchQuery.isEmpty ? null : _searchQuery,
+      );
+      final list = raw
+          .map((e) => _parseProfileMapToTeamMember(e))
+          .whereType<TeamMember>()
+          .toList();
+      list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      _offset += list.length;
+      _hasMore = list.length >= _limit;
+
+      final state = this.state;
+      if (state.hasValue && list.isNotEmpty) {
+        final merged = [...state.value!, ...list];
+        merged.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        this.state = AsyncValue.data(merged);
+      }
+    } finally {
+      ref.read(teamLoadingMoreProvider.notifier).state = false;
+    }
+  }
+
+  /// Server-side vyhledávání: reset offsetu, nastaví dotaz a načte první stránku.
+  Future<void> search(String query) async {
+    _searchQuery = query.trim();
+    _offset = 0;
+    _hasMore = true;
+    state = const AsyncValue.loading();
+    state = await AsyncValue.guard(() => build());
+  }
+}
+
+/// Provider stránkovaného seznamu personálu pro obrazovku Personál.
+///
+/// Používá PaginatedTeamNotifier – build() načte první stránku, loadMore() a search()
+/// volá UI. ref.watch(adminTeamProvider) vrací AsyncValue<List<TeamMember>>.
+/// Dropdowny (výběr řešitele úkolu, peněženky, reporty) používají [teamFullListProvider].
+final adminTeamProvider =
+    AsyncNotifierProvider<PaginatedTeamNotifier, List<TeamMember>>(
+  PaginatedTeamNotifier.new,
+);
+
+/// Plný seznam členů týmu (až 500) pro dropdowny a jiné moduly.
+///
+/// PROČ: Formuláře (výběr řešitele úkolu, přiřazení, peněženky, reporty) potřebují
+/// seznam personálu; stránkovaný provider vrací jen načtené stránky. Tento provider
+/// načte jedním dotazem až 500 záznamů bez vyhledávání – pro výběr z dropdownu stačí.
+/// Po vložení/úpravě/smazání člena invalidovat i [adminTeamProvider].
+final teamFullListProvider = FutureProvider<List<TeamMember>>((ref) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];
 
   try {
-    final result = <TeamMember>[];
-    dynamic profilesRes;
-    try {
-      profilesRes = await SupabaseService.client
-          .from('profiles')
-          .select('id, name, first_name, last_name, email, role, roles, status, weekly_hours, start_date, end_date, zone_preferences, last_sign_in_at')
-          .eq('tenant_id', tenantId)
-          .isFilter('deleted_at', null)
-          .neq('role', 'super_admin')
-          .order('status');
-    } on Object catch (_) {
-      try {
-        profilesRes = await SupabaseService.client
-            .from('profiles')
-            .select('id, name, first_name, last_name, email, role, roles, status, weekly_hours')
-            .eq('tenant_id', tenantId)
-            .isFilter('deleted_at', null)
-            .neq('role', 'super_admin')
-            .order('status');
-      } on Object catch (_) {
-        try {
-          profilesRes = await SupabaseService.client
-              .from('profiles')
-              .select('id, name, first_name, last_name, email, role, roles')
-              .eq('tenant_id', tenantId)
-              .isFilter('deleted_at', null)
-              .neq('role', 'super_admin')
-              .order('status');
-        } on Object catch (_) {
-          return [];
-        }
-      }
-    }
-    final profilesList = profilesRes is List ? profilesRes : <dynamic>[];
-
-    for (final p in profilesList) {
-      try {
-        final map = p is Map ? Map<String, dynamic>.from(p) : <String, dynamic>{};
-        final id = map['id']?.toString() ?? '';
-        final appRole = map['role']?.toString().trim() ?? '';
-        if (id.isEmpty) continue;
-        if (appRole == 'super_admin') continue;
-
-        final first = (map['first_name']?.toString() ?? '').trim();
-        final last = (map['last_name']?.toString() ?? '').trim();
-        var name = '$first $last'.trim();
-        if (name.isEmpty) name = (map['name']?.toString() ?? '').trim();
-        if (name.isEmpty) name = (map['email']?.toString() ?? '').trim();
-
-        final status = (map['status']?.toString() ?? 'active').toLowerCase();
-        final isPending = status == 'pending';
-
-        final systemRole = appRole == 'property_owner'
-            ? 'property_owner'
-            : (appRole == 'admin' || appRole == 'manager')
-                ? 'admin'
-                : 'worker';
-        List<String> jobRoles = appRole == 'property_owner' ? [] : _parseJobRolesFromJson(map);
-        if (jobRoles.isEmpty && appRole == 'worker') jobRoles = ['cleaner'];
-
-        final rawHours = map['weekly_hours'];
-        int hours = 40;
-        if (rawHours != null) {
-          if (rawHours is int) {
-            hours = rawHours;
-          } else if (rawHours is num) {
-            hours = rawHours.toInt();
-          }
-        }
-        final startDate = _parseDateOptional(map['start_date']);
-        final endDate = _parseDateOptional(map['end_date']);
-        final zonePreferences = _parseZonePreferences(map['zone_preferences']);
-        final lastSignInAt = _parseDateTimeOptional(map['last_sign_in_at']);
-
-        result.add(TeamMember(
-          id: id,
-          name: name.isNotEmpty ? name : 'admin.team_unknown_name'.tr(),
-          email: (map['email']?.toString() ?? '').trim().isEmpty ? null : map['email']?.toString(),
-          role: systemRole,
-          roles: jobRoles,
-          isFromInvitation: isPending,
-          profileId: id,
-          invitationId: null,
-          weeklyHours: hours,
-          startDate: startDate,
-          endDate: endDate,
-          zonePreferences: zonePreferences,
-          lastSignInAt: lastSignInAt,
-          systemRole: appRole.isNotEmpty ? appRole : systemRole,
-        ));
-      } catch (e) {
-        // ignore: avoid_print
-        print('--- CHYBA PARSOVÁNÍ ČLENA TÝMU: $e');
-      }
-    }
-
-    result.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-    return result;
-  } catch (e) {
-    // ignore: avoid_print
-    print('--- CHYBA NAČÍTÁNÍ TÝMU: $e');
+    final raw = await TeamRepository.getPaginatedTeamMembers(
+      tenantId,
+      limit: 500,
+      offset: 0,
+      searchQuery: null,
+    );
+    final list = raw
+        .map((e) => _parseProfileMapToTeamMember(e))
+        .whereType<TeamMember>()
+        .toList();
+    list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return list;
+  } catch (_) {
     return [];
   }
+});
+
+/// Provider: výplaty a provize pro daného člena (profile_id) – pro záložku Finance v detailu člena.
+///
+/// Sloučí getMyPayouts a getMyCommissions, seřadí podle created_at sestupně.
+/// Každá položka má klíče: id, task_id, amount, status, created_at, task_title, completed_at, _type ('payout'|'commission').
+final memberFinancesProvider =
+    FutureProvider.autoDispose.family<List<Map<String, dynamic>>, String>((ref, profileId) async {
+  if (profileId.trim().isEmpty) return [];
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return [];
+
+  final payouts = await SettlementRepository.instance.getMyPayouts(tenantId, profileId);
+  final commissions = await SettlementRepository.instance.getMyCommissions(tenantId, profileId);
+  final list = <Map<String, dynamic>>[];
+  for (final p in payouts) {
+    final m = Map<String, dynamic>.from(p);
+    m['_type'] = 'payout';
+    list.add(m);
+  }
+  for (final c in commissions) {
+    final m = Map<String, dynamic>.from(c);
+    m['_type'] = 'commission';
+    list.add(m);
+  }
+  list.sort((a, b) {
+    final aRaw = a['created_at'];
+    final bRaw = b['created_at'];
+    DateTime? aDate;
+    DateTime? bDate;
+    if (aRaw is DateTime) aDate = aRaw;
+    else if (aRaw != null) aDate = DateTime.tryParse(aRaw.toString());
+    if (bRaw is DateTime) bDate = bRaw;
+    else if (bRaw != null) bDate = DateTime.tryParse(bRaw.toString());
+    if (aDate == null && bDate == null) return 0;
+    if (aDate == null) return 1;
+    if (bDate == null) return -1;
+    return bDate.compareTo(aDate);
+  });
+  return list;
 });

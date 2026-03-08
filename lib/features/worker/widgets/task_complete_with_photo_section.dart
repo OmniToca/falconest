@@ -1,11 +1,15 @@
 import 'dart:io';
 
 import 'package:easy_localization/easy_localization.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:uuid/uuid.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/offline/mutation_queue_service.dart';
 import 'package:falconest/core/offline/network_error_helper.dart';
 import 'package:falconest/core/services/media_service.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
@@ -20,11 +24,13 @@ const _storageModuleTasks = 'tasks';
 /// worker task screens (cleaning, default, checkin, checkout, transfer, …).
 /// Callback před dokončením – např. CashCollectionDialog u Check-in.
 /// Vrací: true = úkol byl dokončen v rámci callbacku (pop), null = pokračuj standardním flow.
+/// [localPhotoPaths] – při offline flow cesty k zkopírovaným fotkám pro zpožděný upload.
 typedef BeforeCompleteCallback = Future<bool?> Function(
   BuildContext context,
   WidgetRef ref,
-  List<String> mediaUrls,
-);
+  List<String> mediaUrls, {
+  List<String>? localPhotoPaths,
+});
 
 class TaskCompleteWithPhotoSection extends ConsumerStatefulWidget {
   const TaskCompleteWithPhotoSection({
@@ -85,14 +91,13 @@ class _TaskCompleteWithPhotoSectionState
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (requiresPhoto) ...[
-            TaskPhotoUploader(
-              onFilesChanged: _onFilesChanged,
-              maxPhotos: 3,
-              existingUrls: widget.detail.mediaUrls,
-            ),
-            const SizedBox(height: 16),
-          ],
+          TaskPhotoUploader(
+            onFilesChanged: _onFilesChanged,
+            maxPhotos: 3,
+            existingUrls: widget.detail.mediaUrls,
+            isRequired: requiresPhoto,
+          ),
+          const SizedBox(height: 16),
           SizedBox(
             width: double.infinity,
             child: FilledButton(
@@ -123,6 +128,32 @@ class _TaskCompleteWithPhotoSectionState
         child: Text('worker.task_detail_start_work'.tr()),
       ),
     );
+  }
+
+  /// Zkopíruje fotky do trvalého úložiště – aby se nesmazaly z cache před sync.
+  static Future<List<String>> _copyPhotosToPersistentStorage({
+    required String taskId,
+    required List<File> files,
+  }) async {
+    if (files.isEmpty) return [];
+    final dir = await getApplicationDocumentsDirectory();
+    final offlineDir = Directory('${dir.path}/offline_task_photos');
+    if (!await offlineDir.exists()) {
+      await offlineDir.create(recursive: true);
+    }
+    final result = <String>[];
+    final uuid = const Uuid();
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    for (var i = 0; i < files.length; i++) {
+      final file = files[i];
+      if (!await file.exists()) continue;
+      final targetPath = '${offlineDir.path}/${taskId}_${ts}_${uuid.v4()}_$i.jpg';
+      try {
+        await file.copy(targetPath);
+        result.add(targetPath);
+      } catch (_) {}
+    }
+    return result;
   }
 
   void _showRequiresPhotoSnackBar(BuildContext context) {
@@ -176,6 +207,69 @@ class _TaskCompleteWithPhotoSectionState
           if (url != null && url.isNotEmpty) mediaUrls.add(url);
         }
       } catch (e) {
+        // Offline fallback: zkopíruj fotky do persistent storage a ulož do fronty.
+        if (!kIsWeb && MutationQueueService.isNetworkError(e)) {
+          final copiedPaths = await _copyPhotosToPersistentStorage(
+            taskId: widget.taskId,
+            files: _photoFiles,
+          );
+          if (copiedPaths.isEmpty) {
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('worker.issue_reporter_photo_upload_error'.tr()),
+                backgroundColor: Colors.red.shade700,
+              ),
+            );
+            return;
+          }
+          if (widget.beforeComplete != null) {
+            final done = await widget.beforeComplete!(
+              context,
+              ref,
+              widget.detail.mediaUrls,
+              localPhotoPaths: copiedPaths,
+            );
+            if (done == true && context.mounted) context.pop();
+            if (done != null) return;
+          }
+          final ok = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: Text('worker.confirm_finish_title'.tr()),
+              content: Text('worker.confirm_finish_message'.tr()),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: Text('common.cancel'.tr()),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: Text('common.ok'.tr()),
+                ),
+              ],
+            ),
+          );
+          if (ok != true || !context.mounted) return;
+          await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
+                widget.taskId,
+                'completed',
+                completedAt: DateTime.now().toUtc(),
+                localPhotoPaths: copiedPaths,
+                existingMediaUrls: widget.detail.mediaUrls,
+              );
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('worker.task_complete_queued_offline'.tr()),
+                behavior: SnackBarBehavior.floating,
+                backgroundColor: Colors.orange.shade700,
+              ),
+            );
+            context.pop();
+          }
+          return;
+        }
         if (!context.mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

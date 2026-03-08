@@ -301,7 +301,7 @@ class _ServiceEditorDialogState extends ConsumerState<ServiceEditorDialog> {
                   keyboardType: TextInputType.number,
                   decoration: InputDecoration(
                     labelText: 'settings.field_duration_minutes'.tr(),
-                    hintText: '60',
+                    hintText: 'settings.service_duration_minutes_hint'.tr(),
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                   ),
                 ),

@@ -176,8 +176,9 @@ class _ClientBillingTabState extends ConsumerState<ClientBillingTab>
                 activeKeysAsync,
                 modulesAsync,
               ),
-              const SizedBox(height: 24),
-              _buildInvoicesSection(context),
+              // TODO: MVP fáze - Seznam faktur je skrytý, dokud nebude hotový Super-Admin fakturační modul.
+              // const SizedBox(height: 24),
+              // _buildInvoicesSection(context),
             ],
           ),
         );
@@ -789,6 +790,8 @@ class _ClientBillingTabState extends ConsumerState<ClientBillingTab>
   }
 
   /// Sekce „Moje faktury“ – mock položky (2–3 statické).
+  /// TODO: MVP fáze - Seznam faktur je skrytý, dokud nebude hotový Super-Admin fakturační modul.
+  // ignore: unused_element
   Widget _buildInvoicesSection(BuildContext context) {
     const mockItems = [
       ('INV-2026-001', 2026, 3, 1, '€ 150'),

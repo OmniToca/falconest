@@ -9,6 +9,7 @@ class NotificationPreferencesModel {
     this.dailySummaryEnabled = true,
     this.upcomingTaskEnabled = true,
     this.newTaskAssignedEnabled = true,
+    this.templateRemindersEnabled = true,
   });
 
   final String profileId;
@@ -19,6 +20,8 @@ class NotificationPreferencesModel {
   final bool upcomingTaskEnabled;
   /// Notifikace při přiřazení nového úkolu.
   final bool newTaskAssignedEnabled;
+  /// Připomenutí odeslání šablon zpráv (48h/24h/1h před transferem).
+  final bool templateRemindersEnabled;
 
   factory NotificationPreferencesModel.fromJson(Map<String, dynamic> json) {
     final rawDaily = json['daily_summary_enabled'];
@@ -30,12 +33,16 @@ class NotificationPreferencesModel {
     final rawNewTask = json['new_task_assigned_enabled'];
     final newTaskAssignedEnabled = rawNewTask == null ? true : (rawNewTask == true || rawNewTask == 1);
 
+    final rawTemplate = json['template_reminders_enabled'];
+    final templateRemindersEnabled = rawTemplate == null ? true : (rawTemplate == true || rawTemplate == 1);
+
     return NotificationPreferencesModel(
       profileId: json['profile_id'] as String? ?? '',
       tenantId: json['tenant_id'] as String? ?? '',
       dailySummaryEnabled: dailySummaryEnabled,
       upcomingTaskEnabled: upcomingTaskEnabled,
       newTaskAssignedEnabled: newTaskAssignedEnabled,
+      templateRemindersEnabled: templateRemindersEnabled,
     );
   }
 
@@ -46,6 +53,7 @@ class NotificationPreferencesModel {
       'daily_summary_enabled': dailySummaryEnabled,
       'upcoming_task_enabled': upcomingTaskEnabled,
       'new_task_assigned_enabled': newTaskAssignedEnabled,
+      'template_reminders_enabled': templateRemindersEnabled,
     };
   }
 }

@@ -10,7 +10,7 @@ import 'package:falconest/features/settings/providers/tenant_services_provider.d
 /// a tenant_services přímo s tímto tenant_id.
 /// FEATURE: Rozšířený formulář rezervace pro majitele (časy, hosté, služby).
 final ownerApartmentServicesOptionsProvider =
-    FutureProvider.family<List<ApartmentServiceOption>, String>((ref, apartmentId) async {
+    FutureProvider.autoDispose.family<List<ApartmentServiceOption>, String>((ref, apartmentId) async {
   if (apartmentId.isEmpty) return [];
   final aptRes = await SupabaseService.client
       .from('apartments')

@@ -13,7 +13,7 @@ import 'package:falconest/features/settings/providers/tenant_services_provider.d
 /// katalogu by se provider invalidoval a znovu načítal. V kontextu dialogu rezervace to mohlo
 /// vést k nekonečnému cyklu (stream refactor). ref.read() zajistí jedno načtení bez reaktivity.
 final apartmentServicesOptionsProvider =
-    FutureProvider.family<List<ApartmentServiceOption>, String>((ref, apartmentId) async {
+    FutureProvider.autoDispose.family<List<ApartmentServiceOption>, String>((ref, apartmentId) async {
   if (apartmentId.isEmpty) return [];
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];
@@ -38,4 +38,21 @@ final apartmentServicesOptionsProvider =
       requiresPhotoFromCatalog: ts?.requiresPhoto ?? false,
     );
   }).toList();
+});
+
+/// Vrací cenu služby pro manuální úkol – Historical pricing auto-fill.
+///
+/// Při výběru bytu a služby v Add Task dialogu načte cenu z apartment_services
+/// (custom_price) nebo fallback na tenant_services.default_price. Oba parametry
+/// musí být vyplněny; jinak vrací null.
+final manualTaskServicePriceProvider =
+    FutureProvider.autoDispose.family<double?, (String apartmentId, String serviceId)>((ref, param) async {
+  final (apartmentId, serviceId) = param;
+  if (apartmentId.isEmpty || serviceId.isEmpty) return null;
+  final options = await ref.watch(apartmentServicesOptionsProvider(apartmentId).future);
+  final match = options.where((o) => o.serviceId == serviceId).firstOrNull;
+  if (match != null) return match.defaultPriceEur;
+  final catalog = await ref.watch(tenantServicesProvider.future);
+  final svc = catalog.where((s) => s.id == serviceId).firstOrNull;
+  return svc?.defaultPrice?.toDouble();
 });

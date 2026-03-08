@@ -1,10 +1,9 @@
-import 'dart:ui';
-
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/services/currency_service.dart';
+import 'package:falconest/core/utils/app_modal_utils.dart';
 import 'package:falconest/features/super_admin/providers/billing_overview_provider.dart';
 
 /// Modální okno Fakturace pro Super Admina – manuální přehled agentur a měsíčních částek.
@@ -15,29 +14,14 @@ class SuperAdminBillingModal {
   SuperAdminBillingModal._();
 
   /// Otevře fakturační přehled jako modální dialog (blur, centrované okno).
+  /// Používá [showAppModal] pro jednotný vizuál napříč aplikací.
   static Future<void> show(BuildContext hostContext) {
-    return showGeneralDialog<void>(
+    return showAppModal<void>(
       context: hostContext,
-      barrierDismissible: true,
       barrierLabel: 'super_admin.barrier_billing'.tr(),
-      barrierColor: Colors.black54,
-      transitionDuration: const Duration(milliseconds: 250),
-      pageBuilder: (context, animation, secondaryAnimation) => const SizedBox.shrink(),
-      transitionBuilder: (_, animation, secondaryAnimation, child) {
-        return BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-          child: FadeTransition(
-            opacity: animation,
-            child: ScaleTransition(
-              scale: CurvedAnimation(
-                parent: animation,
-                curve: Curves.easeOutCubic,
-              ),
-              child: const _SuperAdminBillingContent(),
-            ),
-          ),
-        );
-      },
+      maxWidth: 1100,
+      maxHeightPx: 800,
+      child: const _SuperAdminBillingContent(),
     );
   }
 }
@@ -53,12 +37,7 @@ class _SuperAdminBillingContent extends ConsumerWidget {
     final currenciesAsync = ref.watch(currenciesProvider);
     final currencies = currenciesAsync.valueOrNull ?? [];
 
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-      backgroundColor: Colors.white,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 1100, maxHeight: 800),
-        child: Column(
+    return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             // A) Hlavička – titulek + zavírací křížek
@@ -164,9 +143,7 @@ class _SuperAdminBillingContent extends ConsumerWidget {
               ),
             ),
           ],
-        ),
-      ),
-    );
+        );
   }
 
   Widget _buildHeader(BuildContext context) {
@@ -428,7 +405,7 @@ class _BillingDataRow extends StatelessWidget {
                     style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.orange.shade700),
                   ),
                   const SizedBox(width: 8),
-                  Text('0', style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                  Text('common.zero_placeholder'.tr(), style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
                 ] else ...[
                   const SizedBox(width: 8),
                   Text(

@@ -312,7 +312,7 @@ final adminReservationsProvider =
     return;
   }
 
-  final apartments = await ref.watch(apartmentsProvider.future);
+  final apartments = await ref.watch(apartmentsFullListProvider.future);
   final apartmentIds = apartments.map((a) => a.id).where((id) => id.isNotEmpty).toList();
   if (apartmentIds.isEmpty) {
     yield [];
@@ -350,10 +350,10 @@ final adminReservationsProvider =
 /// z apartment_owners a načte rezervace těchto bytů. Seřazeno od nejbližších
 /// (start_date ASC). Soft delete: pouze deleted_at IS NULL.
 final clientReservationsProvider =
-    FutureProvider.family<List<ReservationRow>, String>((ref, clientId) async {
+    FutureProvider.autoDispose.family<List<ReservationRow>, String>((ref, clientId) async {
   if (clientId.trim().isEmpty) return [];
 
-  final clients = await ref.watch(clientsProvider.future);
+  final clients = await ref.watch(clientsFullListProvider.future);
   final client = clients.where((c) => c.id == clientId).firstOrNull;
   if (client == null) return [];
 
@@ -372,6 +372,29 @@ final clientReservationsProvider =
           'guest_adults, guest_children, arrival_time, departure_time, internal_note, deleted_at, '
           'apartments(name)')
       .inFilter('apartment_id', apartmentIds)
+      .isFilter('deleted_at', null)
+      .order('start_date', ascending: true);
+
+  return (res as List)
+      .map((r) => ReservationRow.fromJson(r as Map<String, dynamic>))
+      .toList();
+});
+
+/// Provider: rezervace pro jeden byt (pro záložku Rezervace v detailu apartmánu).
+///
+/// Načte rezervace s apartment_id = [apartmentId], deleted_at IS NULL,
+/// řazeno start_date ASC. Invaliduj po přidání/úpravě/smazání rezervace.
+final reservationsForApartmentProvider =
+    FutureProvider.autoDispose.family<List<ReservationRow>, String>((ref, apartmentId) async {
+  if (apartmentId.trim().isEmpty) return [];
+
+  final res = await SupabaseService.client
+      .from('reservations')
+      .select('id, apartment_id, reference_number, guest_name, guest_phone, reservation_source, '
+          'start_date, end_date, check_in, check_out, needs_transfer, status, '
+          'guest_adults, guest_children, arrival_time, departure_time, internal_note, deleted_at, '
+          'apartments(name)')
+      .eq('apartment_id', apartmentId)
       .isFilter('deleted_at', null)
       .order('start_date', ascending: true);
 

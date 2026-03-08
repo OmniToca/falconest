@@ -2,6 +2,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/offline/mutation_queue_service.dart';
 import 'package:falconest/core/offline/network_sync_watcher.dart';
 import 'package:falconest/core/router/app_router.dart';
 import 'package:falconest/core/theme/app_theme.dart';
@@ -19,6 +20,9 @@ class FalcoNestApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(goRouterProvider);
+    // PROČ: Předběžný read mutationQueueServiceProvider – zajistí MutationQueueService.instance
+    // pro CashWalletRepository a další singletons, které nemají Ref.
+    ref.watch(mutationQueueServiceProvider);
 
     return NetworkSyncWatcher(
       child: MaterialApp.router(

@@ -1,5 +1,3 @@
-import 'dart:ui';
-
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
@@ -22,8 +20,11 @@ import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/features/super_admin/module_subscription_dialog.dart';
 import 'package:falconest/features/super_admin/providers/all_tenants_provider.dart';
 import 'package:falconest/features/super_admin/providers/dashboard_mrr_provider.dart';
+import 'package:falconest/features/super_admin/providers/hq_staff_provider.dart';
 import 'package:falconest/features/super_admin/providers/tenant_detail_provider.dart';
+import 'package:falconest/features/super_admin/services/onboarding_export_service.dart';
 import 'package:falconest/features/super_admin/services/super_admin_service.dart';
+import 'package:falconest/core/utils/app_modal_utils.dart';
 import 'package:falconest/features/super_admin/utils/price_format_helper.dart';
 
 /// Modální dialog s plným detailem agentury – Info & Fakturace, Moduly & Plán, Tým & Statistiky.
@@ -32,31 +33,14 @@ class TenantDetailModal {
   TenantDetailModal._();
 
   /// Otevře Detail agentury jako modální dialog (blur, centrované okno). Stejný vizuál jako SettingsModal.
+  /// Používá [showAppModal] pro jednotný vizuál napříč aplikací.
   static Future<void> show(BuildContext hostContext, String tenantId, {String? tenantName}) {
-    return showGeneralDialog<void>(
+    return showAppModal<void>(
       context: hostContext,
-      barrierDismissible: true,
       barrierLabel: 'super_admin.barrier_detail'.tr(),
-      barrierColor: Colors.black54,
-      transitionDuration: const Duration(milliseconds: 250),
-      pageBuilder: (_, __, ___) => const SizedBox.shrink(),
-      transitionBuilder: (_, animation, __, ___) {
-        return BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-          child: FadeTransition(
-            opacity: animation,
-            child: ScaleTransition(
-              scale: CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
-              child: Center(
-                child: Material(
-                  color: Colors.transparent,
-                  child: TenantDetailScreen(tenantId: tenantId, isModal: true),
-                ),
-              ),
-            ),
-          ),
-        );
-      },
+      maxWidth: 900,
+      maxHeightFraction: 0.88,
+      child: TenantDetailScreen(tenantId: tenantId, isModal: true),
     );
   }
 }
@@ -94,6 +78,7 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
   bool _billingInitialized = false;
   bool _notesInitialized = false;
   String _currency = 'CZK';
+  bool _isExporting = false;
 
   @override
   void initState() {
@@ -223,6 +208,38 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
     }
   }
 
+  /// Exportuje data agentury do Master Excel šablony (1:1 kompatibilita s importem).
+  Future<void> _onExport(String tenantName) async {
+    if (_isExporting) return;
+    setState(() => _isExporting = true);
+    try {
+      await OnboardingExportService.exportTenantData(widget.tenantId, tenantName);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('super_admin.export_success'.tr()),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+          elevation: 10,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('super_admin.export_error'.tr(namedArgs: {'error': '$e'})),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+          elevation: 10,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isExporting = false);
+    }
+  }
+
   /// Hlavička modalu – stejný styl jako SettingsModal: název vlevo, Převtělit + křížek vpravo.
   Widget _buildModalHeader(BuildContext context, String tenantName) {
     return Padding(
@@ -239,6 +256,30 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
               overflow: TextOverflow.ellipsis,
             ),
           ),
+          OutlinedButton.icon(
+            onPressed: _isExporting ? null : () => _onExport(tenantName),
+            icon: _isExporting
+                ? SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.file_download, size: 18),
+            label: Text('super_admin.export_data'.tr()),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton.tonalIcon(
+            onPressed: () => context.push('/super-admin/tenant/${widget.tenantId}/onboarding'),
+            icon: const Icon(Icons.auto_awesome, size: 18),
+            label: Text('super_admin.onboarding_wizard_btn'.tr()),
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+          ),
+          const SizedBox(width: 8),
           TextButton.icon(
             onPressed: () => _onImpersonate(tenantName),
             icon: const Icon(Icons.login_rounded, size: 18),
@@ -271,7 +312,9 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
       ref.invalidate(adminTasksProvider);
       ref.invalidate(adminReservationsProvider);
       ref.invalidate(apartmentsProvider);
+      ref.invalidate(apartmentsFullListProvider);
       ref.invalidate(adminTeamProvider);
+      ref.invalidate(teamFullListProvider);
       ref.invalidate(staffAbsencesProvider);
       ref.invalidate(currentTenantNameProvider);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -358,6 +401,8 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
               stripeCustomerId: detail.stripeCustomerId,
               trialEndsAt: detail.trialEndsAt,
               paidUntil: detail.paidUntil,
+              acquiredBy: detail.acquiredBy,
+              managedBy: detail.managedBy,
             ),
             _ModulesPlanTab(
               tenantId: widget.tenantId,
@@ -370,43 +415,22 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
         );
 
         if (widget.isModal) {
-          return ConstrainedBox(
-            constraints: BoxConstraints(
-              maxWidth: 900,
-              maxHeight: MediaQuery.of(context).size.height * 0.88,
-            ),
-            child: Container(
-              width: MediaQuery.of(context).size.width * 0.9,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(24),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.15),
-                    blurRadius: 24,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildModalHeader(context, detail.name),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: tabBar,
               ),
-              clipBehavior: Clip.antiAlias,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _buildModalHeader(context, detail.name),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24),
-                    child: tabBar,
-                  ),
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child: Container(
-                      color: Colors.grey.shade50,
-                      child: tabBarView,
-                    ),
-                  ),
-                ],
+              const SizedBox(height: 8),
+              Expanded(
+                child: Container(
+                  color: Colors.grey.shade50,
+                  child: tabBarView,
+                ),
               ),
-            ),
+            ],
           );
         }
 
@@ -415,6 +439,30 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
           appBar: AppBar(
             title: Text(detail.name),
             actions: [
+              OutlinedButton.icon(
+                onPressed: _isExporting ? null : () => _onExport(detail.name),
+                icon: _isExporting
+                    ? SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.file_download, size: 18),
+                label: Text('super_admin.export_data'.tr()),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.tonalIcon(
+                onPressed: () => context.push('/super-admin/tenant/${widget.tenantId}/onboarding'),
+                icon: const Icon(Icons.auto_awesome, size: 18),
+                label: Text('super_admin.onboarding_wizard_btn'.tr()),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                ),
+              ),
+              const SizedBox(width: 8),
               FilledButton.icon(
                 onPressed: () => _onImpersonate(detail.name),
                 icon: const Icon(Icons.login, size: 20),
@@ -490,6 +538,8 @@ class _InfoBillingTab extends ConsumerWidget {
     required this.stripeCustomerId,
     required this.trialEndsAt,
     required this.paidUntil,
+    this.acquiredBy,
+    this.managedBy,
   });
 
   final String tenantId;
@@ -513,6 +563,10 @@ class _InfoBillingTab extends ConsumerWidget {
   final String? stripeCustomerId;
   final DateTime? trialEndsAt;
   final DateTime? paidUntil;
+  /// Lovec – profile_id zaměstnance, který agenturu získal (tenants.acquired_by).
+  final String? acquiredBy;
+  /// Farmář – profile_id zaměstnance, který agenturu spravuje (tenants.managed_by).
+  final String? managedBy;
 
   static const List<String> _currencies = ['CZK', 'EUR', 'USD'];
 
@@ -673,6 +727,68 @@ class _InfoBillingTab extends ConsumerWidget {
     );
   }
 
+  /// Sekce Lovec a Farmář – dva dropdowny s HQ personálem; při změně okamžitě uloží do DB a invaliduje providery.
+  Widget _buildHunterFarmerSection(BuildContext context, WidgetRef ref) {
+    final staffAsync = ref.watch(hqStaffProvider);
+    return staffAsync.when(
+      data: (staff) {
+        final items = [
+          DropdownMenuItem<String?>(value: null, child: Text('super_admin.hunter_farmer_select_person'.tr())),
+          ...staff.map((e) => DropdownMenuItem<String?>(value: e.id, child: Text(e.displayName))),
+        ];
+        return _sectionCard(
+          context,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'super_admin.hunter_farmer_section_title'.tr(),
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: Colors.grey[900],
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'super_admin.hunter_label'.tr(),
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+              const SizedBox(height: 4),
+              DropdownButtonFormField<String?>(
+                value: acquiredBy,
+                decoration: _inputDecoration(),
+                items: items,
+                onChanged: (v) async {
+                  await SuperAdminService.updateTenantAcquiredBy(tenantId, v);
+                  ref.invalidate(tenantDetailProvider(tenantId));
+                  ref.invalidate(tenantsWithStatusProvider);
+                },
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'super_admin.farmer_label'.tr(),
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+              const SizedBox(height: 4),
+              DropdownButtonFormField<String?>(
+                value: managedBy,
+                decoration: _inputDecoration(),
+                items: items,
+                onChanged: (v) async {
+                  await SuperAdminService.updateTenantManagedBy(tenantId, v);
+                  ref.invalidate(tenantDetailProvider(tenantId));
+                  ref.invalidate(tenantsWithStatusProvider);
+                },
+              ),
+            ],
+          ),
+        );
+      },
+      loading: () => _sectionCard(context, child: const Center(child: CircularProgressIndicator())),
+      error: (_, __) => _sectionCard(context, child: Text('super_admin.load_error'.tr())),
+    );
+  }
+
   /// Sekce A: Finanční přehled – MRR, Stav Stripe a Sleva v řadě s IntrinsicHeight (identická výška karet).
   Widget _buildFinancialCards(BuildContext context) {
     final isActive = stripeCustomerId != null && stripeCustomerId!.isNotEmpty;
@@ -830,6 +946,9 @@ class _InfoBillingTab extends ConsumerWidget {
           const SizedBox(height: 24),
           // Sekce A2: Zkušební doba a Zaplaceno do (Trial & Kill Switch)
           _buildTrialPaidUntilCards(context, ref),
+          const SizedBox(height: 24),
+          // Sekce A3: Lovec a Farmář – výběr interního HQ personálu zodpovědného za agenturu (okamžité uložení + invalidace).
+          _buildHunterFarmerSection(context, ref),
           const SizedBox(height: 24),
           // Sekce B: Fakturační údaje
           _sectionCard(

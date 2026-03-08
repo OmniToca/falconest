@@ -1,7 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
-import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/repositories/apartment/apartment_repository.dart';
 
 /// Model bytu z Supabase – odpovídá sloupcům tabulky apartments.
 ///
@@ -151,26 +151,101 @@ class ApartmentRow {
       );
 }
 
-/// Provider načítající seznam bytů z Supabase (tabulka apartments).
+/// Příznak, zda se načítá další stránka (nekonečný scroll).
+/// Notifier ho nastavuje v loadMore() pro zobrazení indikátoru na konci seznamu.
+final apartmentsLoadingMoreProvider = StateProvider<bool>((ref) => false);
+
+/// Notifier pro stránkovaný seznam apartmánů se server-side vyhledáváním.
 ///
-/// Explicitní filtr .eq('tenant_id', tenantIdForData) zamezí data leakage – aplikace
-/// vždy filtruje (běžný uživatel = jeho tenant, Super Admin = vybraná agentura).
-/// Pokud je tenantId null (Super Admin bez výběru), dotaz se neprovede – vrací [] (ne chybu).
-final apartmentsProvider = FutureProvider<List<ApartmentRow>>((ref) async {
+/// PROČ: Při 100+ bytech nelze stahovat všechny naráz. build() načte první stránku,
+/// loadMore() připojuje další, search(query) resetuje a načte s filtrem.
+class PaginatedApartmentsNotifier extends AsyncNotifier<List<ApartmentRow>> {
+  int _offset = 0;
+  static const int _limit = 50;
+  bool _hasMore = true;
+  String _searchQuery = '';
+
+  @override
+  Future<List<ApartmentRow>> build() async {
+    _offset = 0;
+    _hasMore = true;
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return [];
+
+    final raw = await ApartmentRepository.getPaginatedApartments(
+      tenantId,
+      limit: _limit,
+      offset: 0,
+      searchQuery: _searchQuery.isEmpty ? null : _searchQuery,
+    );
+    final list = raw.map((e) => ApartmentRow.fromJson(e)).toList();
+    _offset = list.length;
+    _hasMore = list.length >= _limit;
+    return list;
+  }
+
+  /// Načte další stránku a připojí ji k aktuálnímu seznamu.
+  Future<void> loadMore() async {
+    if (!_hasMore) return;
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return;
+
+    ref.read(apartmentsLoadingMoreProvider.notifier).state = true;
+    try {
+      final raw = await ApartmentRepository.getPaginatedApartments(
+        tenantId,
+        limit: _limit,
+        offset: _offset,
+        searchQuery: _searchQuery.isEmpty ? null : _searchQuery,
+      );
+      final list = raw.map((e) => ApartmentRow.fromJson(e)).toList();
+      _offset += list.length;
+      _hasMore = list.length >= _limit;
+
+      final state = this.state;
+      if (state.hasValue && list.isNotEmpty) {
+        this.state = AsyncValue.data([...state.value!, ...list]);
+      }
+    } finally {
+      ref.read(apartmentsLoadingMoreProvider.notifier).state = false;
+    }
+  }
+
+  /// Server-side vyhledávání: reset offsetu, nastaví dotaz a načte první stránku.
+  Future<void> search(String query) async {
+    _searchQuery = query.trim();
+    _offset = 0;
+    _hasMore = true;
+    state = const AsyncValue.loading();
+    state = await AsyncValue.guard(() => build());
+  }
+}
+
+/// Provider stránkovaného seznamu apartmánů pro obrazovku Apartmány.
+///
+/// Používá PaginatedApartmentsNotifier – build() načte první stránku, loadMore() a search()
+/// volá UI. ref.watch(apartmentsProvider) vrací AsyncValue<List<ApartmentRow>>.
+/// Ostatní obrazovky (dropdowny, rezervace, úkoly) používají [apartmentsFullListProvider].
+final apartmentsProvider =
+    AsyncNotifierProvider<PaginatedApartmentsNotifier, List<ApartmentRow>>(
+  PaginatedApartmentsNotifier.new,
+);
+
+/// Plný seznam apartmánů (až 500) pro dropdowny a jiné moduly.
+///
+/// PROČ: Formuláře (výběr bytu při úkolu, rezervaci, výběr bytu v reportech) potřebují
+/// seznam bytů; stránkovaný provider vrací jen načtené stránky. Tento provider načte
+/// jedním dotazem až 500 záznamů bez vyhledávání – pro výběr z dropdownu stačí.
+final apartmentsFullListProvider =
+    FutureProvider<List<ApartmentRow>>((ref) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];
 
-  final response = await SupabaseService.client
-      .from('apartments')
-      .select(
-        'id, name, address, keybox, code, tenant_id, zone_id, status, '
-        'check_in_time, check_out_time, standard_cleaning_duration, owner_notes',
-      )
-      .eq('tenant_id', tenantId)
-      .isFilter('deleted_at', null)
-      .order('name');
-
-  return (response as List)
-      .map((e) => ApartmentRow.fromJson(e as Map<String, dynamic>))
-      .toList();
+  final raw = await ApartmentRepository.getPaginatedApartments(
+    tenantId,
+    limit: 500,
+    offset: 0,
+    searchQuery: null,
+  );
+  return raw.map((e) => ApartmentRow.fromJson(e)).toList();
 });

@@ -2,10 +2,10 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:intl/intl.dart';
 
 import 'package:falconest/core/models/cash_transaction_ui_model.dart';
 import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
+import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/features/admin/widgets/wallet_detail_modal.dart';
 import 'package:falconest/features/admin/providers/finance_cash_provider.dart';
 import 'package:falconest/features/worker/widgets/add_company_expense_dialog.dart';
@@ -40,7 +40,10 @@ class WorkerWalletScreen extends ConsumerWidget {
         slivers: [
           // Hero sekce – zůstatek
           SliverToBoxAdapter(
-            child: _BalanceHero(walletAsync: walletAsync),
+            child: _BalanceHero(
+              walletAsync: walletAsync,
+              formatAmount: (v) => formatWalletAmount(context, ref, v),
+            ),
           ),
           SliverToBoxAdapter(
             child: Padding(
@@ -101,6 +104,8 @@ class WorkerWalletScreen extends ConsumerWidget {
                     (context, index) {
                       return _TransactionTile(
                         transaction: transactions[index],
+                        formatAmount: (v) => formatWalletAmount(context, ref, v),
+                        formatDate: (d) => formatTransactionDateShort(context, d),
                         onReceiptTap: () => WalletDetailModal.showReceiptDialog(
                           context,
                           transactions[index].receiptImageUrl,
@@ -131,9 +136,13 @@ class WorkerWalletScreen extends ConsumerWidget {
 
 /// Hero sekce s aktuálním zůstatkem.
 class _BalanceHero extends StatelessWidget {
-  const _BalanceHero({required this.walletAsync});
+  const _BalanceHero({
+    required this.walletAsync,
+    required this.formatAmount,
+  });
 
   final AsyncValue<EmployeeCashWalletRow?> walletAsync;
+  final String Function(double) formatAmount;
 
   @override
   Widget build(BuildContext context) {
@@ -155,11 +164,7 @@ class _BalanceHero extends StatelessWidget {
       child: walletAsync.when(
         data: (wallet) {
           final balance = wallet?.balance ?? 0.0;
-          final formatted = NumberFormat.currency(
-            locale: context.locale.toString(),
-            symbol: ' EUR',
-            decimalDigits: 2,
-          ).format(balance);
+          final formatted = formatAmount(balance);
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -218,10 +223,14 @@ class _BalanceHero extends StatelessWidget {
 class _TransactionTile extends StatelessWidget {
   const _TransactionTile({
     required this.transaction,
+    required this.formatAmount,
+    required this.formatDate,
     required this.onReceiptTap,
   });
 
   final CashTransactionUIModel transaction;
+  final String Function(double) formatAmount;
+  final String Function(DateTime) formatDate;
   final VoidCallback onReceiptTap;
 
   static double? _toDouble(dynamic v) {
@@ -241,11 +250,11 @@ class _TransactionTile extends StatelessWidget {
     String dateStr = '—';
     if (createdAt != null) {
       if (createdAt is DateTime) {
-        dateStr = DateFormat('dd.MM.yyyy HH:mm').format(createdAt.toLocal());
+        dateStr = formatDate(createdAt.toLocal());
       } else if (createdAt is String) {
         final dt = DateTime.tryParse(createdAt);
         if (dt != null) {
-          dateStr = DateFormat('dd.MM.yyyy HH:mm').format(dt.toLocal());
+          dateStr = formatDate(dt.toLocal());
         }
       }
     }
@@ -253,7 +262,9 @@ class _TransactionTile extends StatelessWidget {
     String label;
     Color amountColor;
     final isPositive = amount > 0;
-    final formattedAmount = '${isPositive ? '+' : ''} ${amount.toStringAsFixed(2)} €';
+    final formattedAmount = isPositive
+        ? '+ ${formatAmount(amount)}'
+        : '- ${formatAmount(amount.abs())}';
 
     switch (type) {
       case 'COLLECTED_FROM_GUEST':
@@ -273,9 +284,25 @@ class _TransactionTile extends StatelessWidget {
         amountColor = Colors.grey.shade800;
     }
 
-    // Subtitle: pro COLLECTED_FROM_GUEST apartmán + host; pro ostatní poznámka; vždy datum.
+    // Subtitle: pro COLLECTED_FROM_GUEST apartmán + host; pro klienta jméno + typ; pro ostatní poznámka.
     String? subtitleContext;
-    if (type == 'COLLECTED_FROM_GUEST' && transaction.hasTaskContext) {
+    if (transaction.hasClientContext &&
+        (transaction.clientName != null && transaction.clientName!.isNotEmpty)) {
+      final parts = <String>[];
+      parts.add('${'admin.finance.transaction_client_label'.tr()}: ${transaction.clientName}');
+      if (transaction.clientType != null && transaction.clientType!.isNotEmpty) {
+        final t = transaction.clientType!.toLowerCase();
+        final typeLabel = t == 'owner'
+            ? 'clients.type_owner'.tr()
+            : t == 'agency'
+                ? 'clients.type_agency'.tr()
+                : t == 'external'
+                    ? 'clients.type_external'.tr()
+                    : transaction.clientType;
+        parts.add('($typeLabel)');
+      }
+      subtitleContext = parts.join(' ');
+    } else if (type == 'COLLECTED_FROM_GUEST' && transaction.hasTaskContext) {
       final parts = <String>[];
       if (transaction.apartmentName != null && transaction.apartmentName!.isNotEmpty) {
         parts.add('${'admin.finance.transaction_apartment_label'.tr()}: ${transaction.apartmentName}');

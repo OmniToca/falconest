@@ -154,6 +154,7 @@ class _TaskDetailContent extends ConsumerWidget {
           // Tlačítko VYFOTIT BYT – zobrazí se jen když úklid probíhá
           if (!kIsWeb && isInProgress)
             _TakePhotoButton(
+              ref: ref,
               taskId: taskId,
               hasPhoto: data.photoUrl != null && data.photoUrl!.isNotEmpty,
               onPhotoTaken: () {
@@ -215,7 +216,7 @@ class _TaskDetailContent extends ConsumerWidget {
     final newStatus = data.status == 'in_progress'
         ? 'completed'
         : 'in_progress';
-    await updateTaskStatus(taskId: taskId, status: newStatus);
+    await updateTaskStatus(ref, taskId: taskId, status: newStatus);
 
     if (context.mounted) {
       ref.invalidate(taskDetailProvider(taskId));
@@ -308,14 +309,16 @@ class _DetailRow extends StatelessWidget {
   }
 }
 
-/// Tlačítko pro vyfocení bytu – otevře kameru, zkomprimuje a uloží cestu do Isar.
+/// Tlačítko pro vyfocení bytu – otevře kameru, zkomprimuje a uloží cestu do Drift.
 class _TakePhotoButton extends StatelessWidget {
   const _TakePhotoButton({
+    required this.ref,
     required this.taskId,
     required this.hasPhoto,
     required this.onPhotoTaken,
   });
 
+  final WidgetRef ref;
   final int taskId;
   final bool hasPhoto;
   final VoidCallback onPhotoTaken;
@@ -354,7 +357,7 @@ class _TakePhotoButton extends StatelessWidget {
     if (path == null) return;
     if (!context.mounted) return;
 
-    await saveTaskPhotoPath(taskId: taskId, photoPath: path);
+    await saveTaskPhotoPath(ref, taskId: taskId, photoPath: path);
     onPhotoTaken();
 
     scaffoldMessenger?.showSnackBar(

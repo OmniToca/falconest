@@ -16,13 +16,7 @@ final taskDetailProvider = FutureProvider.family<TaskDetailData?, int>((
 ) async => null);
 
 /// No-op na webu.
-Future<void> updateTaskStatus({
-  required int taskId,
-  required String status,
-}) async {}
+Future<void> updateTaskStatus(WidgetRef ref, {required int taskId, required String status}) async {}
 
 /// No-op na webu.
-Future<void> saveTaskPhotoPath({
-  required int taskId,
-  required String photoPath,
-}) async {}
+Future<void> saveTaskPhotoPath(WidgetRef ref, {required int taskId, required String photoPath}) async {}

@@ -11,6 +11,7 @@ class ClientModel {
     this.phone,
     this.clientType,
     this.profileId,
+    this.agencyId,
     this.createdAt,
     this.deletedAt,
   });
@@ -25,6 +26,9 @@ class ClientModel {
   /// Propojení s přihlašovacím profilem (profiles.id) – pro Klientský portál majitelů.
   /// NULL = klient nemá přístup do systému, pouze záznam v CRM.
   final String? profileId;
+  /// Agentura, která nám externího klienta doporučila. Pouze pro client_type = external.
+  /// FK na clients.id – self-reference. NULL = klient nebyl doporučen agenturou.
+  final String? agencyId;
   final DateTime? createdAt;
   final DateTime? deletedAt;
 
@@ -52,6 +56,9 @@ class ClientModel {
       profileId: (json['profile_id'] as String?)?.trim().isNotEmpty == true
           ? (json['profile_id'] as String).trim()
           : null,
+      agencyId: (json['agency_id'] as String?)?.trim().isNotEmpty == true
+          ? (json['agency_id'] as String).trim()
+          : null,
       createdAt: parseDateTime(json['created_at']),
       deletedAt: parseDateTime(json['deleted_at']),
     );
@@ -66,6 +73,7 @@ class ClientModel {
       if (phone != null) 'phone': phone,
       if (clientType != null) 'client_type': clientType,
       if (profileId != null) 'profile_id': profileId,
+      if (agencyId != null) 'agency_id': agencyId,
       if (createdAt != null) 'created_at': createdAt!.toIso8601String(),
       if (deletedAt != null) 'deleted_at': deletedAt!.toIso8601String(),
     };
@@ -82,6 +90,7 @@ class ClientModel {
     String? phone,
     String? clientType,
     String? profileId,
+    String? agencyId,
     DateTime? createdAt,
     DateTime? deletedAt,
   }) {
@@ -93,6 +102,7 @@ class ClientModel {
       phone: phone ?? this.phone,
       clientType: clientType ?? this.clientType,
       profileId: profileId ?? this.profileId,
+      agencyId: agencyId ?? this.agencyId,
       createdAt: createdAt ?? this.createdAt,
       deletedAt: deletedAt ?? this.deletedAt,
     );

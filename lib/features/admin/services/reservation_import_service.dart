@@ -47,7 +47,8 @@ class ReservationImportResult {
 /// Rezervace se párují přes [apartment_code] (apartments.code).
 ///
 /// Pevné sloupce: apartment_code, guest_name, guest_phone, guest_email, check_in,
-/// check_out, guest_count, internal_note. Dynamické sloupce = služby z katalogu.
+/// check_out, check_in_time, check_out_time, guest_count, internal_note.
+/// Časy check_in_time a check_out_time jsou volitelné (formát např. 15:00, 23:55) – při prázdné buňce se použijí defaulty (15:00 příjezd, 10:00 odjezd). Dynamické sloupce = služby z katalogu.
 /// Parametry v buňce služby oddělené svislítkem (|), např. "50|FR1495|owner|dětská sedačka".
 ///
 /// ZÁCHRANNÁ BRZDA: Jakákoliv volitelná služba, která selže (neexistuje v katalogu,
@@ -56,7 +57,8 @@ class ReservationImportResult {
 class ReservationImportService {
   ReservationImportService._();
 
-  /// Pevné sloupce šablony (v tomto pořadí). Sloupce za internal_note jsou dynamické – služby.
+  /// Pevné sloupce šablony (v tomto pořadí). check_in_time a check_out_time jsou volitelné (např. 15:00, 10:00).
+  /// Sloupce za internal_note jsou dynamické – služby.
   static const _fixedHeaders = [
     'apartment_code',
     'guest_name',
@@ -64,6 +66,8 @@ class ReservationImportService {
     'guest_email',
     'check_in',
     'check_out',
+    'check_in_time',
+    'check_out_time',
     'guest_count',
     'internal_note',
   ];
@@ -163,7 +167,7 @@ class ReservationImportService {
 
     excel.insertRowIterables('Rezervace', headerRow, 0);
 
-    // Ukázkový řádek dat
+    // Ukázkový řádek dat – check_in_time / check_out_time jako příklad (15:00 příjezd, 10:00 odjezd).
     final sampleValues = <CellValue?>[
       TextCellValue(codes.isNotEmpty ? codes.first : 'KATA-01'),
       TextCellValue('Jakub Novák'),
@@ -171,6 +175,8 @@ class ReservationImportService {
       TextCellValue('jakub@example.com'),
       TextCellValue('2026-05-01'),
       TextCellValue('2026-05-10'),
+      TextCellValue('15:00'),
+      TextCellValue('10:00'),
       IntCellValue(2),
       TextCellValue('Tajná poznámka'),
       ...serviceTypes.map((_) => TextCellValue('')), // prázdné buňky pro služby
@@ -248,13 +254,15 @@ class ReservationImportService {
     final header = rows.first;
     final headerStrings = header.map((c) => c.toLowerCase()).toList();
 
-    // Indexy pevných sloupců
+    // Indexy pevných sloupců (check_in_time a check_out_time volitelné – při chybějícím sloupci -1, pak fallback na default časy).
     final idxApartmentCode = _indexOf(headerStrings, 'apartment_code');
     final idxGuestName = _indexOf(headerStrings, 'guest_name');
     final idxGuestPhone = _indexOf(headerStrings, 'guest_phone');
     final idxGuestEmail = _indexOf(headerStrings, 'guest_email');
     final idxCheckIn = _indexOf(headerStrings, 'check_in');
     final idxCheckOut = _indexOf(headerStrings, 'check_out');
+    final idxCheckInTime = _indexOf(headerStrings, 'check_in_time');
+    final idxCheckOutTime = _indexOf(headerStrings, 'check_out_time');
     final idxGuestCount = _indexOf(headerStrings, 'guest_count');
     final idxInternalNote = _indexOf(headerStrings, 'internal_note');
 
@@ -420,6 +428,18 @@ class ReservationImportService {
         continue;
       }
 
+      // Časy příjezdu/odjezdu z Excelu – pokud vyplněné, použijeme je; jinak default 15:00 a 10:00 (fallback).
+      final checkInTimeStr = idxCheckInTime >= 0 ? _cell(row, idxCheckInTime).trim() : '';
+      final checkOutTimeStr = idxCheckOutTime >= 0 ? _cell(row, idxCheckOutTime).trim() : '';
+      final parsedCheckInTime = _parseTime(checkInTimeStr);
+      final parsedCheckOutTime = _parseTime(checkOutTimeStr);
+      final arrivalTime = parsedCheckInTime != null
+          ? DateTime(startDate.year, startDate.month, startDate.day, parsedCheckInTime.$1, parsedCheckInTime.$2, 0).toUtc().toIso8601String()
+          : DateTime(startDate.year, startDate.month, startDate.day, 15, 0, 0).toUtc().toIso8601String();
+      final departureTime = parsedCheckOutTime != null
+          ? DateTime(endDate.year, endDate.month, endDate.day, parsedCheckOutTime.$1, parsedCheckOutTime.$2, 0).toUtc().toIso8601String()
+          : DateTime(endDate.year, endDate.month, endDate.day, 10, 0, 0).toUtc().toIso8601String();
+
       try {
         final insertPayload = <String, dynamic>{
           'tenant_id': tenantId,
@@ -433,8 +453,8 @@ class ReservationImportService {
           'guest_adults': guestAdults,
           'guest_children': guestChildren,
           'internal_note': internalNote.isEmpty ? null : internalNote,
-          'arrival_time': DateTime(startDate.year, startDate.month, startDate.day, 15, 0, 0).toUtc().toIso8601String(),
-          'departure_time': DateTime(endDate.year, endDate.month, endDate.day, 10, 0, 0).toUtc().toIso8601String(),
+          'arrival_time': arrivalTime,
+          'departure_time': departureTime,
         };
         // guest_email – DB zatím nemá sloupec; připraveno pro budoucí migraci
         if (idxGuestEmail >= 0) {
@@ -592,5 +612,24 @@ class ReservationImportService {
       }
     }
     return null;
+  }
+
+  /// Parsuje čas z řetězce (např. "23:55", "9:00", "14.30") na (hodina, minuta).
+  /// Vrací null při prázdném nebo neplatném vstupu – pak import použije defaultní časy.
+  /// Hodina 0–23, minuta 0–59 (přetečení se ořízne).
+  static (int, int)? _parseTime(String s) {
+    final t = s.trim();
+    if (t.isEmpty) return null;
+    // Podpora : i . jako oddělovač (Excel může zobrazit čas s tečkou).
+    final parts = t.split(RegExp(r'[:\.]'));
+    if (parts.isEmpty) return null;
+    final hour = int.tryParse(parts[0].trim());
+    if (hour == null || hour < 0 || hour > 23) return null;
+    int minute = 0;
+    if (parts.length >= 2) {
+      final m = int.tryParse(parts[1].trim());
+      if (m != null && m >= 0 && m <= 59) minute = m;
+    }
+    return (hour, minute);
   }
 }

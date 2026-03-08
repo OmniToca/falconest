@@ -26,6 +26,14 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Potřebujeme kameru pro vyfocení provedeného úklidu</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Aplikace potřebuje přístup k mikrofonu pro hlasové hlášení závad.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Aplikace potřebuje rozpoznávání řeči pro hlasové hlášení závad a problémů v apartmánu.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Potřebujeme kameru pro vyfocení provedeného úklidu</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -49,6 +57,10 @@
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
@@ -66,9 +78,5 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>NSCameraUsageDescription</key>
-	<string>Potřebujeme kameru pro vyfocení provedeného úklidu</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Potřebujeme kameru pro vyfocení provedeného úklidu</string>
 </dict>
 </plist>

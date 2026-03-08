@@ -1,11 +1,14 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/models/client_model.dart';
+import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
 import 'package:falconest/core/services/media_service.dart';
 import 'package:falconest/core/presentation/widgets/app_card.dart';
 import 'package:falconest/core/presentation/widgets/modern_admin_panel.dart';
@@ -18,17 +21,63 @@ import 'package:falconest/features/admin/providers/admin_reservations_provider.d
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/task_categories_provider.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
+import 'package:falconest/features/admin/providers/apartment_services_options_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/clients_provider.dart';
 import 'package:falconest/features/admin/premium_upsell_dialog.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
+import 'package:falconest/features/admin/providers/settlements_provider.dart';
 import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
 import 'package:falconest/features/settings/models/tenant_service_model.dart';
 // Sdílená komponenta pro zobrazení financí a poznámek z rezervace.
+import 'package:falconest/features/admin/providers/finance_cash_provider.dart';
 import 'package:falconest/features/admin/widgets/task_metadata_section.dart';
 import 'package:falconest/features/admin/widgets/wallet_detail_modal.dart';
 import 'package:falconest/utils/task_visuals.dart';
 import 'package:falconest/widgets/task_legend.dart';
+
+/// Sekce pro výběr dalších pracovníků (assigned_user_ids). Skrývá hlavního pracovníka –
+/// člověk nemůže být zároveň hlavní i další pracovník.
+Widget _buildAdditionalAssigneesChips({
+  required BuildContext context,
+  required List<TeamMember> members,
+  required String? mainAssigneeId,
+  required List<String> selectedIds,
+  required void Function(List<String>) onChanged,
+  bool isReadOnly = false,
+}) {
+  final pendingLabel = 'admin.team_status_pending'.tr();
+  // PROČ: Hlavní pracovník nesmí být v seznamu „dalších“ – vyloučíme ho.
+  final available = members.where((m) => mainAssigneeId == null || m.dropdownId != mainAssigneeId).toList();
+  if (available.isEmpty) return const SizedBox.shrink();
+
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Text('tasks.additional_assignees'.tr(), style: Theme.of(context).textTheme.titleSmall),
+      const SizedBox(height: 8),
+      Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        children: available.map((m) {
+          final isSelected = selectedIds.contains(m.dropdownId);
+          return FilterChip(
+            label: Text(m.isFromInvitation ? '${m.name} ($pendingLabel)' : m.name),
+            selected: isSelected,
+            onSelected: isReadOnly ? null : (v) {
+              if (v == true) {
+                onChanged([...selectedIds, m.dropdownId]);
+              } else {
+                onChanged(selectedIds.where((id) => id != m.dropdownId).toList());
+              }
+            },
+          );
+        }).toList(),
+      ),
+    ],
+  );
+}
 
 /// Barvy pro stavy úkolu – stejný styl jako v ostatních admin obrazovkách.
 const _statusDraft = Color(0xFF7B1FA2);
@@ -41,8 +90,41 @@ const _statusProblem = Color(0xFFC62828);
 /// překlad probíhá až ve vrstvě UI pomocí klíčů task_status.* v JSON.
 const _systemStatuses = ['pending', 'assigned', 'in_progress', 'completed', 'problem'];
 
-/// Filtr zobrazení úkolů podle data termínu (due_date).
-enum TasksDateFilter { all, today, tomorrow }
+/// Vrací kladnou částku k výběru z metadata.amount_to_collect, jinak null.
+double? _amountToCollectFromMetadata(Map<String, dynamic>? metadata) {
+  if (metadata == null) return null;
+  final amt = metadata['amount_to_collect'];
+  if (amt is num && amt > 0) return amt.toDouble();
+  if (amt != null) {
+    final parsed = double.tryParse(amt.toString());
+    return parsed != null && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+/// Zobrazí dialog pro výběr: jen dokončit úkol vs. dokončit a zapsat hotovost do peněženky.
+/// Vrací true = zapsat do peněženky, false = jen dokončit.
+Future<bool> _showCashCollectionOnCompleteDialog(BuildContext context) async {
+  final result = await showDialog<bool>(
+    context: context,
+    barrierDismissible: false,
+    builder: (ctx) => AlertDialog(
+      title: Text('tasks.cash_collection_title'.tr()),
+      content: Text('tasks.cash_collection_message'.tr()),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(false),
+          child: Text('tasks.action_just_complete'.tr()),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(ctx).pop(true),
+          child: Text('tasks.action_complete_and_save_cash'.tr()),
+        ),
+      ],
+    ),
+  );
+  return result ?? false;
+}
 
 /// Administrativní obrazovka úkolů – karty (dlaždice), propojení Apartmány + Personál.
 class AdminTasksScreen extends ConsumerStatefulWidget {
@@ -94,7 +176,10 @@ class AdminTasksScreen extends ConsumerStatefulWidget {
       builder: (ctx) => _EditTaskDialog(
         ref: ref,
         task: task,
-        onSaved: onSaved ?? () => ref.invalidate(adminTasksProvider),
+        onSaved: onSaved ?? () {
+          ref.invalidate(adminTasksProvider);
+          ref.invalidate(adminTasksStreamProvider);
+        },
         onReservationTap: onReservationTap,
       ),
     );
@@ -106,7 +191,6 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
   bool _isGenerating = false;
   bool _isApproving = false;
   bool _isRecalculating = false;
-  TasksDateFilter _dateFilter = TasksDateFilter.all;
 
   @override
   void dispose() {
@@ -132,6 +216,7 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
       final totalCount = count1 + count2;
       if (!mounted) return;
       ref.invalidate(adminTasksProvider);
+      ref.invalidate(adminTasksStreamProvider);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -169,22 +254,6 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
           desc.contains(query) ||
           apt.contains(query) ||
           who.contains(query);
-    }).toList();
-  }
-
-  /// Filtruje úkoly podle zvoleného dne (termín due_date).
-  List<TaskRow> _applyDateFilter(List<TaskRow> tasks) {
-    if (_dateFilter == TasksDateFilter.all) return tasks;
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final targetDay = _dateFilter == TasksDateFilter.today
-        ? today
-        : today.add(const Duration(days: 1));
-    final nextDay = targetDay.add(const Duration(days: 1));
-    return tasks.where((t) {
-      final d = t.dueDate;
-      final day = DateTime(d.year, d.month, d.day);
-      return !day.isBefore(targetDay) && day.isBefore(nextDay);
     }).toList();
   }
 
@@ -282,8 +351,8 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
       body: tasksAsync.when(
         data: (tasks) {
           final filtered = _computeFiltered(tasks);
-          final dateFiltered = _applyDateFilter(filtered);
           final automaticTasksActive = isModuleActive(ref, 'automatic_tasks');
+          final lockedTaskIds = ref.watch(lockedFinancialTaskIdsProvider).valueOrNull ?? {};
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -297,8 +366,6 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
                 onPremiumLockedTap: () => _showPremiumLockedDialog(context),
               ),
               _TasksFilterBar(
-                dateFilter: _dateFilter,
-                onDateFilterChanged: (v) => setState(() => _dateFilter = v),
                 onApproveAll: _runApproveAllPending,
                 isApproving: _isApproving,
                 onRecalculateStaff: _runRecalculateAssignees,
@@ -311,7 +378,7 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
                 child: TaskLegend(),
               ),
               Expanded(
-                child: dateFiltered.isEmpty
+                child: filtered.isEmpty
                     ? Center(
                         child: Text(
                           _searchController.text.trim().isEmpty
@@ -321,8 +388,9 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
                         ),
                       )
                     : _KanbanBoard(
-                        tasks: dateFiltered,
+                        tasks: filtered,
                         ref: ref,
+                        lockedFinancialTaskIds: lockedTaskIds,
                         categoriesByCode: ref.watch(taskCategoriesProvider).valueOrNull ?? {},
                         onEdit: (t) => _showEditDialog(context, ref, t),
                         onDelete: (t) => _showDeleteConfirm(context, ref, t),
@@ -466,6 +534,52 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
         ),
       );
     }
+  }
+}
+
+/// Navigace měsíce pro záložku Úkoly – předchozí / vybraný měsíc a rok / následující.
+/// Aktualizuje [selectedTaskMonthProvider]; stream úkolů se načte jen pro tento měsíc.
+class _TasksMonthNavigator extends ConsumerWidget {
+  const _TasksMonthNavigator();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final selectedMonth = ref.watch(selectedTaskMonthProvider);
+    final monthLabel = DateFormat.yMMM().format(selectedMonth);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 8, 24, 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.chevron_left),
+            onPressed: () {
+              final prev = DateTime(selectedMonth.year, selectedMonth.month - 1, 1);
+              ref.read(selectedTaskMonthProvider.notifier).state = prev;
+            },
+            tooltip: 'admin.tasks_prev_month'.tr(),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              monthLabel,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.chevron_right),
+            onPressed: () {
+              final next = DateTime(selectedMonth.year, selectedMonth.month + 1, 1);
+              ref.read(selectedTaskMonthProvider.notifier).state = next;
+            },
+            tooltip: 'admin.tasks_next_month'.tr(),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -755,11 +869,9 @@ class _RecalculateStaffButton extends StatelessWidget {
   }
 }
 
-/// Lišta pod vyhledáváním: filtr podle data (Vše / Dnes / Zítra), Přepočítat personál (premium), Schválit všechny.
-class _TasksFilterBar extends StatelessWidget {
+/// Lišta pod vyhledáváním: vlevo výběr měsíce, vpravo Přepočítat personál (premium) a Schválit všechny.
+class _TasksFilterBar extends ConsumerWidget {
   const _TasksFilterBar({
-    required this.dateFilter,
-    required this.onDateFilterChanged,
     required this.onApproveAll,
     required this.isApproving,
     required this.onRecalculateStaff,
@@ -768,8 +880,6 @@ class _TasksFilterBar extends StatelessWidget {
     required this.onPremiumLockedTap,
   });
 
-  final TasksDateFilter dateFilter;
-  final ValueChanged<TasksDateFilter> onDateFilterChanged;
   final VoidCallback onApproveAll;
   final bool isApproving;
   final VoidCallback onRecalculateStaff;
@@ -778,55 +888,38 @@ class _TasksFilterBar extends StatelessWidget {
   final VoidCallback onPremiumLockedTap;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 0, 24, 12),
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          SegmentedButton<TasksDateFilter>(
-            segments: [
-              ButtonSegment<TasksDateFilter>(
-                value: TasksDateFilter.all,
-                label: Text('admin.tasks_filter_all'.tr()),
-                icon: const Icon(Icons.calendar_view_week, size: 18),
+          const _TasksMonthNavigator(),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _RecalculateStaffButton(
+                isRecalculating: isRecalculating,
+                automaticTasksActive: automaticTasksActive,
+                onRecalculateStaff: onRecalculateStaff,
+                onPremiumLockedTap: onPremiumLockedTap,
               ),
-              ButtonSegment<TasksDateFilter>(
-                value: TasksDateFilter.today,
-                label: Text('admin.tasks_filter_today'.tr()),
-                icon: const Icon(Icons.today, size: 18),
-              ),
-              ButtonSegment<TasksDateFilter>(
-                value: TasksDateFilter.tomorrow,
-                label: Text('admin.tasks_filter_tomorrow'.tr()),
-                icon: const Icon(Icons.event, size: 18),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                onPressed: isApproving ? null : onApproveAll,
+                icon: isApproving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.done_all, size: 20),
+                label: Text('admin.tasks_approve_all_pending'.tr()),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                ),
               ),
             ],
-            selected: {dateFilter},
-            onSelectionChanged: (Set<TasksDateFilter> selected) {
-              if (selected.isNotEmpty) onDateFilterChanged(selected.first);
-            },
-          ),
-          const Spacer(),
-          _RecalculateStaffButton(
-            isRecalculating: isRecalculating,
-            automaticTasksActive: automaticTasksActive,
-            onRecalculateStaff: onRecalculateStaff,
-            onPremiumLockedTap: onPremiumLockedTap,
-          ),
-          const SizedBox(width: 8),
-          ElevatedButton.icon(
-            onPressed: isApproving ? null : onApproveAll,
-            icon: isApproving
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.done_all, size: 20),
-            label: Text('admin.tasks_approve_all_pending'.tr()),
-            style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            ),
           ),
         ],
       ),
@@ -876,6 +969,7 @@ class _KanbanBoard extends StatelessWidget {
   const _KanbanBoard({
     required this.tasks,
     required this.ref,
+    required this.lockedFinancialTaskIds,
     required this.categoriesByCode,
     required this.onEdit,
     required this.onDelete,
@@ -883,6 +977,8 @@ class _KanbanBoard extends StatelessWidget {
 
   final List<TaskRow> tasks;
   final WidgetRef ref;
+  /// Úkoly s výplatami nebo provizemi – nelze přetahovat ani mazat (ochrana účetnictví).
+  final Set<String> lockedFinancialTaskIds;
   final Map<String, TaskCategoryModel> categoriesByCode;
   final ValueChanged<TaskRow> onEdit;
   final ValueChanged<TaskRow> onDelete;
@@ -910,6 +1006,7 @@ class _KanbanBoard extends StatelessWidget {
                 systemStatus: col.systemStatus,
                 titleKey: col.titleKey,
                 ref: ref,
+                lockedFinancialTaskIds: lockedFinancialTaskIds,
                 categoriesByCode: categoriesByCode,
                 onEdit: onEdit,
                 onDelete: onDelete,
@@ -929,6 +1026,7 @@ class _KanbanColumn extends StatelessWidget {
     required this.systemStatus,
     required this.titleKey,
     required this.ref,
+    required this.lockedFinancialTaskIds,
     required this.categoriesByCode,
     required this.onEdit,
     required this.onDelete,
@@ -938,6 +1036,7 @@ class _KanbanColumn extends StatelessWidget {
   final String systemStatus;
   final String titleKey;
   final WidgetRef ref;
+  final Set<String> lockedFinancialTaskIds;
   final Map<String, TaskCategoryModel> categoriesByCode;
   final ValueChanged<TaskRow> onEdit;
   final ValueChanged<TaskRow> onDelete;
@@ -949,9 +1048,53 @@ class _KanbanColumn extends StatelessWidget {
       onAcceptWithDetails: (details) async {
         final task = details.data;
         if (_normalizeToSystemStatus(task.status) == systemStatus) return;
+        // Finanční zámek: úkol s výplatami/provizemi nelze přetahovat (ochrana účetnictví).
+        if (lockedFinancialTaskIds.contains(task.id)) return;
+
+        // PROČ: Při dokončení úkolu s výběrem hotovosti nabídneme zápis do peněženky administrátora.
+        if (systemStatus == 'completed') {
+          final amount = _amountToCollectFromMetadata(task.metadata);
+          if (amount != null && amount > 0) {
+            final recordToWallet = await _showCashCollectionOnCompleteDialog(context);
+            if (!context.mounted) return;
+            if (recordToWallet) {
+              final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+              final profileId = ref.read(authNotifierProvider).state.profileId;
+              if (tenantId != null && profileId != null && tenantId.isNotEmpty && profileId.isNotEmpty) {
+                try {
+                  await CashWalletRepository.instance.recordCashCollection(
+                    taskId: task.id,
+                    amount: amount,
+                    tenantId: tenantId,
+                    profileId: profileId,
+                    expectedAmount: amount,
+                  );
+                  if (context.mounted) {
+                    ref.invalidate(employeeCashWalletsProvider);
+                  }
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+                        backgroundColor: Colors.red.shade700,
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                    return;
+                  }
+                }
+              }
+            }
+          }
+        }
+
         try {
           await ref.read(adminTasksProvider.notifier).updateTaskStatus(task.id, systemStatus);
-          if (context.mounted) ref.invalidate(adminTasksProvider);
+          if (context.mounted) {
+            ref.invalidate(adminTasksProvider);
+            ref.invalidate(adminTasksStreamProvider);
+          }
         } catch (e) {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -994,6 +1137,22 @@ class _KanbanColumn extends StatelessWidget {
                   itemCount: tasks.length,
                   itemBuilder: (context, index) {
                     final task = tasks[index];
+                    final isFinanciallyLocked = lockedFinancialTaskIds.contains(task.id);
+                    final isStatusCompleted = _normalizeToSystemStatus(task.status) == 'completed';
+                    final isLocked = isFinanciallyLocked || isStatusCompleted;
+                    final card = _TaskCard(
+                      task: task,
+                      categoriesByCode: categoriesByCode,
+                      isFinanciallyLocked: isFinanciallyLocked,
+                      onEdit: onEdit,
+                      onDelete: onDelete,
+                    );
+                    if (isLocked) {
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: card,
+                      );
+                    }
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 8),
                       child: Draggable<TaskRow>(
@@ -1008,19 +1167,9 @@ class _KanbanColumn extends StatelessWidget {
                         ),
                         childWhenDragging: Opacity(
                           opacity: 0.5,
-                          child: _TaskCard(
-                            task: task,
-                            categoriesByCode: categoriesByCode,
-                            onEdit: onEdit,
-                            onDelete: onDelete,
-                          ),
+                          child: card,
                         ),
-                        child: _TaskCard(
-                          task: task,
-                          categoriesByCode: categoriesByCode,
-                          onEdit: onEdit,
-                          onDelete: onDelete,
-                        ),
+                        child: card,
                       ),
                     );
                   },
@@ -1040,13 +1189,17 @@ class _KanbanTaskCardContent extends StatelessWidget {
 
   final TaskRow task;
 
+  /// Zobrazuje termín v lokálním čase (Supabase = UTC). Viz _formatDateTime.
   static String _formatDue(DateTime d) {
-    return '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')} '
-        '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+    final local = d.isUtc ? d.toLocal() : d;
+    return '${local.day.toString().padLeft(2, '0')}.${local.month.toString().padLeft(2, '0')} '
+        '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
   }
 
   @override
   Widget build(BuildContext context) {
+    // Auditing: Zámek – při drag feedbacku zobrazíme ikonu u dokončených
+    final isLocked = _normalizeToSystemStatus(task.status) == 'completed';
     final assignedText = task.assignedToName != null
         ? 'admin.task_assigned'.tr(namedArgs: {'name': task.assignedToName!})
         : 'admin.task_unassigned'.tr();
@@ -1057,7 +1210,7 @@ class _KanbanTaskCardContent extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // 1. řádek – kontext: referenční číslo (pokud existuje) + přeložený název kategorie
+        // 1. řádek – kontext: referenční číslo (pokud existuje) + přeložený název kategorie + zámeček (dokončené)
         Row(
           children: [
             if (task.referenceNumber != null && task.referenceNumber!.trim().isNotEmpty) ...[
@@ -1070,6 +1223,7 @@ class _KanbanTaskCardContent extends StatelessWidget {
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
               ),
             ),
+            if (isLocked) Icon(Icons.lock, size: 16, color: Colors.grey),
           ],
         ),
         const SizedBox(height: 4),
@@ -1178,12 +1332,15 @@ class _TaskCard extends StatelessWidget {
     required this.categoriesByCode,
     required this.onEdit,
     required this.onDelete,
+    this.isFinanciallyLocked = false,
   });
 
   final TaskRow task;
   final Map<String, TaskCategoryModel> categoriesByCode;
   final ValueChanged<TaskRow> onEdit;
   final ValueChanged<TaskRow> onDelete;
+  /// true = úkol má výplaty nebo provize – zámek a skrytí koše (ochrana účetnictví).
+  final bool isFinanciallyLocked;
 
   /// Barva podle systémového statusu (pending, assigned, in_progress, completed, problem).
   static Color _statusColor(String systemStatus) {
@@ -1207,12 +1364,15 @@ class _TaskCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Auditing: Zámek – dokončené úkoly nebo finančně vypořádané (výplaty/provize) – ikona zámku, skrytí koše.
+    final isLocked = isFinanciallyLocked || _normalizeToSystemStatus(task.status) == 'completed';
     final assigned = task.assignedToName != null
         ? 'admin.task_assigned'.tr(namedArgs: {'name': task.assignedToName!})
         : 'admin.task_unassigned'.tr();
+    final local = task.dueDate.isUtc ? task.dueDate.toLocal() : task.dueDate;
     final dueStr =
-        '${task.dueDate.day.toString().padLeft(2, '0')}.${task.dueDate.month.toString().padLeft(2, '0')} '
-        '${task.dueDate.hour.toString().padLeft(2, '0')}:${task.dueDate.minute.toString().padLeft(2, '0')}';
+        '${local.day.toString().padLeft(2, '0')}.${local.month.toString().padLeft(2, '0')} '
+        '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
     final typeIcon = TaskVisuals.getIcon(task.taskType, categoriesByCode: categoriesByCode.isNotEmpty ? categoriesByCode : null);
     // Dynamické pastelové pozadí podle typu úkolu – kritické pro UX dispečinku (odpovídá horním filtrům).
     final cardColor = TaskVisuals.getBackgroundColor(task.taskType, categoriesByCode: categoriesByCode.isNotEmpty ? categoriesByCode : null);
@@ -1360,16 +1520,19 @@ class _TaskCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 4),
-              // Ikona koše vpravo – Apple Vibe, samostatně klikatelná
-              IconButton(
-                icon: Icon(Icons.delete_outline, size: 20, color: Colors.red.shade300),
-                onPressed: () => onDelete(task),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                style: IconButton.styleFrom(
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              // Ikona koše vpravo – Apple Vibe. U dokončených úkolů místo koše zámek (nelze mazat).
+              if (isLocked)
+                Icon(Icons.lock, size: 16, color: Colors.grey)
+              else
+                IconButton(
+                  icon: Icon(Icons.delete_outline, size: 20, color: Colors.red.shade300),
+                  onPressed: () => onDelete(task),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                  style: IconButton.styleFrom(
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
                 ),
-              ),
             ],
           ),
     );
@@ -1378,12 +1541,15 @@ class _TaskCard extends StatelessWidget {
 
 // --- Add / Edit dialogy a pomocné funkce ---
 
+/// Formátuje datum a čas pro zobrazení v UI. Vždy zobrazuje lokální čas.
+/// PROČ toLocal(): Supabase vrací UTC (timestamptz). Bez převodu by se v CET zobrazoval posun -1h.
 String _formatDateTime(DateTime d) {
-  return '${d.day.toString().padLeft(2, '0')}.'
-      '${d.month.toString().padLeft(2, '0')}.'
-      '${d.year} '
-      '${d.hour.toString().padLeft(2, '0')}:'
-      '${d.minute.toString().padLeft(2, '0')}';
+  final local = d.isUtc ? d.toLocal() : d;
+  return '${local.day.toString().padLeft(2, '0')}.'
+      '${local.month.toString().padLeft(2, '0')}.'
+      '${local.year} '
+      '${local.hour.toString().padLeft(2, '0')}:'
+      '${local.minute.toString().padLeft(2, '0')}';
 }
 
 DateTime? _parseDateTime(String? s) {
@@ -1647,6 +1813,132 @@ class _AddTaskContextBar extends StatelessWidget {
 /// Modul v Supabase Storage pro přílohy úkolů – konzistence s mobilní aplikací.
 const _storageModuleTasks = 'tasks';
 
+/// Wrapper pro Rychlý výběr adres – odvozuje addressSourceClientId z vybraného klienta.
+///
+/// PROČ: Agency = vlastní adresy; external s agencyId = adresy agentury; external bez agencyId =
+/// nezobrazit. Potřebujeme clientsProvider pro výpočet, proto oddělený widget. Používá se
+/// v Add i Edit Task dialogu.
+class _TaskAddressQuickSelectWrapper extends ConsumerWidget {
+  const _TaskAddressQuickSelectWrapper({
+    required this.selectedClientId,
+    required this.controller,
+    this.onFilled,
+    this.enabled = true,
+  });
+
+  final String? selectedClientId;
+  final TextEditingController controller;
+  final VoidCallback? onFilled;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (selectedClientId == null || selectedClientId!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final clientsAsync = ref.watch(clientsFullListProvider);
+    return clientsAsync.when(
+      data: (clients) {
+        final client = clients.where((c) => c.id == selectedClientId).firstOrNull;
+        final addressSourceId = _addressSourceClientId(client);
+        if (addressSourceId == null) return const SizedBox.shrink();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _ClientAddressQuickSelect(
+              addressSourceClientId: addressSourceId,
+              controller: controller,
+              onFilled: onFilled,
+              enabled: enabled,
+            ),
+            const SizedBox(height: 8),
+          ],
+        );
+      },
+      loading: () => const SizedBox.shrink(),
+      error: (_, __) => const SizedBox.shrink(),
+    );
+  }
+}
+
+/// Vrací ID klienta, ze kterého načíst adresy pro Rychlý výběr.
+///
+/// PROČ: Agency má vlastní adresy; external s agencyId „půjčuje si“ adresy své
+/// doporučující agentury (Pepa dohodnutý Davidem → Davidovy adresy).
+String? _addressSourceClientId(ClientModel? client) {
+  if (client == null) return null;
+  final t = client.clientType?.toLowerCase() ?? '';
+  if (t == 'agency') return client.id;
+  if (t == 'external' &&
+      client.agencyId != null &&
+      client.agencyId!.trim().isNotEmpty) {
+    return client.agencyId;
+  }
+  return null;
+}
+
+/// Rychlý výběr adres z adresáře klienta – zobrazí se nad polem pro vlastní adresu.
+///
+/// PROČ: U ručních externích úkolů (bez bytu) má klient často uložené adresy v Adresáři.
+/// [addressSourceClientId] = ID klienta, jehož adresy se zobrazí. U agency je to
+/// sám klient; u external s agencyId je to jeho doporučující agentura.
+class _ClientAddressQuickSelect extends ConsumerWidget {
+  const _ClientAddressQuickSelect({
+    required this.addressSourceClientId,
+    required this.controller,
+    this.onFilled,
+    this.enabled = true,
+  });
+
+  final String addressSourceClientId;
+  final TextEditingController controller;
+  final VoidCallback? onFilled;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final addressesAsync = ref.watch(clientAddressesProvider(addressSourceClientId));
+    return addressesAsync.when(
+      data: (addresses) {
+        if (addresses.isEmpty) return const SizedBox.shrink();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'tasks.form_quick_address_select'.tr(),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.grey.shade600,
+                    fontWeight: FontWeight.w500,
+                  ),
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: addresses.map((addr) {
+                return ActionChip(
+                  label: Text(addr.label),
+                  onPressed: enabled
+                      ? () {
+                          controller.text = addr.address;
+                          controller.selection = TextSelection.collapsed(offset: controller.text.length);
+                          onFilled?.call();
+                        }
+                      : null,
+                );
+              }).toList(),
+            ),
+          ],
+        );
+      },
+      loading: () => const SizedBox.shrink(),
+      error: (_, __) => const SizedBox.shrink(),
+    );
+  }
+}
+
 /// Typ úkolu: vázáno na apartmán (výchozí) nebo externí služba bez bytu.
 enum _TaskFormMode { apartmentBound, externalService }
 
@@ -1659,6 +1951,9 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
   final _customLocationController = TextEditingController();
   /// Pro externí službu – cena v EUR při „Vybere personál v hotovosti“.
   final _priceController = TextEditingController();
+  /// Historical pricing: Cena služby u úkolu vázaného na apartmán – zamrazí se do metadata['service_price'].
+  /// Auto-fill z apartment_services při výběru bytu a služby; dispečer může přepsat.
+  final _servicePriceController = TextEditingController();
   /// Číslo letu pro transfery – uloží se do metadata['flight_number'], zobrazí jen při transfer_in/out/transfer.
   final _flightNumberController = TextEditingController();
   _TaskFormMode _taskMode = _TaskFormMode.apartmentBound;
@@ -1680,6 +1975,8 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
     }
   }
   String? _selectedAssignedTo;
+  /// Další přiřazení pracovníci (assigned_user_ids) – pro sdílení úkolu mezi více lidmi.
+  List<String> _selectedAdditionalUserIds = [];
   /// ID vybrané služby z katalogu. PROČ: Umožňuje odvodit task_type a requires_photo.
   String? _selectedServiceId;
   /// Způsob platby u externí služby: true = vybere personál v hotovosti, false = faktura/zaplaceno předem.
@@ -1696,6 +1993,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
     _dueDateController.dispose();
     _customLocationController.dispose();
     _priceController.dispose();
+    _servicePriceController.dispose();
     _flightNumberController.dispose();
     super.dispose();
   }
@@ -1795,6 +2093,16 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
         }
       }
 
+      // Historical pricing: Manuální úkol vázaný na apartmán – zamražení ceny v okamžiku vytvoření.
+      // Reporty a fakturace čtou metadata['service_price']; změna ceníku pak nezmění historický obrat.
+      if (!isExternal) {
+        final priceStr = _servicePriceController.text.trim();
+        final servicePrice = double.tryParse(priceStr);
+        if (servicePrice != null && servicePrice > 0) {
+          metadata['service_price'] = servicePrice;
+        }
+      }
+
       // PROČ: Číslo letu pro transfery – řidič v mobilní aplikaci získá proklik na FlightRadar24.
       if (_isTransferTaskType(taskType)) {
         final fn = _flightNumberController.text.trim();
@@ -1842,6 +2150,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
         if (isExternal) 'custom_title': titleText,
         if (isExternal) 'custom_location': _customLocationController.text.trim(),
         'assigned_to': assignedToUuid,
+        if (_selectedAdditionalUserIds.isNotEmpty) 'assigned_user_ids': _selectedAdditionalUserIds,
         'title': titleText,
         'description': _descriptionController.text.trim(),
         'status': _status,
@@ -1892,9 +2201,25 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final apartmentsAsync = ref.watch(apartmentsProvider);
-    final teamAsync = ref.watch(adminTeamProvider);
+    final apartmentsAsync = ref.watch(apartmentsFullListProvider);
+    final teamAsync = ref.watch(teamFullListProvider);
     final catalogAsync = ref.watch(tenantServicesProvider);
+
+    // Historical pricing – auto-fill ceny při výběru bytu a služby. Provider reaguje na oba parametry.
+    ref.listen(
+      manualTaskServicePriceProvider((
+        _selectedApartmentId ?? '',
+        _selectedServiceId ?? '',
+      )),
+      (prev, next) {
+        next.whenData((price) {
+          if (!mounted) return;
+          if (price != null && price > 0) {
+            _servicePriceController.text = price.toStringAsFixed(2);
+          }
+        });
+      },
+    );
 
     return ModernAdminPanel(
       title: 'admin.tasks_add'.tr(),
@@ -2034,38 +2359,64 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                // Vázáno na apartmán: výběr bytu. Externí: klient + název služby + adresa.
+                // Vázáno na apartmán: výběr bytu a cena služby. Externí: klient + název služby + adresa.
                 if (_taskMode == _TaskFormMode.apartmentBound)
-                  apartmentsAsync.when(
-                    data: (apartments) {
-                      return DropdownButtonFormField<String?>(
-                        value: _selectedApartmentId,
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      apartmentsAsync.when(
+                        data: (apartments) {
+                          return DropdownButtonFormField<String?>(
+                            value: _selectedApartmentId,
+                            decoration: InputDecoration(
+                              prefixIcon: const Icon(Icons.apartment),
+                              labelText: 'admin.task_field_apartment'.tr(),
+                              border: OutlineInputBorder(),
+                            ),
+                            items: [
+                              DropdownMenuItem<String?>(
+                                value: null,
+                                child: Text('admin.validation_apartment_required_short'.tr()),
+                              ),
+                              ...apartments.map((a) => DropdownMenuItem<String?>(
+                                    value: a.id,
+                                    child: Text(a.name),
+                                  )),
+                            ],
+                            onChanged: (v) => setState(() => _selectedApartmentId = v),
+                            validator: (v) =>
+                                (v == null || v.isEmpty) ? 'admin.validation_apartment_required_short'.tr() : null,
+                          );
+                        },
+                        loading: () => const LinearProgressIndicator(),
+                        error: (e, st) => Text('admin.apartments_load_error'.tr()),
+                      ),
+                      const SizedBox(height: 12),
+                      // Historical pricing: Cena služby – auto-fill z apartment_services, dispečer může přepsat.
+                      TextFormField(
+                        controller: _servicePriceController,
                         decoration: InputDecoration(
-                          prefixIcon: const Icon(Icons.apartment),
-                          labelText: 'admin.task_field_apartment'.tr(),
+                          prefixIcon: const Icon(Icons.euro),
+                          labelText: 'tasks.form_service_price'.tr(),
+                          hintText: 'common.zero_placeholder'.tr(),
                           border: OutlineInputBorder(),
                         ),
-                        items: [
-                          DropdownMenuItem<String?>(
-                            value: null,
-                            child: Text('admin.validation_apartment_required_short'.tr()),
-                          ),
-                          ...apartments.map((a) => DropdownMenuItem<String?>(
-                                value: a.id,
-                                child: Text(a.name),
-                              )),
-                        ],
-                        onChanged: (v) => setState(() => _selectedApartmentId = v),
-                        validator: (v) =>
-                            (v == null || v.isEmpty) ? 'admin.validation_apartment_required_short'.tr() : null,
-                      );
-                    },
-                    loading: () => const LinearProgressIndicator(),
-                    error: (e, st) => Text('admin.apartments_load_error'.tr()),
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      ),
+                    ],
                   ),
                 if (_taskMode == _TaskFormMode.externalService) ...[
-                  ref.watch(clientsProvider).when(
-                    data: (clients) {
+                  ref.watch(clientsFullListProvider).when(
+                    data: (allClients) {
+                      // PROČ: Externí služba – zobrazujeme POUZE agency a external. Majitelé
+                      // nemají smysl u úkolu bez bytu (fakturace jde na klienta, ne na majitele).
+                      final clients = allClients
+                          .where((c) {
+                            final t = c.clientType?.toLowerCase() ?? '';
+                            return t == 'agency' || t == 'external';
+                          })
+                          .toList();
                       if (clients.isEmpty) {
                         return Padding(
                           padding: const EdgeInsets.all(8.0),
@@ -2075,8 +2426,15 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                           ),
                         );
                       }
+                      final validValue = clients.any((c) => c.id == _selectedClientId)
+                          ? _selectedClientId
+                          : null;
+                      if (validValue != _selectedClientId) {
+                        WidgetsBinding.instance.addPostFrameCallback(
+                            (_) => setState(() => _selectedClientId = validValue));
+                      }
                       return DropdownButtonFormField<String?>(
-                        value: _selectedClientId,
+                        value: validValue,
                         decoration: InputDecoration(
                           prefixIcon: const Icon(Icons.person),
                           labelText: 'tasks.form_client'.tr(),
@@ -2100,6 +2458,11 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                     error: (e, _) => Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
                   ),
                   const SizedBox(height: 12),
+                  _TaskAddressQuickSelectWrapper(
+                    selectedClientId: _selectedClientId,
+                    controller: _customLocationController,
+                    onFilled: () => setState(() {}),
+                  ),
                   TextFormField(
                     controller: _customLocationController,
                     decoration: InputDecoration(
@@ -2135,7 +2498,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                           decoration: InputDecoration(
                             prefixIcon: const Icon(Icons.euro),
                             labelText: 'tasks.form_price'.tr(),
-                            hintText: '0',
+                            hintText: 'common.zero_placeholder'.tr(),
                             border: OutlineInputBorder(),
                           ),
                           keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -2206,15 +2569,35 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                           child: Text(m.isFromInvitation ? '${m.name} ($pendingLabel)' : m.name),
                         )),
                     ];
-                    return DropdownButtonFormField<String?>(
-                      initialValue: _selectedAssignedTo,
-                      decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.person_outline),
-                        labelText: 'admin.task_field_assign_to'.tr(),
-                        border: OutlineInputBorder(),
-                      ),
-                      items: items,
-                      onChanged: (v) => setState(() => _selectedAssignedTo = v),
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        DropdownButtonFormField<String?>(
+                          initialValue: _selectedAssignedTo,
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.person_outline),
+                            labelText: 'admin.task_field_assign_to'.tr(),
+                            border: OutlineInputBorder(),
+                          ),
+                          items: items,
+                          onChanged: (v) => setState(() {
+                            _selectedAssignedTo = v;
+                            // PROČ: Hlavní pracovník nesmí být v „dalších“ – odebereme ho.
+                            if (v != null && v.isNotEmpty) {
+                              _selectedAdditionalUserIds = _selectedAdditionalUserIds.where((id) => id != v).toList();
+                            }
+                          }),
+                        ),
+                        const SizedBox(height: 12),
+                        _buildAdditionalAssigneesChips(
+                          context: context,
+                          members: unique,
+                          mainAssigneeId: _selectedAssignedTo,
+                          selectedIds: _selectedAdditionalUserIds,
+                          onChanged: (v) => setState(() => _selectedAdditionalUserIds = v),
+                        ),
+                      ],
                     );
                   },
                   loading: () => const LinearProgressIndicator(),
@@ -2707,6 +3090,8 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
   late String _selectedApartmentId;
   late String? _selectedClientId;
   late String? _selectedAssignedTo;
+  /// Další přiřazení pracovníci (assigned_user_ids) – pro sdílení úkolu mezi více lidmi.
+  late List<String> _selectedAdditionalUserIds;
   /// ID vybrané služby z katalogu. PROČ: Umožňuje aktualizovat metadata.requires_photo při změně služby.
   late String? _selectedServiceId;
   late String _status;
@@ -2734,6 +3119,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
     _selectedApartmentId = t.apartmentId;
     _selectedClientId = t.clientId;
     _selectedAssignedTo = t.assignedTo;
+    _selectedAdditionalUserIds = List.from(t.assignedUserIds);
     _selectedServiceId = t.serviceId;
     _status = _normalizeToSystemStatus(t.status);
     // amount_to_collect v metadata znamená, že personál vybírá hotovost.
@@ -2824,7 +3210,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
 
     setState(() => _isSaving = true);
 
-    final apartments = ref.read(apartmentsProvider).valueOrNull ?? [];
+    final apartments = ref.read(apartmentsFullListProvider).valueOrNull ?? [];
     final apartmentIdToSave = _isExternal
         ? null
         : (apartments.any((a) => a.id == _selectedApartmentId)
@@ -2868,6 +3254,45 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
         }
       }
 
+      // PROČ: Při dokončení úkolu s výběrem hotovosti nabídneme zápis do peněženky administrátora.
+      if (_status == 'completed') {
+        final amount = _amountToCollectFromMetadata(mergedMetadata);
+        if (amount != null && amount > 0) {
+          final recordToWallet = await _showCashCollectionOnCompleteDialog(context);
+          if (!mounted) {
+            setState(() => _isSaving = false);
+            return;
+          }
+          if (recordToWallet) {
+            final profileId = ref.read(authNotifierProvider).state.profileId;
+            if (profileId != null && profileId.isNotEmpty) {
+              try {
+                await CashWalletRepository.instance.recordCashCollection(
+                  taskId: widget.task.id,
+                  amount: amount,
+                  tenantId: tenantId,
+                  profileId: profileId,
+                  expectedAmount: amount,
+                );
+                if (mounted) ref.invalidate(employeeCashWalletsProvider);
+              } catch (e) {
+                if (mounted) {
+                  setState(() => _isSaving = false);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+                      backgroundColor: Colors.red.shade700,
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                }
+                return;
+              }
+            }
+          }
+        }
+      }
+
       final assignedToUuid = _selectedAssignedTo != null && _selectedAssignedTo!.isNotEmpty
           ? _selectedAssignedTo
           : null;
@@ -2901,12 +3326,15 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
         }
       }
 
+      // Při přepnutí na byt explicitně vynulujeme client_id, aby v DB nezůstal starý odkaz (přeřazení).
       final updateFields = <String, dynamic>{
         'apartment_id': apartmentIdToSave,
         if (_isExternal && _selectedClientId != null) 'client_id': _selectedClientId,
+        if (!_isExternal) 'client_id': null,
         if (_isExternal) 'custom_title': titleText,
         if (_isExternal) 'custom_location': _customLocationController.text.trim(),
         'assigned_to': assignedToUuid,
+        'assigned_user_ids': _selectedAdditionalUserIds,
         'title': titleText,
         'description': _descriptionController.text.trim(),
         'status': _status,
@@ -2953,9 +3381,17 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final apartmentsAsync = ref.watch(apartmentsProvider);
-    final teamAsync = ref.watch(adminTeamProvider);
+    final apartmentsAsync = ref.watch(apartmentsFullListProvider);
+    final teamAsync = ref.watch(teamFullListProvider);
     final catalogAsync = ref.watch(tenantServicesProvider);
+    final lockedTaskIds = ref.watch(lockedFinancialTaskIdsProvider).valueOrNull ?? {};
+
+    // Finanční zámek: úkol s výplatami nebo provizemi nelze měnit (ochrana účetnictví).
+    final isFinanciallyLocked = lockedTaskIds.contains(widget.task.id);
+    // Auditing: Zámek editace pro dokončené úkoly – neměnnost historie pro účetní audit.
+    final isReadOnly = isFinanciallyLocked || _normalizeToSystemStatus(widget.task.status) == 'completed';
+    // Přeřazení: u dokončených úkolů ponecháme editovatelné vazby (klient / byt), aby šlo opravit sirotky.
+    final isReassignEnabled = !isFinanciallyLocked;
 
     final refNum = widget.task.referenceNumber?.trim();
     final editTitle = refNum != null && refNum.isNotEmpty
@@ -2975,9 +3411,90 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
               task: widget.task,
               onReservationTap: widget.onReservationTap,
             ),
-            const SizedBox(height: 16),
+            if (isFinanciallyLocked) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.orange.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.orange.shade300),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.lock, color: Colors.orange.shade800, size: 24),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'admin.task_financially_locked'.tr(),
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.orange.shade900,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+            if (isReadOnly && !isFinanciallyLocked) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.blue.shade200),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.lock, color: Colors.blue.shade700, size: 24),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'tasks.task_locked_info'.tr(),
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.blue.shade900,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+            ] else if (!isFinanciallyLocked) ...[
+              const SizedBox(height: 16),
+            ],
+            // Sekce Přeřazení – oprava vazby na klienta/byt (sirotčí úkoly po smazání klienta v CRM).
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'admin.tasks_reassign_section'.tr(),
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: Colors.grey.shade800,
+                        ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'admin.tasks_reassign_section_hint'.tr(),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.grey.shade600,
+                        ),
+                  ),
+                ],
+              ),
+            ),
             TextFormField(
               controller: _titleController,
+              readOnly: isReadOnly,
               decoration: InputDecoration(
                 prefixIcon: const Icon(Icons.label_outline),
                 labelText: 'admin.task_field_title'.tr(),
@@ -2995,6 +3512,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _descriptionController,
+                  readOnly: isReadOnly,
                   maxLines: 3,
                   decoration: InputDecoration(
                     prefixIcon: const Icon(Icons.description_outlined),
@@ -3037,12 +3555,13 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                             border: const OutlineInputBorder(),
                           ),
                           items: items,
-                          onChanged: (v) => setState(() => _selectedServiceId = v),
+                          onChanged: isReadOnly ? null : (v) => setState(() => _selectedServiceId = v),
                         ),
                         if (showFlightField) ...[
                           const SizedBox(height: 12),
                           TextFormField(
                             controller: _flightNumberController,
+                            readOnly: isReadOnly,
                             decoration: InputDecoration(
                               prefixIcon: const Icon(Icons.flight_takeoff_outlined),
                               labelText: 'tasks.flight_number_label'.tr(),
@@ -3077,6 +3596,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                 ),
                 const SizedBox(height: 12),
                 // Vázáno na apartmán: výběr bytu. Externí: klient + název služby + adresa + platba.
+                // Přeřazení: dropdowny zůstávají editovatelné i u dokončeného úkolu (isReassignEnabled).
                 if (!_isExternal)
                   apartmentsAsync.when(
                     data: (apartments) {
@@ -3100,7 +3620,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                                 child: Text(a.name),
                               )),
                         ],
-                        onChanged: (v) => setState(() => _selectedApartmentId = v ?? ''),
+                        onChanged: isReassignEnabled ? (v) => setState(() => _selectedApartmentId = v ?? '') : null,
                         validator: (v) =>
                             (v == null || v.isEmpty) ? 'admin.validation_apartment_required_short'.tr() : null,
                       );
@@ -3109,8 +3629,15 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                     error: (e, st) => Text('admin.apartments_load_error'.tr()),
                   ),
                 if (_isExternal) ...[
-                  ref.watch(clientsProvider).when(
-                    data: (clients) {
+                  ref.watch(clientsFullListProvider).when(
+                    data: (allClients) {
+                      // PROČ: Externí úkol – zobrazujeme POUZE agency a external (stejná logika jako Add Task).
+                      final clients = allClients
+                          .where((c) {
+                            final t = c.clientType?.toLowerCase() ?? '';
+                            return t == 'agency' || t == 'external';
+                          })
+                          .toList();
                       if (clients.isEmpty) {
                         return Padding(
                           padding: const EdgeInsets.all(8.0),
@@ -3120,8 +3647,17 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                           ),
                         );
                       }
+                      // Sirotčí klient: aktuální ID není v seznamu (smazaný klient) – nepřepisujeme na null,
+                      // aby dropdown zobrazil položku „Neplatný klient (ID: …)“ a uživatel mohl vybrat nového.
+                      final isOrphan = _selectedClientId != null &&
+                          _selectedClientId!.trim().isNotEmpty &&
+                          !clients.any((c) => c.id == _selectedClientId);
+                      final dropdownValue = isOrphan ? _selectedClientId : (clients.any((c) => c.id == _selectedClientId) ? _selectedClientId : null);
+                      final orphanShortId = _selectedClientId != null && _selectedClientId!.length > 8
+                          ? _selectedClientId!.substring(0, 8)
+                          : (_selectedClientId ?? '');
                       return DropdownButtonFormField<String?>(
-                        value: _selectedClientId,
+                        value: dropdownValue,
                         decoration: InputDecoration(
                           prefixIcon: const Icon(Icons.person),
                           labelText: 'tasks.form_client'.tr(),
@@ -3132,12 +3668,17 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                             value: null,
                             child: Text('tasks.validation_client_required'.tr()),
                           ),
+                          if (isOrphan)
+                            DropdownMenuItem<String?>(
+                              value: _selectedClientId,
+                              child: Text('tasks.client_orphan_label'.tr(namedArgs: {'id': orphanShortId})),
+                            ),
                           ...clients.map((c) => DropdownMenuItem<String?>(
                                 value: c.id,
                                 child: Text(c.name),
                               )),
                         ],
-                        onChanged: (v) => setState(() => _selectedClientId = v),
+                        onChanged: isReassignEnabled ? (v) => setState(() => _selectedClientId = v) : null,
                         validator: (v) => (v == null || v.isEmpty) ? 'tasks.validation_client_required'.tr() : null,
                       );
                     },
@@ -3145,8 +3686,15 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                     error: (e, _) => Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
                   ),
                   const SizedBox(height: 12),
+                  _TaskAddressQuickSelectWrapper(
+                    selectedClientId: _selectedClientId,
+                    controller: _customLocationController,
+                    onFilled: () => setState(() {}),
+                    enabled: !isReadOnly,
+                  ),
                   TextFormField(
                     controller: _customLocationController,
+                    readOnly: isReadOnly,
                     decoration: InputDecoration(
                       prefixIcon: const Icon(Icons.location_on_outlined),
                       labelText: 'tasks.form_location'.tr(),
@@ -3176,10 +3724,11 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                         const SizedBox(height: 12),
                         TextFormField(
                           controller: _priceController,
+                          readOnly: isReadOnly,
                           decoration: InputDecoration(
                             prefixIcon: const Icon(Icons.euro),
                             labelText: 'tasks.form_price'.tr(),
-                            hintText: '0',
+                            hintText: 'common.zero_placeholder'.tr(),
                             border: OutlineInputBorder(),
                           ),
                           keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -3204,7 +3753,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                             ),
                           ],
                           selected: {_staffCollectsCash},
-                          onSelectionChanged: (s) => setState(() => _staffCollectsCash = s.first),
+                          onSelectionChanged: isReadOnly ? null : (s) => setState(() => _staffCollectsCash = s.first),
                         ),
                       ],
                     ),
@@ -3213,10 +3762,10 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                 const SizedBox(height: 16),
                 _TaskAttachmentsSection(
                   existingUrls: _existingMediaUrls,
-                  onRemoveExisting: (i) => setState(() => _existingMediaUrls = List.from(_existingMediaUrls)..removeAt(i)),
+                  onRemoveExisting: isReadOnly ? null : (i) => setState(() => _existingMediaUrls = List.from(_existingMediaUrls)..removeAt(i)),
                   pendingFiles: _pendingAttachments,
-                  onRemovePending: (i) => setState(() => _pendingAttachments = List.from(_pendingAttachments)..removeAt(i)),
-                  onAddPressed: _pickAttachment,
+                  onRemovePending: isReadOnly ? (_) {} : (i) => setState(() => _pendingAttachments = List.from(_pendingAttachments)..removeAt(i)),
+                  onAddPressed: isReadOnly ? null : _pickAttachment,
                   isUploading: _isSaving,
                 ),
                 const SizedBox(height: 12),
@@ -3259,15 +3808,38 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                       addProfileItem(m.dropdownId, m.name, m.isFromInvitation);
                     }
 
-                    return DropdownButtonFormField<String?>(
-                      initialValue: _selectedAssignedTo != null && seenIds.contains(_selectedAssignedTo) ? _selectedAssignedTo : null,
-                      decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.person_outline),
-                        labelText: 'admin.task_field_assign_to'.tr(),
-                        border: OutlineInputBorder(),
-                      ),
-                      items: dropdownItems,
-                      onChanged: (v) => setState(() => _selectedAssignedTo = v),
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        DropdownButtonFormField<String?>(
+                          initialValue: _selectedAssignedTo != null && seenIds.contains(_selectedAssignedTo) ? _selectedAssignedTo : null,
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.person_outline),
+                            labelText: 'admin.task_field_assign_to'.tr(),
+                            border: OutlineInputBorder(),
+                          ),
+                          items: dropdownItems,
+                          onChanged: isReadOnly
+                              ? null
+                              : (v) => setState(() {
+                                    _selectedAssignedTo = v;
+                                    if (v != null && v.isNotEmpty) {
+                                      _selectedAdditionalUserIds =
+                                          _selectedAdditionalUserIds.where((id) => id != v).toList();
+                                    }
+                                  }),
+                        ),
+                        const SizedBox(height: 12),
+                        _buildAdditionalAssigneesChips(
+                          context: context,
+                          members: staffMembers,
+                          mainAssigneeId: _selectedAssignedTo,
+                          selectedIds: _selectedAdditionalUserIds,
+                          onChanged: (v) => setState(() => _selectedAdditionalUserIds = v),
+                          isReadOnly: isReadOnly,
+                        ),
+                      ],
                     );
                   },
                   loading: () => const LinearProgressIndicator(),
@@ -3283,13 +3855,15 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                     border: OutlineInputBorder(),
                     suffixIcon: Icon(Icons.calendar_today_outlined),
                   ),
-                  onTap: () async {
-                    final initial = _parseDateTime(_dueDateController.text);
-                    final result = await _showDateTimePicker(context, initial: initial);
-                    if (result != null && mounted) {
-                      setState(() => _dueDateController.text = result);
-                    }
-                  },
+                  onTap: isReadOnly
+                      ? null
+                      : () async {
+                          final initial = _parseDateTime(_dueDateController.text);
+                          final result = await _showDateTimePicker(context, initial: initial);
+                          if (result != null && mounted) {
+                            setState(() => _dueDateController.text = result);
+                          }
+                        },
                   validator: (v) =>
                       (v == null || v.trim().isEmpty) ? 'admin.validation_datetime_required_short'.tr() : null,
                 ),
@@ -3306,7 +3880,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                             child: Text(_getLocalizedStatus(s)),
                           ))
                       .toList(),
-                  onChanged: (v) => setState(() => _status = v ?? _systemStatuses.first),
+                  onChanged: isReadOnly ? null : (v) => setState(() => _status = v ?? _systemStatuses.first),
                 ),
             ],
           ),
@@ -3315,8 +3889,10 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
       actions: [
         TextButton(
           onPressed: _isSaving ? null : () => Navigator.pop(context),
-          child: Text('common.cancel'.tr()),
+          child: Text(isReadOnly ? 'common.close'.tr() : 'common.cancel'.tr()),
         ),
+        // U dokončeného úkolu zobrazíme Uložit i při isReadOnly, pokud je povoleno přeřazení (oprava vazby na klienta/byt).
+        if (!isReadOnly || isReassignEnabled) ...[
         const SizedBox(width: 8),
         FilledButton(
           onPressed: _isSaving ? null : _onSave,
@@ -3337,6 +3913,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                 )
               : Text('common.save'.tr()),
         ),
+        ],
       ],
     );
   }

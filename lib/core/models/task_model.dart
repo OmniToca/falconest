@@ -13,6 +13,7 @@ class TaskModel {
     this.customLocation,
     this.customTitle,
     this.assignedTo,
+    this.assignedUserIds = const [],
     required this.scheduledStart,
     required this.status,
     this.photoUrl,
@@ -41,6 +42,8 @@ class TaskModel {
   /// Název úkolu, např. "Transfer letiště", když nemáme název bytu.
   final String? customTitle;
   final String? assignedTo;
+  /// Další přiřazení pracovníci – pro sdílení úkolu a dělení odměny.
+  final List<String> assignedUserIds;
   final DateTime scheduledStart;
   final String status;
   final String? photoUrl;
@@ -80,6 +83,18 @@ class TaskModel {
       return s.isEmpty ? null : s;
     }
 
+    List<String> _parseStringList(dynamic raw) {
+      if (raw == null) return const [];
+      if (raw is List) {
+        return raw
+            .map((e) => e?.toString().trim())
+            .where((s) => s != null && s!.isNotEmpty)
+            .cast<String>()
+            .toList();
+      }
+      return const [];
+    }
+
     final rawStart = json['scheduled_start'] ?? json['due_date'];
 
     return TaskModel(
@@ -91,6 +106,7 @@ class TaskModel {
       customLocation: optString(json['custom_location']),
       customTitle: optString(json['custom_title']),
       assignedTo: optString(json['assigned_to']),
+      assignedUserIds: _parseStringList(json['assigned_user_ids']),
       scheduledStart: parseRequiredDateTime(rawStart),
       status: (json['status'] as String?)?.trim() ?? 'pending',
       photoUrl: optString(json['photo_url']),
@@ -117,6 +133,7 @@ class TaskModel {
       if (customLocation != null) 'custom_location': customLocation,
       if (customTitle != null) 'custom_title': customTitle,
       if (assignedTo != null) 'assigned_to': assignedTo,
+      if (assignedUserIds.isNotEmpty) 'assigned_user_ids': assignedUserIds,
       'scheduled_start': scheduledStart.toIso8601String(),
       'status': status,
       if (photoUrl != null) 'photo_url': photoUrl,
@@ -135,6 +152,14 @@ class TaskModel {
 
   factory TaskModel.fromMap(Map<String, dynamic> map) => TaskModel.fromJson(map);
 
+  /// Unikátní spojení assignedTo (pokud existuje) a prvků z assignedUserIds.
+  List<String> get allAssignees {
+    final ids = <String>{};
+    if (assignedTo != null && assignedTo!.isNotEmpty) ids.add(assignedTo!);
+    ids.addAll(assignedUserIds);
+    return ids.toList();
+  }
+
   TaskModel copyWith({
     String? id,
     String? tenantId,
@@ -144,6 +169,7 @@ class TaskModel {
     String? customLocation,
     String? customTitle,
     String? assignedTo,
+    List<String>? assignedUserIds,
     DateTime? scheduledStart,
     String? status,
     String? photoUrl,
@@ -167,6 +193,7 @@ class TaskModel {
       customLocation: customLocation ?? this.customLocation,
       customTitle: customTitle ?? this.customTitle,
       assignedTo: assignedTo ?? this.assignedTo,
+      assignedUserIds: assignedUserIds ?? this.assignedUserIds,
       scheduledStart: scheduledStart ?? this.scheduledStart,
       status: status ?? this.status,
       photoUrl: photoUrl ?? this.photoUrl,

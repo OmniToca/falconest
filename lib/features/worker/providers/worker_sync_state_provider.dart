@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/providers/sync_status_provider.dart';
 import 'package:falconest/features/worker/data/services/worker_sync_service.dart';
+import 'package:falconest/features/worker/providers/worker_sync_state_drift_stub.dart'
+    if (dart.library.io) 'package:falconest/features/worker/providers/worker_sync_state_drift_io.dart' as drift_sync;
 
 /// Stav synchronizace – pro UI upozornění na selhání push do Supabase.
 ///
@@ -36,6 +38,7 @@ class WorkerSyncStateNotifier extends StateNotifier<String?> {
         workerId,
         tenantId,
         onSyncError: reportSyncError,
+        driftRepos: drift_sync.getDriftReposForSync(_ref) as dynamic,
       );
     } finally {
       _ref.read(syncInProgressProvider.notifier).state = false;
@@ -52,5 +55,6 @@ final workerSyncStateProvider =
 /// Počet záznamů čekajících na odeslání (úkoly + rezervace s syncStatus pending).
 final workerPendingSyncCountProvider =
     FutureProvider.family<int, String>((ref, tenantId) async {
-  return WorkerSyncService.getPendingSyncCount(tenantId);
+  final driftRepos = drift_sync.getDriftReposForSync(ref);
+  return WorkerSyncService.getPendingSyncCount(tenantId, driftRepos: driftRepos);
 });

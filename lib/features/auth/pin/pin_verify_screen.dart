@@ -92,19 +92,29 @@ class _PinVerifyScreenState extends ConsumerState<PinVerifyScreen>
     }
   }
 
+  /// Odložená navigace – zabraňuje race condition: AuthNotifier/GoRouter redirect
+  /// běží současně s manuálním context.go(). Future.delayed( zero) spustí navigaci
+  /// až po dokončení aktuálního Riverpod build/redirect cyklu.
   void _navigateToApp() {
     final authNotifier = ref.read(authNotifierProvider);
     final state = authNotifier.state;
 
+    String route;
     if (state.isSuperAdmin) {
-      context.go('/super-admin');
+      route = '/super-admin';
     } else if (state.isAdminOrManager) {
-      context.go('/admin');
+      route = '/admin';
     } else if (state.isPropertyOwner) {
-      context.go('/owner');
+      route = '/owner';
     } else {
-      context.go('/worker');
+      route = '/worker';
     }
+
+    Future.delayed(Duration.zero, () {
+      if (mounted) {
+        context.go(route);
+      }
+    });
   }
 
   /// Odhlásí uživatele, smaže PIN a přesměruje na přihlášení.

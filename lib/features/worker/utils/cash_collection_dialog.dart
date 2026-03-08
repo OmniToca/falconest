@@ -28,6 +28,7 @@ Future<bool?> maybeShowCashCollectionDialog(
   bool forceShowForExtraOnly = false,
   bool completeTaskOnConfirm = true,
   List<String>? mediaUrls,
+  List<String>? localPhotoPaths,
 }) async {
   final meta = detail?.metadata;
   if (meta == null || meta is! Map) {
@@ -55,6 +56,7 @@ Future<bool?> maybeShowCashCollectionDialog(
       onCompleted: onCompleted,
       completeTaskOnConfirm: completeTaskOnConfirm,
       mediaUrls: mediaUrls,
+      localPhotoPaths: localPhotoPaths,
     ),
   );
 }
@@ -70,6 +72,7 @@ class _CashCollectionDialogContent extends StatefulWidget {
     required this.onCompleted,
     this.completeTaskOnConfirm = true,
     this.mediaUrls,
+    this.localPhotoPaths,
   });
 
   final double plannedAmount;
@@ -80,6 +83,7 @@ class _CashCollectionDialogContent extends StatefulWidget {
   final VoidCallback onCompleted;
   final bool completeTaskOnConfirm;
   final List<String>? mediaUrls;
+  final List<String>? localPhotoPaths;
 
   @override
   State<_CashCollectionDialogContent> createState() => _CashCollectionDialogContentState();
@@ -124,6 +128,7 @@ class _CashCollectionDialogContentState extends State<_CashCollectionDialogConte
         amount: total,
         tenantId: tenantId,
         profileId: profileId,
+        expectedAmount: widget.plannedAmount > 0 ? widget.plannedAmount : null,
       );
       if (widget.completeTaskOnConfirm) {
         await widget.ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
@@ -131,6 +136,8 @@ class _CashCollectionDialogContentState extends State<_CashCollectionDialogConte
               'completed',
               completedAt: DateTime.now().toUtc(),
               mediaUrls: widget.mediaUrls,
+              localPhotoPaths: widget.localPhotoPaths,
+              existingMediaUrls: widget.mediaUrls ?? [],
             );
       }
       if (mounted) Navigator.of(context).pop(true);
@@ -172,7 +179,7 @@ class _CashCollectionDialogContentState extends State<_CashCollectionDialogConte
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             decoration: InputDecoration(
               labelText: 'worker.cash_collection_extra_label'.tr(),
-              hintText: '0',
+              hintText: 'common.zero_placeholder'.tr(),
               border: const OutlineInputBorder(),
             ),
           ),
@@ -209,6 +216,9 @@ class _CashCollectionDialogContentState extends State<_CashCollectionDialogConte
                         'completed',
                         completedAt: DateTime.now().toUtc(),
                         metadataOverlay: {'cash_collection_failed': true},
+                        mediaUrls: widget.mediaUrls,
+                        localPhotoPaths: widget.localPhotoPaths,
+                        existingMediaUrls: widget.mediaUrls ?? [],
                       );
                 }
                 if (mounted) Navigator.of(context).pop(true);
