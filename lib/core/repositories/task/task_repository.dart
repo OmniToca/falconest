@@ -3,6 +3,7 @@
 /// Odděluje datovou vrstvu od UI. Na webu implementace čte ze Supabase,
 /// na mobilu z lokální Isar databáze (offline-first).
 /// Doménový model WorkerTask nemá žádnou závislost na Isar.
+library;
 
 /// Model úkolu pro Worker – platformově nezávislý DTO.
 class WorkerTask {

@@ -1,6 +1,7 @@
 /// IO implementace – načtení měny tenanta z Drift (mobil/desktop).
 ///
 /// Isar odstraněn – Drift (SQLite) zajišťuje stabilitu na iOS.
+library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/database/drift/database_provider.dart';

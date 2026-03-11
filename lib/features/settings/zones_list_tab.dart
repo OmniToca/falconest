@@ -63,7 +63,7 @@ class ZonesListTab extends ConsumerWidget {
     );
     if (confirmed != true || !context.mounted) return;
     try {
-      await ZonesRepository.softDelete(zone.id);
+      await ZonesRepository.softDelete(zone.id, zone.tenantId);
       if (!context.mounted) return;
       ref.invalidate(zonesProvider);
       ScaffoldMessenger.of(context).showSnackBar(

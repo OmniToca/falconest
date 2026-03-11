@@ -115,6 +115,10 @@ class BillingPdfService {
     final labelCompleted = labels['completed_label'] ?? 'Completed: ';
     final labelDate = labels['date_label'] ?? 'Date: ';
     final fallbackClientName = labels['fallback_client_name'] ?? 'client';
+    final labelMonthlyManagementFee = labels['monthly_management_fee'] ?? 'Monthly management fee';
+    final labelTaskPrice = labels['task_price_label'] ?? 'Price';
+    final labelGuestPaid = labels['task_guest_paid_label'] ?? 'Guest paid';
+    final labelShortfallDue = labels['task_shortfall_due_label'] ?? 'Balance due';
 
     // Hlavička
     bodyChildren.add(
@@ -163,11 +167,33 @@ class BillingPdfService {
         style: pw.TextStyle(font: textStyle.font, fontSize: 9, color: PdfColors.grey700),
       ));
     }
+    if (group.monthlyManagementFee > 0) {
+      bodyChildren.add(pw.SizedBox(height: 2));
+      bodyChildren.add(pw.Text(
+        '$labelMonthlyManagementFee: +${_formatPrice(group.monthlyManagementFee)} $tenantCurrency',
+        style: pw.TextStyle(font: textStyle.font, fontSize: 9, color: PdfColors.grey700),
+      ));
+    }
     bodyChildren.add(pw.SizedBox(height: 16));
     bodyChildren.add(pw.Divider(thickness: 1));
     bodyChildren.add(pw.SizedBox(height: 8));
     bodyChildren.add(pw.Text(labelServices, style: boldStyle));
     bodyChildren.add(pw.SizedBox(height: 12));
+
+    // Řádek položky: Měsíční paušál za správu (pokud > 0)
+    if (group.monthlyManagementFee > 0) {
+      bodyChildren.add(pw.Padding(
+        padding: const pw.EdgeInsets.only(bottom: 8),
+        child: pw.Row(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+          children: [
+            pw.Text(labelMonthlyManagementFee, style: textStyle),
+            pw.Text('${_formatPrice(group.monthlyManagementFee)} $tenantCurrency', style: boldStyle),
+          ],
+        ),
+      ));
+      bodyChildren.add(pw.SizedBox(height: 8));
+    }
 
     final pdfPayerLabels = payerLabels ??
         {'owner': 'Owner – invoice', 'guest': 'Guest – cash', 'client': 'Client – invoice'};
@@ -207,16 +233,24 @@ class BillingPdfService {
               children: _taskToPdfWidgets(
                   task, imageCache, textStyle, pdfPayerLabels, pdfPayerPrefix,
                   labelScheduled: labelScheduled, labelCompleted: labelCompleted,
-                  tenantCurrency: tenantCurrency),
+                  tenantCurrency: tenantCurrency,
+                  labelTaskPrice: labelTaskPrice, labelGuestPaid: labelGuestPaid,
+                  labelShortfallDue: labelShortfallDue),
             ),
           ),
         );
       }
-      // Mezisoučet rezervace – obrat, uhrado hosty, k úhradě
+      // Mezisoučet rezervace – obrat, skutečně uhrazeno hosty, k úhradě (stejná logika jako BillingGroup.totalPaidByGuest)
       final resTotal = tasks.fold<double>(0, (s, t) => s + t.chargedPrice);
-      final resGuestPaid = tasks
-          .where((t) => t.payerType == 'guest')
-          .fold<double>(0, (s, t) => s + t.chargedPrice);
+      final resGuestPaid = tasks.where((t) => t.payerType == 'guest').fold<double>(0, (s, t) {
+        final price = t.chargedPrice;
+        if (t.isShortfallResolved &&
+            t.cashShortfallMissingAmount != null &&
+            t.cashShortfallMissingAmount! > 0) {
+          return s + (price - t.cashShortfallMissingAmount!);
+        }
+        return s + price;
+      });
       final resToPay = resTotal - resGuestPaid;
       bodyChildren.add(pw.Padding(
         padding: const pw.EdgeInsets.only(left: 12, top: 8, bottom: 4),
@@ -260,7 +294,9 @@ class BillingPdfService {
               children: _taskToPdfWidgets(
                   task, imageCache, textStyle, pdfPayerLabels, pdfPayerPrefix,
                   labelScheduled: labelScheduled, labelCompleted: labelCompleted,
-                  tenantCurrency: tenantCurrency),
+                  tenantCurrency: tenantCurrency,
+                  labelTaskPrice: labelTaskPrice, labelGuestPaid: labelGuestPaid,
+                  labelShortfallDue: labelShortfallDue),
             ),
           ),
         );
@@ -314,6 +350,9 @@ class BillingPdfService {
     required String labelScheduled,
     required String labelCompleted,
     required String tenantCurrency,
+    String labelTaskPrice = 'Price',
+    String labelGuestPaid = 'Guest paid',
+    String labelShortfallDue = 'Balance due',
   }) {
     final widgets = <pw.Widget>[];
     final dateFormat = DateFormat('dd.MM.yyyy HH:mm');
@@ -330,18 +369,40 @@ class BillingPdfService {
       fontSize: 9,
       color: PdfColors.grey700,
     );
+    final isGuestWithResolvedShortfall = task.payerType == 'guest' &&
+        task.isShortfallResolved &&
+        task.cashShortfallMissingAmount != null &&
+        task.cashShortfallMissingAmount! > 0;
+    final priceChildren = <pw.Widget>[
+      pw.Text(task.title, style: textStyle),
+      pw.SizedBox(height: 2),
+      pw.Text(timesLine, style: grayStyle),
+      pw.Text(payerLabel, style: grayStyle),
+    ];
+    if (isGuestWithResolvedShortfall) {
+      final paid = task.chargedPrice - task.cashShortfallMissingAmount!;
+      final due = task.cashShortfallMissingAmount!;
+      priceChildren.add(pw.Text(
+        '$labelTaskPrice: ${_formatPrice(task.chargedPrice)} $tenantCurrency',
+        style: textStyle,
+      ));
+      priceChildren.add(pw.SizedBox(height: 2));
+      priceChildren.add(pw.Text(
+        '$labelGuestPaid: ${_formatPrice(paid)} $tenantCurrency → $labelShortfallDue: ${_formatPrice(due)} $tenantCurrency',
+        style: grayStyle,
+      ));
+    } else {
+      priceChildren.add(pw.Text(
+        '${_formatPrice(task.chargedPrice)} $tenantCurrency',
+        style: textStyle,
+      ));
+    }
     widgets.add(
       pw.Padding(
         padding: const pw.EdgeInsets.only(left: 12, bottom: 4),
         child: pw.Column(
           crossAxisAlignment: pw.CrossAxisAlignment.start,
-          children: [
-            pw.Text(task.title, style: textStyle),
-            pw.SizedBox(height: 2),
-            pw.Text(timesLine, style: grayStyle),
-            pw.Text(payerLabel, style: grayStyle),
-            pw.Text('${task.chargedPrice.toStringAsFixed(2)} $tenantCurrency', style: textStyle),
-          ],
+          children: priceChildren,
         ),
       ),
     );

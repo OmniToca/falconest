@@ -10,6 +10,7 @@ import 'package:falconest/features/admin/screens/admin_settlements_screen.dart';
 import 'package:falconest/features/admin/screens/finance_billing_screen.dart';
 import 'package:falconest/features/admin/premium_upsell_dialog.dart';
 import 'package:falconest/features/admin/providers/finance_cash_provider.dart';
+import 'package:falconest/features/admin/providers/finance_tab_provider.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
 import 'package:falconest/features/admin/widgets/wallet_detail_modal.dart';
 
@@ -46,6 +47,17 @@ class _FinanceDashboardScreenState extends ConsumerState<FinanceDashboardScreen>
     ref.watch(activeModuleKeysProvider); // Rebuild při aktivaci/deaktivaci modulů
     final hasExport = isModuleActive(ref, 'finance_export');
     final hasSettlements = isModuleActive(ref, 'settlements');
+    final requestedSubTab = ref.watch(financeRequestedSubTabProvider);
+    if (requestedSubTab != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (requestedSubTab >= 0 &&
+            requestedSubTab < _tabController.length &&
+            _tabController.index != requestedSubTab) {
+          _tabController.animateTo(requestedSubTab);
+        }
+        ref.read(financeRequestedSubTabProvider.notifier).state = null;
+      });
+    }
 
     return Scaffold(
       body: Column(

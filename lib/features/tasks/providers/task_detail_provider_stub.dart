@@ -1,6 +1,7 @@
 /// Stub pro task_detail_provider – při nespecifikované platformě.
 ///
 /// Volá se jen když ani dart.library.html ani dart.library.io nejsou dostupné.
+library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/features/tasks/models/task_detail_data.dart';

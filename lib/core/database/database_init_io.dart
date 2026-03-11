@@ -3,6 +3,8 @@
 /// Isar byl odstraněn – nestabilní na iOS ("Collection id is invalid").
 /// Drift (SQLite) se otevře při prvním přístupu přes driftDatabaseProvider.
 /// Tento init pouze zajišťuje, že path_provider je připraven.
+library;
+
 import 'package:path_provider/path_provider.dart';
 
 Future<void> initDatabase() async {

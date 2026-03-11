@@ -2,6 +2,7 @@
 ///
 /// Isar byl kompletně odstraněn – nestabilní na iOS ("Collection id is invalid").
 /// Všechna data pro Worker UI jsou nyní v relační SQLite databázi.
+library;
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
@@ -36,10 +37,8 @@ class WorkerSyncService {
       final futureLimit = now.add(const Duration(days: 14)).toIso8601String();
 
       // PROČ: Worker vidí úkol, pokud je v assigned_to NEBO v assigned_user_ids.
-      final tasksData = await SupabaseService.client
-          .from('tasks')
+      final tasksData = await SupabaseService.safeFrom('tasks', tenantId)
           .select('id, tenant_id, apartment_id, client_id, custom_location, custom_title, reference_number, reservation_id, assigned_to, assigned_user_ids, title, description, task_type, scheduled_start, status, photo_url, metadata, started_at, completed_at, invoiced_at')
-          .eq('tenant_id', tenantId)
           .or('assigned_to.eq.$workerId,assigned_user_ids.cs.{$workerId}')
           .neq('status', 'pending')
           .isFilter('deleted_at', null)
@@ -69,32 +68,29 @@ class WorkerSyncService {
 
       List<dynamic> apartmentsData = [];
       if (apartmentIds.isNotEmpty) {
-        apartmentsData = await SupabaseService.client
-            .from('apartments')
+        apartmentsData = await SupabaseService.safeFrom('apartments', tenantId)
             .select('id, tenant_id, name, address, code, keybox, owner_notes')
             .inFilter('id', apartmentIds.toList())
             .isFilter('deleted_at', null);
-        apartmentsData = apartmentsData is List ? List<dynamic>.from(apartmentsData) : [];
+        apartmentsData = List<dynamic>.from(apartmentsData);
       }
 
       List<dynamic> reservationsData = [];
       if (reservationIds.isNotEmpty) {
-        reservationsData = await SupabaseService.client
-            .from('reservations')
+        reservationsData = await SupabaseService.safeFrom('reservations', tenantId)
             .select('id, tenant_id, reference_number, status, guest_name, guest_phone')
             .inFilter('id', reservationIds.toList())
             .isFilter('deleted_at', null);
-        reservationsData = reservationsData is List ? List<dynamic>.from(reservationsData) : [];
+        reservationsData = List<dynamic>.from(reservationsData);
       }
 
       List<dynamic> clientsData = [];
       if (clientIds.isNotEmpty) {
-        clientsData = await SupabaseService.client
-            .from('clients')
+        clientsData = await SupabaseService.safeFrom('clients', tenantId)
             .select('id, tenant_id, name, phone')
             .inFilter('id', clientIds.toList())
             .isFilter('deleted_at', null);
-        clientsData = clientsData is List ? List<dynamic>.from(clientsData) : [];
+        clientsData = List<dynamic>.from(clientsData);
       }
 
       await _clearAndWrite(
@@ -125,7 +121,7 @@ class WorkerSyncService {
           .select('id, currency')
           .eq('id', tenantId)
           .maybeSingle();
-      if (tenantRes == null || tenantRes is! Map) return;
+      if (tenantRes == null) return;
       final map = Map<String, dynamic>.from(tenantRes as Map);
       if (map.isEmpty) return;
       await driftRepos.tenant.upsertFromSupabaseMap(map);
@@ -142,7 +138,7 @@ class WorkerSyncService {
           .isFilter('deleted_at', null)
           .order('order_index', ascending: true);
 
-      final templatesList = templatesData is List ? List<dynamic>.from(templatesData) : <dynamic>[];
+      final templatesList = List<dynamic>.from(templatesData as List);
 
       await driftRepos.messageTemplate.clearForTenant(tenantId);
       for (final raw in templatesList) {
@@ -302,7 +298,7 @@ class WorkerSyncService {
           } catch (_) {}
         }
 
-        await SupabaseService.client.from('tasks').update(updates).eq('id', supabaseId).eq('tenant_id', tenantId);
+        await SupabaseService.safeFrom('tasks', tenantId).update(updates).eq('id', supabaseId);
         debugPrint('✅ SYNC ÚSPĚCH: Úkol $supabaseId byl odeslán.');
 
         if (hasConflict) {
@@ -333,13 +329,11 @@ class WorkerSyncService {
   /// Stáhne aktuální řádek úkolu ze Supabase (pro Timestamp Merging).
   static Future<Map<String, dynamic>?> _fetchCurrentTaskFromServer(String taskId, String tenantId) async {
     try {
-      final res = await SupabaseService.client
-          .from('tasks')
+      final res = await SupabaseService.safeFrom('tasks', tenantId)
           .select('id, updated_at, status, description, metadata, scheduled_start, title, task_type')
           .eq('id', taskId)
-          .eq('tenant_id', tenantId)
           .maybeSingle();
-      if (res == null || res is! Map) return null;
+      if (res == null) return null;
       return Map<String, dynamic>.from(res as Map);
     } catch (_) {
       return null;
@@ -401,11 +395,9 @@ class WorkerSyncService {
 
       debugPrint('🔄 SYNC: Rezervace $supabaseId → status: ${res.status}');
       try {
-        await SupabaseService.client
-            .from('reservations')
+        await SupabaseService.safeFrom('reservations', tenantId)
             .update({'status': res.status})
-            .eq('id', supabaseId)
-            .eq('tenant_id', tenantId);
+            .eq('id', supabaseId);
         debugPrint('✅ SYNC ÚSPĚCH: Rezervace $supabaseId byla odeslána.');
 
         await driftRepos.reservation.markReservationSynced(res);

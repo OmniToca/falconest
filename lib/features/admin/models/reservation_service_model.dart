@@ -57,11 +57,15 @@ class ReservationServiceRow {
     final note = (json['custom_note'] as String?)?.trim();
     final flightNum = (json['flight_number'] as String?)?.trim();
     final (parsedFlight, _) = parseFlightFromCustomNote(note);
+    final rawId = (json['id'] as String?)?.trim() ?? '';
+    final rawTenantId = (json['tenant_id'] as String?)?.trim() ?? '';
+    final rawReservationId = (json['reservation_id'] as String?)?.trim() ?? '';
+    final rawApartmentServiceId = (json['apartment_service_id'] as String?)?.trim() ?? '';
     return ReservationServiceRow(
-      id: json['id'] as String? ?? '',
-      tenantId: json['tenant_id'] as String? ?? '',
-      reservationId: json['reservation_id'] as String? ?? '',
-      apartmentServiceId: json['apartment_service_id'] as String? ?? '',
+      id: rawId,
+      tenantId: rawTenantId,
+      reservationId: rawReservationId,
+      apartmentServiceId: rawApartmentServiceId,
       chargedPrice: price,
       customNote: (note != null && note.isNotEmpty) ? note : null,
       flightNumber: (flightNum != null && flightNum.isNotEmpty) ? flightNum : parsedFlight,

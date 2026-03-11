@@ -2,6 +2,7 @@
 ///
 /// Volání getTaskRepository() vyhodí výjimku. Používá se jako fallback
 /// při podmíněném importu (např. při testech bez platformy).
+library;
 import 'package:falconest/core/repositories/task/task_repository.dart';
 
 ITaskRepository getTaskRepository() =>

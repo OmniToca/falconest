@@ -1,6 +1,5 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -45,7 +44,7 @@ class AddReservationDialog extends ConsumerStatefulWidget {
       _AddReservationDialogState();
 }
 
-class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
+class _AddReservationDialogState extends ConsumerState<AddReservationDialog> with SingleTickerProviderStateMixin {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _guestNameController;
   late final TextEditingController _guestPhoneController;
@@ -69,6 +68,8 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
   /// Tab 2: stav služeb; naplní se až po _savedReservationId z _loadServicesStateForSavedReservation.
   Map<String, ReservationServiceEditState> _servicesState = {};
   bool _servicesLoaded = false;
+  /// PROČ: Zabrání vícenásobnému spuštění loadu (build by jinak mohl spamovat DB).
+  bool _servicesLoadInProgress = false;
 
   @override
   void initState() {
@@ -110,54 +111,20 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
     super.dispose();
   }
 
-  /// Progressive Save: při kliknutí na záložku Služby bez ID spustí validaci a uložení, pak přepne na tab 1.
-  Future<void> _saveAndThenGoToTab1() async {
-    final newId = await _performInsertReservation();
-    if (!mounted) return;
-    if (newId != null && newId.isNotEmpty) {
-      setState(() {
-        _savedReservationId = newId;
-        _servicesLoaded = false;
-      });
-      _tabController.animateTo(1);
-    }
-  }
-
   /// Načte služby uložené rezervace (reservation_services) a sloučí s nabídkou bytu do _servicesState.
   /// Volá se z Tabu 2 po Progressive Save, když už máme _savedReservationId.
+  /// PROČ try/catch/finally: Při výjimce nebo timeoutu musí finally vždy nastavit _servicesLoaded = true,
+  /// aby se kolečko přestalo točit a dispečer mohl služby doplnit ručně (fallback formulář).
   Future<void> _loadServicesStateForSavedReservation(List<ApartmentServiceOption> options) async {
-    final tenantId = widget.ref.read(authNotifierProvider).tenantIdForData;
-    if (tenantId == null || tenantId.isEmpty || _savedReservationId == null) {
-      if (!mounted) return;
-      setState(() {
-        _servicesState = {
-          for (final o in options)
-            o.apartmentServiceId: ReservationServiceEditState(
-              apartmentServiceId: o.apartmentServiceId,
-              serviceName: o.serviceName,
-              defaultPriceEur: o.defaultPriceEur,
-              enabled: o.isMandatory,
-              chargedPriceEur: o.defaultPriceEur,
-              customNote: null,
-              flightNumber: null,
-              payerType: o.payerType,
-              requiresPhoto: null,
-            ),
-        };
-        _servicesLoaded = true;
-      });
-      return;
-    }
-    final rows = await fetchByReservationId(_savedReservationId!, tenantId);
-    final byApartmentServiceId = {for (final row in rows) row.apartmentServiceId: row};
-    if (!mounted) return;
-    setState(() {
-      _servicesState = {
-        for (final o in options)
-          o.apartmentServiceId: () {
-            final row = byApartmentServiceId[o.apartmentServiceId];
-            if (row == null) {
-              return ReservationServiceEditState(
+    if (mounted) setState(() => _servicesLoadInProgress = true);
+    try {
+      final tenantId = widget.ref.read(authNotifierProvider.select((s) => s.tenantIdForData));
+      if (tenantId == null || tenantId.isEmpty || _savedReservationId == null) {
+        if (!mounted) return;
+        setState(() {
+          _servicesState = {
+            for (final o in options)
+              o.apartmentServiceId: ReservationServiceEditState(
                 apartmentServiceId: o.apartmentServiceId,
                 serviceName: o.serviceName,
                 defaultPriceEur: o.defaultPriceEur,
@@ -167,27 +134,68 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
                 flightNumber: null,
                 payerType: o.payerType,
                 requiresPhoto: null,
+              ),
+          };
+          _servicesLoaded = true;
+          _servicesLoadInProgress = false;
+        });
+        return;
+      }
+      const loadTimeout = Duration(seconds: 10);
+      final rows = await fetchByReservationId(_savedReservationId!, tenantId).timeout(
+        loadTimeout,
+        onTimeout: () => <ReservationServiceRow>[],
+      );
+      final byApartmentServiceId = {for (final row in rows) row.apartmentServiceId: row};
+      if (!mounted) return;
+      setState(() {
+        _servicesState = {
+          for (final o in options)
+            o.apartmentServiceId: () {
+              final row = byApartmentServiceId[o.apartmentServiceId];
+              if (row == null) {
+                return ReservationServiceEditState(
+                  apartmentServiceId: o.apartmentServiceId,
+                  serviceName: o.serviceName,
+                  defaultPriceEur: o.defaultPriceEur,
+                  enabled: o.isMandatory,
+                  chargedPriceEur: o.defaultPriceEur,
+                  customNote: null,
+                  flightNumber: null,
+                  payerType: o.payerType,
+                  requiresPhoto: null,
+                );
+              }
+              final payerType = (row.payerType == 'owner' || row.payerType == 'guest') ? row.payerType! : o.payerType;
+              final (parsedFlight, parsedNoteRest) = parseFlightFromCustomNote(row.customNote);
+              final flight = row.flightNumber ?? parsedFlight;
+              final noteRest = row.flightNumber != null && row.flightNumber!.isNotEmpty ? row.customNote : parsedNoteRest;
+              return ReservationServiceEditState(
+                apartmentServiceId: o.apartmentServiceId,
+                serviceName: o.serviceName,
+                defaultPriceEur: o.defaultPriceEur,
+                enabled: true,
+                chargedPriceEur: row.chargedPrice?.toDouble(),
+                customNote: noteRest,
+                flightNumber: flight,
+                payerType: payerType,
+                requiresPhoto: row.requiresPhoto,
               );
-            }
-            final payerType = (row.payerType == 'owner' || row.payerType == 'guest') ? row.payerType! : o.payerType;
-            final (parsedFlight, parsedNoteRest) = parseFlightFromCustomNote(row.customNote);
-            final flight = row.flightNumber ?? parsedFlight;
-            final noteRest = row.flightNumber != null && row.flightNumber!.isNotEmpty ? row.customNote : parsedNoteRest;
-            return ReservationServiceEditState(
-              apartmentServiceId: o.apartmentServiceId,
-              serviceName: o.serviceName,
-              defaultPriceEur: o.defaultPriceEur,
-              enabled: true,
-              chargedPriceEur: row.chargedPrice?.toDouble(),
-              customNote: noteRest,
-              flightNumber: flight,
-              payerType: payerType,
-              requiresPhoto: row.requiresPhoto,
-            );
-          }(),
-      };
-      _servicesLoaded = true;
-    });
+            }(),
+        };
+        _servicesLoaded = true;
+      });
+    } catch (e, st) {
+      debugPrint('_loadServicesStateForSavedReservation ERROR: $e');
+      debugPrint('_loadServicesStateForSavedReservation STACK: $st');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _servicesLoaded = true;
+          _servicesLoadInProgress = false;
+        });
+      }
+    }
   }
 
   /// Provede validaci, vložení rezervace a uložení služeb. Vrací newId při úspěchu, null při chybě (chyby zobrazí SnackBar).
@@ -289,8 +297,8 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
           departureTimeUtc = DateTime(_dateRange!.end.year, _dateRange!.end.month, _dateRange!.end.day, h, m, 0).toUtc();
         }
       }
-      if (arrivalTimeUtc == null) arrivalTimeUtc = DateTime(_dateRange!.start.year, _dateRange!.start.month, _dateRange!.start.day, 15, 0, 0).toUtc();
-      if (departureTimeUtc == null) departureTimeUtc = DateTime(_dateRange!.end.year, _dateRange!.end.month, _dateRange!.end.day, 10, 0, 0).toUtc();
+      arrivalTimeUtc ??= DateTime(_dateRange!.start.year, _dateRange!.start.month, _dateRange!.start.day, 15, 0, 0).toUtc();
+      departureTimeUtc ??= DateTime(_dateRange!.end.year, _dateRange!.end.month, _dateRange!.end.day, 10, 0, 0).toUtc();
 
       final payload = <String, dynamic>{
         'tenant_id': tenantId,
@@ -309,11 +317,16 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
         'internal_note': _internalNoteController.text.trim().isEmpty ? null : _internalNoteController.text.trim(),
       };
 
-      final res = await SupabaseService.client.from('reservations').insert(payload).select('id').single();
+      final res = await SupabaseService.safeFrom('reservations', tenantId).insert(payload).select('id').single();
       final newId = res['id'] as String?;
       if (newId == null || newId.isEmpty) throw Exception('Insert reservations nevrátil id');
 
       await saveForReservation(reservationId: newId, tenantId: tenantId, states: _servicesState);
+      await ensureMandatoryServicesForReservation(
+        reservationId: newId,
+        tenantId: tenantId,
+        apartmentId: _selectedApartmentId!,
+      );
       return newId;
     } on ReservationCollisionException catch (e) {
       if (!mounted) return null;
@@ -363,8 +376,197 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
     }
   }
 
+  /// Po Progressive Save máme _savedReservationId – hlavní „Uložit“ pak updatuje existující záznam místo druhého INSERTu.
+  /// Kontrola kolize používá [excludeReservationId], aby se ignorovala sama sebe. Vrací true při úspěchu.
+  Future<bool> _performUpdateReservation() async {
+    if (!_formKey.currentState!.validate()) return false;
+    if (_isSaving) return false;
+    if (_savedReservationId == null || _savedReservationId!.isEmpty) return false;
+    if (_selectedApartmentId == null || _selectedApartmentId!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.validation_apartment_required_short'.tr()),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return false;
+    }
+    if (_dateRange == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.reservations_validation_check_in_out'.tr()),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return false;
+    }
+    final startDate = '${_dateRange!.start.year}-${_dateRange!.start.month.toString().padLeft(2, '0')}-${_dateRange!.start.day.toString().padLeft(2, '0')}';
+    final endDate = '${_dateRange!.end.year}-${_dateRange!.end.month.toString().padLeft(2, '0')}-${_dateRange!.end.day.toString().padLeft(2, '0')}';
+    final arrivalParts = _arrivalTimeController.text.trim().split(':');
+    final arrivalH = arrivalParts.length >= 2 ? (int.tryParse(arrivalParts[0]) ?? 15) : 15;
+    final arrivalM = arrivalParts.length >= 2 ? (int.tryParse(arrivalParts[1]) ?? 0) : 0;
+    final newCheckIn = DateTime(_dateRange!.start.year, _dateRange!.start.month, _dateRange!.start.day, arrivalH, arrivalM, 0);
+    final depParts = _departureTimeController.text.trim().split(':');
+    final depH = depParts.length >= 2 ? (int.tryParse(depParts[0]) ?? 10) : 10;
+    final depM = depParts.length >= 2 ? (int.tryParse(depParts[1]) ?? 0) : 0;
+    final newCheckOut = DateTime(_dateRange!.end.year, _dateRange!.end.month, _dateRange!.end.day, depH, depM, 0);
+    if (newCheckOut.isBefore(newCheckIn) || newCheckOut.isAtSameMomentAs(newCheckIn)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.reservations_validation_departure_after_arrival'.tr()),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      return false;
+    }
+
+    setState(() => _isSaving = true);
+    try {
+      final reservations = await widget.ref.read(adminReservationsProvider.future);
+      final apartments = await widget.ref.read(apartmentsFullListProvider.future);
+      final apartmentList = apartments.where((a) => a.id == _selectedApartmentId).toList();
+      final apartment = apartmentList.isEmpty ? null : apartmentList.first;
+      final options = await widget.ref.read(apartmentServicesOptionsProvider(_selectedApartmentId!).future);
+      int extraServiceMinutes = 0;
+      for (final opt in options) {
+        final state = _servicesState[opt.apartmentServiceId];
+        if (state != null && state.enabled) extraServiceMinutes += opt.durationMinutes;
+      }
+      final totalCleaningDuration = (apartment?.standardCleaningDuration ?? 120) + extraServiceMinutes;
+      checkReservationCollision(
+        existingReservations: reservations,
+        apartmentId: _selectedApartmentId!,
+        standardCleaningDuration: totalCleaningDuration,
+        newCheckIn: newCheckIn,
+        newCheckOut: newCheckOut,
+        excludeReservationId: _savedReservationId,
+      );
+
+      final tenantId = widget.ref.read(authNotifierProvider).tenantIdForData;
+      if (tenantId == null || tenantId.isEmpty) throw Exception('CRITICAL: tenantId is null before update!');
+
+      final guestAdults = int.tryParse(_guestAdultsController.text.trim()) ?? 0;
+      final guestChildren = int.tryParse(_guestChildrenController.text.trim()) ?? 0;
+      DateTime? arrivalTimeUtc;
+      final arrivalStr = _arrivalTimeController.text.trim();
+      if (arrivalStr.isNotEmpty) {
+        final parts = arrivalStr.split(':');
+        if (parts.length >= 2) {
+          final h = int.tryParse(parts[0]) ?? 0;
+          final m = int.tryParse(parts[1]) ?? 0;
+          arrivalTimeUtc = DateTime(_dateRange!.start.year, _dateRange!.start.month, _dateRange!.start.day, h, m, 0).toUtc();
+        }
+      }
+      DateTime? departureTimeUtc;
+      final depStr = _departureTimeController.text.trim();
+      if (depStr.isNotEmpty) {
+        final parts = depStr.split(':');
+        if (parts.length >= 2) {
+          final h = int.tryParse(parts[0]) ?? 0;
+          final m = int.tryParse(parts[1]) ?? 0;
+          departureTimeUtc = DateTime(_dateRange!.end.year, _dateRange!.end.month, _dateRange!.end.day, h, m, 0).toUtc();
+        }
+      }
+      arrivalTimeUtc ??= DateTime(_dateRange!.start.year, _dateRange!.start.month, _dateRange!.start.day, 15, 0, 0).toUtc();
+      departureTimeUtc ??= DateTime(_dateRange!.end.year, _dateRange!.end.month, _dateRange!.end.day, 10, 0, 0).toUtc();
+
+      await SupabaseService.safeFrom('reservations', tenantId).update({
+        'apartment_id': _selectedApartmentId,
+        'guest_name': _guestNameController.text.trim().isEmpty ? null : _guestNameController.text.trim(),
+        'guest_phone': _guestPhoneController.text.trim().isEmpty ? null : _guestPhoneController.text.trim(),
+        'reservation_source': _reservationSource,
+        'start_date': startDate,
+        'end_date': endDate,
+        'needs_transfer': false,
+        'status': 'new',
+        'guest_adults': guestAdults,
+        'guest_children': guestChildren,
+        'arrival_time': arrivalTimeUtc.toIso8601String(),
+        'departure_time': departureTimeUtc.toIso8601String(),
+        'internal_note': _internalNoteController.text.trim().isEmpty ? null : _internalNoteController.text.trim(),
+      }).eq('id', _savedReservationId!);
+
+      await saveForReservation(reservationId: _savedReservationId!, tenantId: tenantId, states: _servicesState);
+      await ensureMandatoryServicesForReservation(
+        reservationId: _savedReservationId!,
+        tenantId: tenantId,
+        apartmentId: _selectedApartmentId!,
+      );
+      widget.ref.invalidate(adminReservationsProvider);
+      widget.ref.invalidate(adminTasksProvider);
+      widget.ref.invalidate(planningCalendarAllTasksProvider);
+      widget.ref.invalidate(planningCalendarAllTasksForMonthProvider);
+      return true;
+    } on ReservationCollisionException catch (e) {
+      if (!mounted) return false;
+      showReservationCollisionDialog(
+        context: context,
+        collisionSide: e.collisionSide,
+        suggestedDateTime: e.suggestedDateTime!,
+        onApplyTime: () {
+          if (!mounted || _dateRange == null) return;
+          setState(() {
+            final t = e.suggestedDateTime!;
+            if (e.collisionSide == CollisionSide.checkIn) {
+              _dateRange = DateTimeRange(start: DateTime(t.year, t.month, t.day), end: _dateRange!.end);
+              _arrivalTimeController.text = '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+            } else {
+              _dateRange = DateTimeRange(start: _dateRange!.start, end: DateTime(t.year, t.month, t.day));
+              _departureTimeController.text = '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+            }
+          });
+        },
+      );
+      return false;
+    } on PostgrestException catch (e) {
+      if (!mounted) return false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.reservations_save_error'.tr(namedArgs: {'error': e.message})),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      return false;
+    } catch (e) {
+      if (!mounted) return false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.reservations_save_error'.tr(namedArgs: {'error': e.toString()})),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      return false;
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
   /// [successMessage] – při automatické opravě kolize se zobrazí tento text místo výchozího.
   Future<void> _onSave({String? successMessage}) async {
+    if (_savedReservationId != null && _savedReservationId!.isNotEmpty) {
+      final ok = await _performUpdateReservation();
+      if (!mounted) return;
+      if (ok) {
+        Navigator.of(context).pop();
+        widget.onSaved();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(successMessage ?? 'admin.reservations_saved'.tr()),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
     final newId = await _performInsertReservation();
     if (!mounted) return;
     if (newId != null && newId.isNotEmpty) {
@@ -405,11 +607,10 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
                   controller: _tabController,
                   labelColor: Theme.of(context).colorScheme.primary,
                   onTap: (index) {
-                    if (index == 1 && _savedReservationId == null) {
-                      _saveAndThenGoToTab1();
-                    } else {
-                      _tabController.animateTo(index);
-                    }
+                    // PROČ bez Progressive Save: Při nové rezervaci (bez _savedReservationId) jen přepneme na záložku 2.
+                    // Dříve se volalo _saveAndThenGoToTab1(), což vytvářelo fantomové záznamy v DB při zrušení formuláře.
+                    // Tab 2 zobrazí early-return widget s instrukcemi (uložte rezervaci, pak ji otevřete pro úpravu).
+                    _tabController.animateTo(index);
                   },
                   tabs: [
                     Tab(icon: const Icon(Icons.info_outline), text: 'admin.reservations_tab_stay_details'.tr()),
@@ -688,7 +889,32 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
 
   /// Tab 2: Služby a požadavky. Zobrazuje se až po Progressive Save (máme _savedReservationId).
   /// Načte reservation_services pro uloženou rezervaci a sloučí s nabídkou bytu.
+  ///
+  /// PROČ early return při chybějícím _savedReservationId: U nové rezervace (Add) ještě nemáme ID v DB.
+  /// Volání ref.watch(apartmentServicesOptionsProvider(...)) by vedlo k nekonečnému loading spinneru
+  /// (provider čeká na data vázaná na rezervaci). Zároveň se vyhýbáme „Progressive Save“ na pozadí –
+  /// ten by vytvářel fantomové záznamy v DB, pokud uživatel formulář zruší. Při úpravě (Edit) máme
+  /// vždy widget.reservation.id, takže tento blok se nepoužívá – viz _buildEditTab2ServicesRequests.
   Widget _buildTab2ServicesRequests(BuildContext context) {
+    if (_savedReservationId == null || _savedReservationId!.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.info_outline, size: 48, color: Colors.grey.shade400),
+              const SizedBox(height: 16),
+              Text(
+                'admin.reservation_services_after_save'.tr(),
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 16),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     final apartmentId = _selectedApartmentId ?? '';
     final optionsAsync = widget.ref.watch(apartmentServicesOptionsProvider(apartmentId));
     final preferredCurrency = widget.ref.watch(authNotifierProvider).state.preferredCurrency ?? 'EUR';
@@ -706,7 +932,9 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog> {
         ),
       ),
       data: (options) {
-        if (_savedReservationId != null && !_servicesLoaded && options.isNotEmpty) {
+        if (_savedReservationId != null && !_servicesLoaded && !_servicesLoadInProgress && options.isNotEmpty) {
+          // PROČ: Nastavíme progress hned, aby další build nenaplánoval druhý load (zabrání dvojímu volání DB).
+          setState(() => _servicesLoadInProgress = true);
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _loadServicesStateForSavedReservation(options);
           });
@@ -1081,6 +1309,8 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
   bool _isSaving = false;
   Map<String, ReservationServiceEditState> _servicesState = {};
   bool _servicesLoaded = false;
+  /// PROČ: Zabrání vícenásobnému spuštění loadu (build by jinak mohl spamovat DB).
+  bool _servicesLoadInProgress = false;
 
   @override
   void initState() {
@@ -1132,50 +1362,29 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
   /// Načtení služeb rezervace (Override Pattern Tier 3): načte záznamy z reservation_services
   /// pro tuto rezervaci a sloučí je s nabídkou apartment_services vybraného bytu do _servicesState pro předvyplnění Tabu 2.
   /// tenant_id: Admin použije tenantIdForData, Owner získá z apartmánu (V1_RELEASE_AUDIT).
+  /// PROČ try/catch/finally: Při výjimce nebo timeoutu musí finally vždy nastavit _servicesLoaded = true,
+  /// aby se kolečko přestalo točit a dispečer mohl služby doplnit ručně.
   Future<void> _loadServicesState(List<ApartmentServiceOption> options) async {
-    var tenantId = widget.ref.read(authNotifierProvider).tenantIdForData;
-    if (tenantId == null || tenantId.isEmpty) {
-      // Owner flow: tenant_id z apartmánu rezervace.
-      final aptRes = await SupabaseService.client
-          .from('apartments')
-          .select('tenant_id')
-          .eq('id', widget.reservation.apartmentId)
-          .maybeSingle();
-      tenantId = aptRes?['tenant_id']?.toString();
-    }
-    if (tenantId == null || tenantId.isEmpty) {
-      // PROČ: Bez tenantId nelze načíst reservation_services. Nastavíme _servicesLoaded = true
-      // a vyplníme _servicesState z options, aby se neukazovalo nekonečné kolečko.
-      if (!mounted) return;
-      setState(() {
-        _servicesState = {
-          for (final o in options)
-            o.apartmentServiceId: ReservationServiceEditState(
-              apartmentServiceId: o.apartmentServiceId,
-              serviceName: o.serviceName,
-              defaultPriceEur: o.defaultPriceEur,
-              enabled: o.isMandatory,
-              chargedPriceEur: o.defaultPriceEur,
-              customNote: null,
-              flightNumber: null,
-              payerType: o.payerType,
-              requiresPhoto: null,
-            ),
-        };
-        _servicesLoaded = true;
-      });
-      return;
-    }
-    final rows = await fetchByReservationId(widget.reservation.id, tenantId);
-    final byApartmentServiceId = {for (final row in rows) row.apartmentServiceId: row};
-    if (!mounted) return;
-    setState(() {
-      _servicesState = {
-        for (final o in options)
-          o.apartmentServiceId: () {
-            final row = byApartmentServiceId[o.apartmentServiceId];
-            if (row == null) {
-              return ReservationServiceEditState(
+    if (mounted) setState(() => _servicesLoadInProgress = true);
+    try {
+      var tenantId = widget.ref.read(authNotifierProvider.select((s) => s.tenantIdForData));
+      if (tenantId == null || tenantId.isEmpty) {
+        // Owner flow: tenant_id z apartmánu rezervace.
+        final aptRes = await SupabaseService.client
+            .from('apartments')
+            .select('tenant_id')
+            .eq('id', widget.reservation.apartmentId)
+            .maybeSingle();
+        tenantId = aptRes?['tenant_id']?.toString();
+      }
+      if (tenantId == null || tenantId.isEmpty) {
+        // PROČ: Bez tenantId nelze načíst reservation_services. Nastavíme _servicesLoaded = true
+        // a vyplníme _servicesState z options, aby se neukazovalo nekonečné kolečko.
+        if (!mounted) return;
+        setState(() {
+          _servicesState = {
+            for (final o in options)
+              o.apartmentServiceId: ReservationServiceEditState(
                 apartmentServiceId: o.apartmentServiceId,
                 serviceName: o.serviceName,
                 defaultPriceEur: o.defaultPriceEur,
@@ -1185,31 +1394,72 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
                 flightNumber: null,
                 payerType: o.payerType,
                 requiresPhoto: null,
+              ),
+          };
+          _servicesLoaded = true;
+          _servicesLoadInProgress = false;
+        });
+        return;
+      }
+      const loadTimeout = Duration(seconds: 10);
+      final rows = await fetchByReservationId(widget.reservation.id, tenantId).timeout(
+        loadTimeout,
+        onTimeout: () => <ReservationServiceRow>[],
+      );
+      final byApartmentServiceId = {for (final row in rows) row.apartmentServiceId: row};
+      if (!mounted) return;
+      setState(() {
+        _servicesState = {
+          for (final o in options)
+            o.apartmentServiceId: () {
+              final row = byApartmentServiceId[o.apartmentServiceId];
+              if (row == null) {
+                return ReservationServiceEditState(
+                  apartmentServiceId: o.apartmentServiceId,
+                  serviceName: o.serviceName,
+                  defaultPriceEur: o.defaultPriceEur,
+                  enabled: o.isMandatory,
+                  chargedPriceEur: o.defaultPriceEur,
+                  customNote: null,
+                  flightNumber: null,
+                  payerType: o.payerType,
+                  requiresPhoto: null,
+                );
+              }
+              final payerType = (row.payerType == 'owner' || row.payerType == 'guest')
+                  ? row.payerType!
+                  : o.payerType;
+              final (parsedFlight, parsedNoteRest) = parseFlightFromCustomNote(row.customNote);
+              final flight = row.flightNumber ?? parsedFlight;
+              final noteRest = row.flightNumber != null && row.flightNumber!.isNotEmpty
+                  ? row.customNote
+                  : parsedNoteRest;
+              return ReservationServiceEditState(
+                apartmentServiceId: o.apartmentServiceId,
+                serviceName: o.serviceName,
+                defaultPriceEur: o.defaultPriceEur,
+                enabled: true,
+                chargedPriceEur: row.chargedPrice?.toDouble(),
+                customNote: noteRest,
+                flightNumber: flight,
+                payerType: payerType,
+                requiresPhoto: row.requiresPhoto,
               );
-            }
-            final payerType = (row.payerType == 'owner' || row.payerType == 'guest')
-                ? row.payerType!
-                : o.payerType;
-            final (parsedFlight, parsedNoteRest) = parseFlightFromCustomNote(row.customNote);
-            final flight = row.flightNumber ?? parsedFlight;
-            final noteRest = row.flightNumber != null && row.flightNumber!.isNotEmpty
-                ? row.customNote
-                : parsedNoteRest;
-            return ReservationServiceEditState(
-              apartmentServiceId: o.apartmentServiceId,
-              serviceName: o.serviceName,
-              defaultPriceEur: o.defaultPriceEur,
-              enabled: true,
-              chargedPriceEur: row.chargedPrice?.toDouble(),
-              customNote: noteRest,
-              flightNumber: flight,
-              payerType: payerType,
-              requiresPhoto: row.requiresPhoto,
-            );
-          }(),
-      };
-      _servicesLoaded = true;
-    });
+            }(),
+        };
+        _servicesLoaded = true;
+      });
+    } catch (e, st) {
+      debugPrint('_loadServicesState (Edit) ERROR: $e');
+      debugPrint('_loadServicesState (Edit) STACK: $st');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _servicesLoaded = true;
+          _servicesLoadInProgress = false;
+        });
+      }
+    }
   }
 
   /// [successMessage] – při automatické opravě kolize se zobrazí tento text místo výchozího.
@@ -1295,11 +1545,9 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
       // Odstraníme pouze úkoly, které nejsou „Probíhá“ ani „Hotovo“.
       final deletedAt = DateTime.now().toUtc().toIso8601String();
       final protectedStatuses = ['in_progress', 'completed', 'probíhá', 'hotovo', 'done', 'dokončeno'];
-      await SupabaseService.client
-          .from('tasks')
+      await SupabaseService.safeFrom('tasks', tenantId)
           .update({'deleted_at': deletedAt})
           .eq('reservation_id', widget.reservation.id)
-          .eq('tenant_id', tenantId)
           .not('status', 'in', protectedStatuses);
       ref.invalidate(adminTasksProvider);
       ref.invalidate(planningCalendarAllTasksProvider);
@@ -1316,6 +1564,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
     final datesChanged = origStartDay != newStartDay || origEndDay != newEndDay;
 
     if (datesChanged) {
+      if (!context.mounted) return;
       final confirmed = await showDialog<bool>(
         context: context,
         barrierDismissible: false,
@@ -1342,11 +1591,9 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
       // Zachováváme deleted_at místo tvrdého DELETE kvůli auditu a sledovatelnosti.
       final deletedAt = DateTime.now().toUtc().toIso8601String();
       final protectedStatuses = ['in_progress', 'completed', 'probíhá', 'hotovo', 'done', 'dokončeno'];
-      await SupabaseService.client
-          .from('tasks')
+      await SupabaseService.safeFrom('tasks', tenantId)
           .update({'deleted_at': deletedAt})
           .eq('reservation_id', widget.reservation.id)
-          .eq('tenant_id', tenantId)
           .not('status', 'in', protectedStatuses);
       ref.invalidate(adminTasksProvider);
     }
@@ -1409,7 +1656,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
 
       // Dvoukrokové ukládání (Override Pattern Tier 3): nejdřív úprava rezervace, potom přepsání reservation_services.
       // KROK 1: Aktualizace záznamu rezervace (včetně guest_phone, reservation_source, departure_time).
-      await SupabaseService.client.from('reservations').update({
+      await SupabaseService.safeFrom('reservations', tenantId).update({
         'apartment_id': _selectedApartmentId,
         'guest_name': _guestNameController.text.trim().isEmpty
             ? null
@@ -1429,13 +1676,18 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
         'internal_note': _internalNoteController.text.trim().isEmpty
             ? null
             : _internalNoteController.text.trim(),
-      }).eq('id', widget.reservation.id).eq('tenant_id', tenantId);
+      }).eq('id', widget.reservation.id);
 
       // KROK 2: Uložení služeb rezervace (reservation_services) – replace všech záznamů pro tuto rezervaci (delete + insert dle stavu Tabu 2).
       await saveForReservation(
         reservationId: widget.reservation.id,
         tenantId: tenantId,
         states: _servicesState,
+      );
+      await ensureMandatoryServicesForReservation(
+        reservationId: widget.reservation.id,
+        tenantId: tenantId,
+        apartmentId: _selectedApartmentId,
       );
 
       if (!mounted) return;
@@ -1839,7 +2091,9 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
         ),
       ),
       data: (options) {
-        if (!_servicesLoaded && options.isNotEmpty) {
+        if (!_servicesLoaded && !_servicesLoadInProgress && options.isNotEmpty) {
+          // PROČ: Nastavíme progress hned, aby další build nenaplánoval druhý load (zabrání dvojímu volání DB).
+          setState(() => _servicesLoadInProgress = true);
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _loadServicesState(options);
           });

@@ -31,11 +31,14 @@ Future<void> processOfflineCashCollection(Map<String, dynamic> payload) async {
       ? expectedRaw.toDouble()
       : (expectedRaw != null ? double.tryParse(expectedRaw.toString()) : null);
 
+  final note = payload['note']?.toString().trim();
+
   await CashWalletRepository.instance.recordCashCollection(
     tenantId: tenantId,
     profileId: profileId,
     taskId: taskId,
     amount: amount,
     expectedAmount: (expectedAmount != null && expectedAmount > 0) ? expectedAmount : null,
+    note: (note != null && note.isNotEmpty) ? note : null,
   );
 }

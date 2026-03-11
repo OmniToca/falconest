@@ -1,6 +1,7 @@
 /// Sdílené modely a pomocné metody pro AuditLogRepository.
 ///
 /// Bez importu Isaru – používají web i mobilní implementace.
+library;
 import 'package:falconest/core/services/supabase_service.dart';
 
 /// Jeden záznam z tabulky audit_logs – pro zobrazení v modulu Odpadkový koš.

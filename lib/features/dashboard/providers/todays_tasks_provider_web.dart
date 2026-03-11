@@ -5,6 +5,7 @@
 /// invalidaci z TaskDetailScreen (legacy route /task/:id).
 ///
 /// STRICT: Tento soubor nesmí importovat isar ani .g.dart.
+library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/repositories/task/task_repository.dart';

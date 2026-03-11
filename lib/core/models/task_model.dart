@@ -83,12 +83,12 @@ class TaskModel {
       return s.isEmpty ? null : s;
     }
 
-    List<String> _parseStringList(dynamic raw) {
+    List<String> parseStringList(dynamic raw) {
       if (raw == null) return const [];
       if (raw is List) {
         return raw
             .map((e) => e?.toString().trim())
-            .where((s) => s != null && s!.isNotEmpty)
+            .where((s) => s != null && s.isNotEmpty)
             .cast<String>()
             .toList();
       }
@@ -106,7 +106,7 @@ class TaskModel {
       customLocation: optString(json['custom_location']),
       customTitle: optString(json['custom_title']),
       assignedTo: optString(json['assigned_to']),
-      assignedUserIds: _parseStringList(json['assigned_user_ids']),
+      assignedUserIds: parseStringList(json['assigned_user_ids']),
       scheduledStart: parseRequiredDateTime(rawStart),
       status: (json['status'] as String?)?.trim() ?? 'pending',
       photoUrl: optString(json['photo_url']),

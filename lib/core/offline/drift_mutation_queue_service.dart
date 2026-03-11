@@ -8,6 +8,7 @@ import 'package:falconest/core/offline/offline_company_expense_processor.dart';
 import 'package:falconest/core/offline/offline_issue_task_processor.dart'
     show processOfflineIssueTask, ProcessIssueTaskException;
 import 'package:falconest/core/offline/offline_photo_task_processor.dart';
+import 'package:falconest/core/services/absence_notification_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
 /// Drift implementace fronty mutací – zapisuje do SQLite místo Isar.
@@ -70,6 +71,12 @@ class DriftMutationQueueService implements MutationQueueServiceInterface {
             break;
           case 'INSERT':
             await SupabaseService.client.from(m.tableName).insert(payload);
+            // Po úspěšném odeslání absence z fronty notifikujeme adminy (zvoneček).
+            if (m.tableName == 'staff_absences') {
+              try {
+                await AbsenceNotificationService.notifyAdminsAboutAbsenceFromPayload(payload);
+              } catch (_) {}
+            }
             break;
           case 'UPDATE':
             if (m.recordId == null || m.recordId!.isEmpty) continue;

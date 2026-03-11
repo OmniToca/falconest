@@ -158,7 +158,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   email,
                   redirectTo: redirectTo,
                 );
-                if (!ctx.mounted) return;
+                if (!ctx.mounted || !context.mounted) return;
                 Navigator.of(ctx).pop();
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
@@ -168,7 +168,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   ),
                 );
               } catch (_) {
-                if (!ctx.mounted) return;
+                if (!ctx.mounted || !context.mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text('forgot_password.error'.tr()),

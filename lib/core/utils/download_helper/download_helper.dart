@@ -6,4 +6,5 @@
 /// - Web (dart.library.html): Blob + AnchorElement pro browser download.
 /// - IO (mobil, desktop): FilePicker save dialog + File.writeAsBytes.
 /// Volání: downloadBytesAsFile(bytes, 'soubor.xlsx')
+library;
 export 'download_helper_io.dart' if (dart.library.html) 'download_helper_web.dart';

@@ -1,6 +1,7 @@
 /// Web implementace AuditLogRepository – ŽÁDNÝ import Isaru.
 ///
 /// Supabase přímo pro restore/hardDelete. Kompiluje se pro dart:html.
+library;
 import 'package:falconest/features/super_admin/services/audit_log_shared.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 

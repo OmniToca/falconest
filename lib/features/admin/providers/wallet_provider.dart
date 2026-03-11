@@ -15,10 +15,8 @@ final walletBalanceProvider = StreamProvider<int>((ref) {
     return Stream<int>.value(0);
   }
 
-  return SupabaseService.client
-      .from('tenant_wallets')
+  return SupabaseService.safeFrom('tenant_wallets', tenantId)
       .stream(primaryKey: ['tenant_id'])
-      .inFilter('tenant_id', [tenantId])
       .map((List<Map<String, dynamic>> list) {
         final ourRow = list.where((r) => r['tenant_id']?.toString() == tenantId).firstOrNull ?? list.firstOrNull;
         if (ourRow == null) return 0;

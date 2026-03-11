@@ -85,8 +85,8 @@ Future<void> processOfflineTaskCompleteWithPhotos(
           .eq('id', taskId)
           .eq('tenant_id', tenantId)
           .maybeSingle();
-      final existing = res != null && res is Map
-          ? (res['metadata'] is Map ? Map<String, dynamic>.from(res['metadata'] as Map) : <String, dynamic>{})
+      final existing = res != null
+          ? Map<String, dynamic>.from(res['metadata'] as Map)
           : <String, dynamic>{};
       updates['metadata'] = {...existing, ...map};
     }

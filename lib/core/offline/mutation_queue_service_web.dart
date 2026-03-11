@@ -11,6 +11,7 @@ class MutationQueueService implements MutationQueueServiceInterface {
   static final MutationQueueService instance = MutationQueueService._();
 
   /// Na webu nic neukládá – vždy voláme Supabase přímo.
+  @override
   Future<void> enqueueMutation({
     required String table,
     required String action,
@@ -19,12 +20,14 @@ class MutationQueueService implements MutationQueueServiceInterface {
   }) async {}
 
   /// Na webu prázdná fronta – nic k odeslání.
+  @override
   Future<void> processQueue() async {}
 
   /// Na webu vždy false – web je online.
   static bool isNetworkError(Object e) => false;
 
   /// Na webu vždy 0 – lokální fronta neexistuje.
+  @override
   Future<int> getPendingCount() async => 0;
 }
 

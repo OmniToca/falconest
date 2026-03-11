@@ -1,7 +1,6 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 
 import 'package:falconest/core/models/task_commission_model.dart';
 import 'package:falconest/core/models/task_payout_model.dart';
@@ -225,7 +224,7 @@ class _SettlementSplitDialogState extends State<SettlementSplitDialog> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       DropdownButtonFormField<CommissionRecipient?>(
-                        value: dropdownValue,
+                        initialValue: dropdownValue,
                         decoration: InputDecoration(
                           labelText: 'admin.settlements.select_commission_recipient'.tr(),
                           border: const OutlineInputBorder(),

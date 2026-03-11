@@ -15,6 +15,7 @@ import 'package:falconest/features/admin/providers/admin_tasks_repository.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/finance_cash_provider.dart';
+import 'package:falconest/features/admin/providers/finance_tab_provider.dart';
 
 /// Prémiový modální dialog detailu peněženky zaměstnance.
 ///
@@ -124,7 +125,7 @@ class WalletDetailModal {
 /// Vnitřní obsah modalu – převzat z AdminWalletDetailScreen, struktura jako SettingsModal.
 /// PROČ: ConsumerStatefulWidget – potřebujeme lokální stav _showHistory pro filtrování transakcí.
 class _WalletDetailModalContent extends ConsumerStatefulWidget {
-  _WalletDetailModalContent({
+  const _WalletDetailModalContent({
     required this.walletId,
     required this.workerName,
     required this.parentContext,
@@ -406,8 +407,24 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
   }
 
   /// Při tapnutí transakce: pokud má taskId, otevři detail úkolu v Admin kontextu.
-  /// Úkoly v peněžence mohou být dokončené/archivované – proto fallback fetch podle ID.
+  /// Nedoplatek (nevyřešený) neotevírá úkol – místo toho přepne na záložku Podklady pro fakturaci.
   void _onTransactionTap(BuildContext context, WidgetRef ref, CashTransactionUIModel t) {
+    final amount = _toDouble(t.raw['amount']);
+    final expected = t.expectedAmount;
+    final isResolved = t.raw['is_shortfall_resolved'] == true;
+    if (expected != null && amount != null && amount < expected && !isResolved) {
+      Navigator.of(context).pop();
+      final ctx = widget.parentContext;
+      ref.read(financeRequestedSubTabProvider.notifier).state = financeSubTabIndexBilling;
+      AdminTabScope.of(ctx)?.call(adminTabIndexFinance);
+      if (ctx.mounted) {
+        ScaffoldMessenger.of(ctx).showSnackBar(
+          SnackBar(content: Text('admin.finance.shortfall_resolve_in_billing'.tr())),
+        );
+      }
+      return;
+    }
+
     final taskId = t.taskId;
     if (taskId == null || taskId.isEmpty) return;
 
@@ -606,6 +623,11 @@ class _TransactionTile extends StatelessWidget {
     final receiptUrl = transaction.receiptImageUrl;
     final createdAt = transaction.createdAt;
 
+    /// Nedoplatek: klient zaplatil méně než očekávaná částka – vizuálně zvýrazníme řádek a důvod.
+    final isShortfall = expectedAmount != null &&
+        (amount - expectedAmount).abs() > 0.001 &&
+        amount < expectedAmount;
+
     String dateStr = '—';
     if (createdAt != null) {
       final dt = createdAt is DateTime
@@ -725,14 +747,74 @@ class _TransactionTile extends StatelessWidget {
       breakdownText = note;
     }
 
+    // Finanční rozpad a poznámka: u nedoplatku červeně + tučně, poznámku vždy s varovnou ikonou.
     if (breakdownText != null && breakdownText.isNotEmpty) {
       subtitleParts.add(const SizedBox(height: 2));
-      subtitleParts.add(
-        Text(
-          breakdownText,
-          style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
-        ),
-      );
+      final isBreakdownSameAsNote =
+          note != null && note.isNotEmpty && breakdownText == note;
+      if (isBreakdownSameAsNote) {
+        subtitleParts.add(
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.warning_amber_rounded,
+                size: 14,
+                color: Colors.red.shade800,
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  breakdownText,
+                  style: TextStyle(
+                    color: Colors.red.shade700,
+                    fontSize: 12,
+                    fontWeight:
+                        isShortfall ? FontWeight.bold : FontWeight.normal,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      } else {
+        subtitleParts.add(
+          Text(
+            breakdownText,
+            style: TextStyle(
+              color: isShortfall ? Colors.red.shade700 : Colors.grey.shade700,
+              fontSize: 12,
+              fontWeight: isShortfall ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+        );
+      }
+      if (note != null && note.isNotEmpty && breakdownText != note) {
+        subtitleParts.add(const SizedBox(height: 2));
+        subtitleParts.add(
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.warning_amber_rounded,
+                size: 14,
+                color: Colors.red.shade800,
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  note,
+                  style: TextStyle(
+                    color: Colors.red.shade700,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      }
     }
 
     Widget trailing = Text(
@@ -775,6 +857,7 @@ class _TransactionTile extends StatelessWidget {
     }
 
     return ListTile(
+      tileColor: isShortfall ? Colors.red.shade50 : null,
       title: Text(titleText),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

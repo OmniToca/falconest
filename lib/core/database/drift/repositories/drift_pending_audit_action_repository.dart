@@ -2,6 +2,7 @@
 ///
 /// Offline-first: Akce Obnovit/HardDelete z Odpadkového koše se zapisují sem,
 /// na pozadí se synchronizují do Supabase (NetworkSyncWatcher, processPendingAuditActions).
+library;
 import 'package:drift/drift.dart';
 import 'package:falconest_drift/app_database.dart';
 

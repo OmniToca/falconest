@@ -153,10 +153,8 @@ Future<List<CashTransactionUIModel>> _enrichTransactions(
 
   if (taskIds.isNotEmpty) {
     try {
-      final res = await SupabaseService.client
-          .from('tasks')
+      final res = await SupabaseService.safeFrom('tasks', tenantId)
           .select('id, title, apartments(name), reservations(guest_name)')
-          .eq('tenant_id', tenantId)
           .inFilter('id', taskIds)
           .isFilter('deleted_at', null);
 
@@ -202,10 +200,8 @@ Future<List<CashTransactionUIModel>> _enrichTransactions(
 
   if (clientIds.isNotEmpty) {
     try {
-      final res = await SupabaseService.client
-          .from('clients')
+      final res = await SupabaseService.safeFrom('clients', tenantId)
           .select('id, name, client_type')
-          .eq('tenant_id', tenantId)
           .inFilter('id', clientIds)
           .isFilter('deleted_at', null);
 
@@ -268,12 +264,10 @@ final failedCashCollectionsProvider =
   if (tenantId == null || tenantId.isEmpty) return [];
 
   try {
-    final res = await SupabaseService.client
-        .from('tasks')
+    final res = await SupabaseService.safeFrom('tasks', tenantId)
         .select(
           'id, title, metadata, completed_at, assigned_to, profiles!tasks_assigned_to_fkey(name, first_name, last_name)',
         )
-        .eq('tenant_id', tenantId)
         .eq('status', 'completed')
         .isFilter('deleted_at', null)
         .filter('metadata', 'cs', '{"cash_collection_failed": true}');
@@ -343,11 +337,9 @@ Future<void> resolveFailedCashCollection(WidgetRef ref, String taskId) async {
   final tenantId = ref.read(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return;
 
-  final res = await SupabaseService.client
-      .from('tasks')
+  final res = await SupabaseService.safeFrom('tasks', tenantId)
       .select('metadata')
       .eq('id', taskId)
-      .eq('tenant_id', tenantId)
       .maybeSingle();
 
   if (res == null) return;
@@ -360,11 +352,45 @@ Future<void> resolveFailedCashCollection(WidgetRef ref, String taskId) async {
   meta['cash_collection_failed'] = false;
   meta['cash_collection_resolved'] = true;
 
-  await SupabaseService.client
-      .from('tasks')
+  await SupabaseService.safeFrom('tasks', tenantId)
       .update({'metadata': meta})
-      .eq('id', taskId)
-      .eq('tenant_id', tenantId);
+      .eq('id', taskId);
 
   ref.invalidate(failedCashCollectionsProvider);
 }
+
+/// Počet transakcí s nedoplatkem (expected_amount != null a amount < expected_amount) za aktuálního tenanta.
+///
+/// PROČ: Nástěnka zobrazuje dlaždici „Nedoplatky v hotovosti“ a odkaz na Finance.
+/// Filtrujeme transakce za posledních 14 dní, aby byl přehled relevantní a bez zbytečných rebuildů.
+final cashShortfallsCountProvider = StreamProvider<int>((ref) async* {
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) {
+    yield 0;
+    return;
+  }
+
+  final since = DateTime.now().toUtc().subtract(const Duration(days: 14));
+
+  await for (final rows
+      in CashWalletRepository.instance.watchTransactionsRaw(tenantId)) {
+    int count = 0;
+    for (final r in rows) {
+      final amount = _toDouble(r['amount']);
+      final expected = _toDouble(r['expected_amount']);
+      if (expected == null || amount == null || amount >= expected) continue;
+      if (r['is_shortfall_resolved'] == true) continue;
+      final createdRaw = r['created_at'];
+      DateTime? created;
+      if (createdRaw != null) {
+        if (createdRaw is DateTime) {
+          created = createdRaw.toUtc();
+        } else if (createdRaw is String) {
+          created = DateTime.tryParse(createdRaw)?.toUtc();
+        }
+      }
+      if (created != null && created.isAfter(since)) count++;
+    }
+    yield count;
+  }
+});

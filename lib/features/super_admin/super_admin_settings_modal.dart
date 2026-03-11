@@ -390,7 +390,7 @@ class _SuperAdminModuleListInModal extends ConsumerWidget {
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           itemCount: modules.length,
-          separatorBuilder: (_, __) => const SizedBox(height: 12),
+          separatorBuilder: (_, _) => const SizedBox(height: 12),
           itemBuilder: (_, i) => _SuperAdminModuleCardRow(
             module: modules[i],
             onEdit: onEditModule,
@@ -664,7 +664,7 @@ class _SuperAdminExchangeRatesCard extends ConsumerWidget {
                       currency: c,
                       onEditRate: c.code == 'EUR'
                           ? null
-                          : () => _SuperAdminShowEditRateDialog(
+                          : () => _superAdminShowEditRateDialog(
                                 context,
                                 ref,
                                 c,
@@ -673,7 +673,7 @@ class _SuperAdminExchangeRatesCard extends ConsumerWidget {
                   ),
                   const SizedBox(height: 8),
                   OutlinedButton.icon(
-                    onPressed: () => _SuperAdminShowAddCurrencyDialog(context, ref),
+                    onPressed: () => _superAdminShowAddCurrencyDialog(context, ref),
                     icon: const Icon(Icons.add, size: 20),
                     label: Text('settings.add_currency'.tr()),
                   ),
@@ -700,7 +700,7 @@ class _SuperAdminExchangeRatesCard extends ConsumerWidget {
     );
   }
 
-  static Future<void> _SuperAdminShowEditRateDialog(
+  static Future<void> _superAdminShowEditRateDialog(
     BuildContext context,
     WidgetRef ref,
     CurrencyRow currency,
@@ -761,7 +761,7 @@ class _SuperAdminExchangeRatesCard extends ConsumerWidget {
     }
   }
 
-  static Future<void> _SuperAdminShowAddCurrencyDialog(
+  static Future<void> _superAdminShowAddCurrencyDialog(
     BuildContext context,
     WidgetRef ref,
   ) async {

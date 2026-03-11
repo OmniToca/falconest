@@ -36,12 +36,10 @@ class ClientRepository {
     if (tenantId.isEmpty) return [];
 
     final q = searchQuery?.trim() ?? '';
-    dynamic query = SupabaseService.client
-        .from('clients')
+    dynamic query = SupabaseService.safeFrom('clients', tenantId)
         .select(
           'id, tenant_id, name, email, phone, client_type, profile_id, agency_id, created_at, deleted_at',
         )
-        .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null);
 
     if (q.isNotEmpty) {
@@ -71,10 +69,8 @@ class ClientRepository {
   ) async {
     if (tenantId.isEmpty || clientId.isEmpty) return [];
 
-    final res = await SupabaseService.client
-        .from('client_addresses')
+    final res = await SupabaseService.safeFrom('client_addresses', tenantId)
         .select('id, tenant_id, client_id, label, address, created_at, updated_at, deleted_at')
-        .eq('tenant_id', tenantId)
         .eq('client_id', clientId)
         .isFilter('deleted_at', null)
         .order('label');
@@ -121,8 +117,7 @@ class ClientRepository {
       'address': addressTrimmed,
     };
 
-    final res = await SupabaseService.client
-        .from('client_addresses')
+    final res = await SupabaseService.safeFrom('client_addresses', tenantId)
         .insert(map)
         .select()
         .single();
@@ -148,13 +143,11 @@ class ClientRepository {
       throw StateError('Nelze smazat adresu bez ID.');
     }
 
-    await SupabaseService.client
-        .from('client_addresses')
+    await SupabaseService.safeFrom('client_addresses', tenantId)
         .update({
           'deleted_at': DateTime.now().toUtc().toIso8601String(),
           'updated_at': DateTime.now().toUtc().toIso8601String(),
         })
-        .eq('id', addressId)
-        .eq('tenant_id', tenantId);
+        .eq('id', addressId);
   }
 }

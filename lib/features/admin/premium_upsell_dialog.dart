@@ -88,8 +88,7 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
     setState(() => _isActivating = true);
     try {
       final trialEndsAt = DateTime.now().toUtc().add(const Duration(days: 14)).toIso8601String();
-      await SupabaseService.client.from('tenant_modules').insert({
-        'tenant_id': tenantId,
+      await SupabaseService.safeFrom('tenant_modules', tenantId).insert({
         'module_id': module.id,
         'status': 'active',
         'is_trial': true,

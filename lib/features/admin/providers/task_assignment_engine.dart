@@ -1,7 +1,7 @@
 // ============================================================================
-// 🔒🔒🔒 LOCKED CORE BUSINESS LOGIC - DO NOT TOUCH 🔒🔒🔒
-// CZECH COMMENT: TOTO JE KRITICKÉ JÁDRO SYSTÉMU (LOAD BALANCING, ZÓNY, ČASOVÁNÍ).
-// AI STRICT RULE: ABSOLUTNÍ ZÁKAZ MĚNIT TENTO SOUBOR BEZ EXPLICITNÍHO POVOLENÍ!
+// ENTERPRISE TASK ASSIGNMENT ENGINE
+// Čisté jádro plánování: kolize, priorita zón, load balancing. Žádná byznysová
+// logika podle typu úkolu – provider předává předpočítané časy (taskStart, taskEnd).
 // ============================================================================
 
 import 'dart:math';
@@ -49,17 +49,17 @@ DateTime? _parseTaskDateTimeUtc(dynamic raw) {
   return null;
 }
 
-/// Chytrý výpočet trvání blokace úkolu v minutách podle typu služby.
-/// Pro úklid striktně sčítáme čistý čas úklidu apartmánu a časovou rezervu ze služby (vata).
-/// U ostatních služeb bereme jen čas služby (fallback 60 min).
+/// Zpětně kompatibilní stub: vrací pouze [serviceDurationMinutes] (nebo 60).
+///
+/// PROČ: Engine nesmí obsahovat byznysovou logiku podle typu služby (např. „cleaning“).
+/// Skutečné trvání (včetně úklidu = apartment + service) musí počítat provider a předat
+/// do [pickAssigneeWithCollisionAvoidance] jako hotové [taskStart] / [taskEnd].
+@Deprecated('Provider by měl počítat délku sám a předávat taskEnd; používá se jen pro zpětnou kompatibilitu.')
 int taskBlockDurationMinutes({
   required String serviceType,
   required int apartmentStandardCleaning,
   required int serviceDurationMinutes,
 }) {
-  if (serviceType.toLowerCase() == 'cleaning') {
-    return apartmentStandardCleaning + serviceDurationMinutes;
-  }
   return serviceDurationMinutes > 0 ? serviceDurationMinutes : 60;
 }
 
@@ -73,13 +73,14 @@ bool _tasksOverlap(
 /// Rovnoměrné rozložení S KONTROLOU KOLIZÍ: z kandidátů vybere toho, kdo má v daný den nejméně práce
 /// a zároveň nemá v časovém okně [taskStart, taskEnd] žádný jiný úkol (z existingTasksRaw ani toInsert).
 ///
-/// Překryv: (taskStart < stávajícíKonec) && (taskEnd > stávajícíStart) → kandidát vyřazen.
-/// Ze zbylých (volných) kandidátů vybere toho s minimálním počtem úkolů za daný den.
+/// [taskStart] a [taskEnd] musí být předpočítané v provideru (engine nepočítá délku podle typu služby).
 ///
-/// [isSacredTask] – Svaté úkoly (check-in, check-out, transfery) NESMÍ být posouvány v čase.
-/// Při kolizi všech kandidátů vrací Nepřiřazeno. Flexibilní úkoly (úklid, údržba) hledají volný slot
-/// v dynamickém okně mezi odjezdem hosta a příjezdem dalšího (deadline), max 100 iterací po 30 min.
-/// [applyNightRest] – pokud true, respektuje pracovní dobu 07:00–19:00; mimo ni přesouvá na 7:00.
+/// [toInsert] MUSÍ být sdílená reference na stejný list napříč celým batchem úkolů. Volající je
+/// povinen ihned po obdržení výsledku zapsat do tohoto listu nový záznam (assigned_to, scheduled_start,
+/// due_date), aby další volání engine v rámci téhož batch viděla přiřazený úkol (Anti-Amnézie).
+///
+/// [isSacredTask] – Svaté úkoly NESMÍ být posouvány v čase. Při kolizi všech vrací Nepřiřazeno.
+/// [applyNightRest] – pokud true, respektuje pracovní dobu 07:00–19:00.
 ({String? assignTo, DateTime start, DateTime end}) pickAssigneeWithCollisionAvoidance({
   required List<TeamMember> candidates,
   required DateTime taskStart,
@@ -87,6 +88,8 @@ bool _tasksOverlap(
   required DateTime deadline,
   required bool applyNightRest,
   required List<dynamic> existingTasksRaw,
+  /// Sdílený list úkolů k vložení v rámci batch. Volající MUSÍ po každém volání engine přidat
+  /// nový záznam (assigned_to, scheduled_start, due_date), jinak další iterace neuvidí přiřazení → overbooking.
   required List<Map<String, dynamic>> toInsert,
   String? zoneId,
   bool isSacredTask = false,
@@ -232,7 +235,8 @@ bool _tasksOverlap(
       final maxDailyAllowed = minDaily + 2;
       final maxWeeklyAllowed = minWeekly + 3;
 
-      freeCandidates.shuffle();
+      // Férový deterministický sort: žádné shuffle.
+      // 1) Nepřetížený před přetíženého. 2) Lepší priorita zóny. 3) Méně úkolů dnes. 4) Tie-breaker: id.
       freeCandidates.sort((a, b) {
         final dCountA = dailyCounts[assignableId(a)] ?? 0;
         final wCountA = weeklyCounts[assignableId(a)] ?? 0;
@@ -240,12 +244,18 @@ bool _tasksOverlap(
         final wCountB = weeklyCounts[assignableId(b)] ?? 0;
         final isOverA = dCountA >= maxDailyAllowed || wCountA >= maxWeeklyAllowed;
         final isOverB = dCountB >= maxDailyAllowed || wCountB >= maxWeeklyAllowed;
+        // Primární: nepřetížený má vždy přednost před přetíženým.
         if (isOverA && !isOverB) return 1;
         if (!isOverA && isOverB) return -1;
+        // Sekundární: lepší (nižší) priorita zóny pro danou lokaci.
         final zoneA = zonePreferencePriority(a, zoneId);
         final zoneB = zonePreferencePriority(b, zoneId);
         if (zoneA != zoneB) return zoneA.compareTo(zoneB);
-        return dCountA.compareTo(dCountB);
+        // Terciární: load balancing – méně úkolů dnes vyhrává.
+        final dCmp = dCountA.compareTo(dCountB);
+        if (dCmp != 0) return dCmp;
+        // Kvartérní: tie-breaker pro 100% determinismus.
+        return assignableId(a).compareTo(assignableId(b));
       });
       final winner = freeCandidates.first;
       return (assignTo: assignableId(winner), start: tryStart.toLocal(), end: tryEnd.toLocal());
@@ -255,7 +265,3 @@ bool _tasksOverlap(
 
   return (assignTo: null, start: taskStartUtc.toLocal(), end: taskEndUtc.toLocal());
 }
-
-// ============================================================================
-// 🔒🔒🔒 END OF LOCKED CORE BUSINESS LOGIC 🔒🔒🔒
-// ============================================================================

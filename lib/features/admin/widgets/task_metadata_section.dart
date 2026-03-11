@@ -2,7 +2,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 
 /// Sdílená read-only komponenta pro zobrazení JSONB metadat úkolu.
-/// Zobrazuje custom_note, amount_to_collect, expected_audit_total, collection_breakdown.
+/// Zobrazuje custom_note, amount_to_collect, service_price (+ payer_type), expected_audit_total, collection_breakdown.
 /// Používá se v dialogu úpravy úkolu (admin tasks i plánovací kalendář).
 class TaskMetadataSection extends StatelessWidget {
   const TaskMetadataSection({
@@ -44,6 +44,29 @@ class TaskMetadataSection extends StatelessWidget {
           value: _formatAmount(context, amount),
           valueBold: true,
           valueColor: Colors.orange.shade700,
+        ));
+      }
+    }
+
+    // Cena služby k fakturaci (např. úklid platí majitel) – z metadata.service_price a metadata.payer_type.
+    if (meta.containsKey('service_price')) {
+      final v = meta['service_price'];
+      final amount = (v is num) ? v.toDouble() : (v != null ? double.tryParse(v.toString()) ?? 0.0 : 0.0);
+      if (amount > 0) {
+        final pt = meta['payer_type'];
+        final payerStr = pt is String ? pt.trim().toLowerCase() : (pt?.toString().trim().toLowerCase() ?? '');
+        final payerLabel = _payerTypeLabel(payerStr);
+        final labelKey = 'admin.task_metadata_service_price'.tr();
+        final paysKey = 'admin.task_metadata_pays'.tr();
+        final valueText = '${_formatAmount(context, amount)} ($paysKey: $payerLabel)';
+        final labelText = labelKey.isEmpty || labelKey == 'admin.task_metadata_service_price'
+            ? 'Cena služby k fakturaci'
+            : labelKey;
+        rows.add(_MetadataRow(
+          icon: Icons.receipt_outlined,
+          label: labelText,
+          value: valueText,
+          valueBold: false,
         ));
       }
     }
@@ -139,6 +162,24 @@ class TaskMetadataSection extends StatelessWidget {
     final candidate = 'admin.task_type_$norm';
     final translated = candidate.tr();
     return translated == candidate ? 'admin.task_type_other'.tr() : translated;
+  }
+
+  /// Přeloží payer_type z metadat (owner/guest/client) – i18n s českým fallbackem.
+  static String _payerTypeLabel(String payerStr) {
+    switch (payerStr) {
+      case 'owner':
+        final t = 'admin.task_metadata_payer_owner'.tr();
+        return t.isEmpty ? 'Majitel' : t;
+      case 'guest':
+        final t = 'admin.task_metadata_payer_guest'.tr();
+        return t.isEmpty ? 'Host' : t;
+      case 'client':
+        final t = 'admin.task_metadata_payer_client'.tr();
+        return t.isEmpty ? 'Klient' : t;
+      default:
+        final t = 'admin.task_metadata_payer_owner'.tr();
+        return t.isEmpty ? 'Majitel' : t;
+    }
   }
 }
 

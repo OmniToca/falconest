@@ -35,7 +35,7 @@ final currentUserProfileProvider = FutureProvider<CurrentUserProfile>((ref) asyn
         .isFilter('deleted_at', null)
         .maybeSingle();
 
-    if (res == null || res is! Map) {
+    if (res == null) {
       return CurrentUserProfile(name: '', email: emailFromAuth);
     }
 

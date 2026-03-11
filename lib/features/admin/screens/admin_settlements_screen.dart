@@ -1,20 +1,18 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 
 import 'package:falconest/core/presentation/widgets/app_card.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/settlements_provider.dart';
-import 'package:falconest/features/admin/widgets/settlement_history_dialog.dart';
+import 'package:falconest/features/admin/widgets/payout_history_content.dart';
 import 'package:falconest/features/admin/widgets/settlement_split_dialog.dart';
 
-/// Obrazovka modulu Vyúčtování – fronta úkolů ke schválení a pohled "K výplatě".
+/// Obrazovka modulu Vyúčtování – fronta úkolů ke schválení, pohled "K výplatě" a Historie výplat.
 ///
-/// Dvě záložky: 1) Fronta úkolů – dokončené úkoly, u kterých Admin ještě nerozdělil
-/// výplaty a provize. 2) K výplatě – seskupené pending výplaty/provize s možností
-/// hromadného označení jako vyplaceno.
+/// Tři záložky: 1) Fronta úkolů – dokončené úkoly bez vyúčtování. 2) K výplatě – seskupené
+/// pending výplaty/provize. 3) Historie výplat – uzamčené snapshoty z payout_snapshots (bez dialogu).
 class AdminSettlementsScreen extends ConsumerWidget {
   const AdminSettlementsScreen({super.key});
 
@@ -22,7 +20,7 @@ class AdminSettlementsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
       body: DefaultTabController(
-        length: 2,
+        length: 3,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -42,8 +40,9 @@ class AdminSettlementsScreen extends ConsumerWidget {
             ),
             TabBar(
               tabs: [
-                Tab(text: 'admin.settlements.tab_queue'.tr()),
-                Tab(text: 'admin.settlements.tab_payroll'.tr()),
+                Tab(text: context.tr('admin.settlements.tab_queue')),
+                Tab(text: context.tr('admin.settlements.tab_payroll')),
+                Tab(text: context.tr('admin.settlements.tab_history')),
               ],
             ),
             Expanded(
@@ -51,6 +50,7 @@ class AdminSettlementsScreen extends ConsumerWidget {
                 children: [
                   _QueueTabContent(),
                   _PayrollTabContent(),
+                  const PayoutHistoryContent(),
                 ],
               ),
             ),
@@ -161,25 +161,6 @@ class _PayrollTabContent extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              TextButton.icon(
-                onPressed: () {
-                  SettlementHistoryDialog.show(
-                    context,
-                    ref: ref,
-                    initialMonth: DateTime.now(),
-                  );
-                },
-                icon: const Icon(Icons.history, size: 18),
-                label: Text('admin.settlements.history_title'.tr()),
-              ),
-            ],
-          ),
-        ),
         Expanded(
           child: dataAsync.when(
             data: (data) {
@@ -237,6 +218,103 @@ class _PayrollTabContent extends ConsumerWidget {
                                   color: Colors.green.shade700,
                                 ),
                           ),
+                          const Divider(height: 24),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                'admin.settlements.margin_breakdown_invoiced'.tr(),
+                                style: TextStyle(color: Colors.grey.shade700),
+                              ),
+                              Text(
+                                formatWalletAmount(context, ref, data.totalTaskValue),
+                                style: const TextStyle(fontWeight: FontWeight.w500),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                'admin.settlements.margin_breakdown_costs'.tr(),
+                                style: TextStyle(color: Colors.grey.shade700),
+                              ),
+                              Text(
+                                '- ${formatWalletAmount(context, ref, data.totalPayouts)}',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w500,
+                                  color: Colors.red,
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (data.taskMargins.isNotEmpty) ...[
+                            const Divider(height: 24),
+                            ExpansionTile(
+                              tilePadding: EdgeInsets.zero,
+                              childrenPadding: const EdgeInsets.only(top: 8, bottom: 4),
+                              title: Text(
+                                'admin.settlements.margin_show_details'.tr(),
+                                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                                      color: Theme.of(context).colorScheme.primary,
+                                    ),
+                              ),
+                              children: [
+                                ListView.separated(
+                                  shrinkWrap: true,
+                                  physics: const NeverScrollableScrollPhysics(),
+                                  itemCount: data.taskMargins.length,
+                                  separatorBuilder: (_, _) => const SizedBox(height: 8),
+                                  itemBuilder: (context, index) {
+                                    final t = data.taskMargins[index];
+                                    final marginColor = t.margin >= 0
+                                        ? Colors.green.shade700
+                                        : Colors.red.shade700;
+                                    return Padding(
+                                      padding: const EdgeInsets.symmetric(vertical: 4),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Expanded(
+                                                child: Text(
+                                                  t.taskTitle,
+                                                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                                        fontWeight: FontWeight.w500,
+                                                      ),
+                                                  maxLines: 2,
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Text(
+                                                formatWalletAmount(context, ref, t.margin),
+                                                style: TextStyle(
+                                                  fontWeight: FontWeight.w600,
+                                                  color: marginColor,
+                                                  fontSize: 14,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            '${'admin.settlements.margin_breakdown_invoiced'.tr()}: ${formatWalletAmount(context, ref, t.invoiced)} | ${'admin.settlements.margin_breakdown_costs'.tr()}: ${formatWalletAmount(context, ref, t.costs)}',
+                                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ],
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -335,12 +413,24 @@ class _PayrollGroupCard extends StatelessWidget {
                 ),
                 subtitle: Padding(
                   padding: const EdgeInsets.only(top: 4),
-                  child: Text(
-                    formatAmount(group.totalAmount),
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.bold,
-                          color: Colors.green.shade700,
-                        ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        DateFormat.yMMMM(context.locale.toString()).format(group.taskMonth),
+                        style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                              color: Colors.grey.shade600,
+                            ),
+                      ),
+                      Text(
+                        formatAmount(group.totalAmount),
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.green.shade700,
+                            ),
+                      ),
+                    ],
                   ),
                 ),
                 children: hasItems

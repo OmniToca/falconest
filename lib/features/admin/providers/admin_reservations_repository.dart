@@ -25,7 +25,7 @@ class AdminReservationsRepository {
   Stream<List<Map<String, dynamic>>> watchReservationsRaw(List<String> apartmentIds) {
     if (apartmentIds.isEmpty) return Stream.value([]);
 
-    List<Map<String, dynamic>> _filterAndSort(List<Map<String, dynamic>> rows) {
+    List<Map<String, dynamic>> filterAndSort(List<Map<String, dynamic>> rows) {
       final filtered = rows
           .where((r) => r['deleted_at'] == null)
           .toList();
@@ -44,7 +44,7 @@ class AdminReservationsRepository {
           .inFilter('apartment_id', apartmentIds)
           .order('start_date', ascending: false)
           .limit(500)
-          .map((List<Map<String, dynamic>> rows) => _filterAndSort(rows)),
+          .map((List<Map<String, dynamic>> rows) => filterAndSort(rows)),
       debugLabel: 'AdminReservationsRepository.watchReservationsRaw',
     );
 
@@ -58,7 +58,7 @@ class AdminReservationsRepository {
             .order('start_date', ascending: false)
             .limit(500);
         final list = (res as List).cast<Map<String, dynamic>>();
-        return _filterAndSort(list);
+        return filterAndSort(list);
       },
     );
   }

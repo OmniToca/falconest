@@ -67,7 +67,7 @@ class _AddCompanyExpenseDialogState extends ConsumerState<AddCompanyExpenseDialo
   /// Vazba na klienta umožňuje evidovat výdaje vázané na konkrétního klienta (např. externí platby).
   Widget _buildClientDropdown(List<ClientModel> clients) {
     return DropdownButtonFormField<String?>(
-      value: _selectedClientId,
+      initialValue: _selectedClientId,
       decoration: InputDecoration(
         labelText: 'admin.finance.select_client'.tr(),
         hintText: 'admin.finance.select_client_hint'.tr(),
@@ -109,7 +109,7 @@ class _AddCompanyExpenseDialogState extends ConsumerState<AddCompanyExpenseDialo
   /// Přiřazení apartmánu k výdaji je nezbytné pro automatické strhávání nákladů ve finální faktuře majitele.
   Widget _buildApartmentDropdown(List<ApartmentRow> apartments) {
     return DropdownButtonFormField<String?>(
-      value: _selectedApartmentId,
+      initialValue: _selectedApartmentId,
       decoration: InputDecoration(
         labelText: 'worker.expense_apartment'.tr(),
         hintText: 'worker.expense_apartment_hint'.tr(),
@@ -269,7 +269,7 @@ class _AddCompanyExpenseDialogState extends ConsumerState<AddCompanyExpenseDialo
                 height: 56,
                 child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
               ),
-              error: (_, __) => _buildClientDropdown([]),
+              error: (_, _) => _buildClientDropdown([]),
             ),
             const SizedBox(height: 16),
             // Přiřazení apartmánu k výdaji je nezbytné pro automatické strhávání nákladů ve finální faktuře majitele.
@@ -279,7 +279,7 @@ class _AddCompanyExpenseDialogState extends ConsumerState<AddCompanyExpenseDialo
                 height: 56,
                 child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
               ),
-              error: (_, __) => _buildApartmentDropdown([]),
+              error: (_, _) => _buildApartmentDropdown([]),
             ),
             const SizedBox(height: 16),
             TextField(

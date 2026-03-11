@@ -24,8 +24,8 @@ Future<T?> showAppModal<T>({
     barrierLabel: barrierLabel,
     barrierColor: Colors.black54,
     transitionDuration: const Duration(milliseconds: 250),
-    pageBuilder: (_, __, ___) => const SizedBox.shrink(),
-    transitionBuilder: (ctx, animation, __, ___) {
+    pageBuilder: (_, _, _) => const SizedBox.shrink(),
+    transitionBuilder: (ctx, animation, _, _) {
       return BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
         child: FadeTransition(

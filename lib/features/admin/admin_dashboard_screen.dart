@@ -14,6 +14,8 @@ import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/apartment_status_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/dashboard_provider.dart';
+import 'package:falconest/features/admin/providers/finance_cash_provider.dart';
+import 'package:falconest/features/admin/providers/finance_tab_provider.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
 import 'package:falconest/features/admin/providers/settlements_provider.dart';
 import 'package:falconest/features/settings/providers/profile_provider.dart';
@@ -93,10 +95,31 @@ class AdminDashboardScreen extends ConsumerWidget {
       return !day.isBefore(today) && day.isBefore(todayEnd);
     }).toList();
 
+    // Smart Fallback: Pokud je dnes prázdno, zobrazíme nejbližší události (zítra až +7 dní).
+    final tomorrowStart = todayEnd;
+    final upcomingEnd = tomorrowStart.add(const Duration(days: 7));
+    final upcomingTasks = tasks.where((t) {
+      final local = t.dueDate.isUtc ? t.dueDate.toLocal() : t.dueDate;
+      final day = DateTime(local.year, local.month, local.day);
+      return !day.isBefore(tomorrowStart) && day.isBefore(upcomingEnd);
+    }).toList();
+    final useUpcomingFallback = todayTasks.isEmpty && upcomingTasks.isNotEmpty;
+    final displayPlanTasks = useUpcomingFallback ? upcomingTasks : todayTasks;
+
     // Externí úkoly = bez apartment_id (transfery, služby u klienta).
     final externalTasks = todayTasks.where((t) => t.apartmentId.trim().isEmpty).toList();
+    final upcomingExternalTasks = upcomingTasks.where((t) => t.apartmentId.trim().isEmpty).toList();
+    final displayExternalTasks = externalTasks.isNotEmpty
+        ? externalTasks
+        : (useUpcomingFallback ? upcomingExternalTasks : externalTasks);
 
     final todayAssignedIds = todayTasks
+        .map((t) => t.assignedTo)
+        .where((id) => id != null && id.trim().isNotEmpty)
+        .map((id) => id!)
+        .toSet()
+        .toList();
+    final upcomingAssignedIds = upcomingTasks
         .map((t) => t.assignedTo)
         .where((id) => id != null && id.trim().isNotEmpty)
         .map((id) => id!)
@@ -107,6 +130,15 @@ class AdminDashboardScreen extends ConsumerWidget {
             (m.profileId != null && todayAssignedIds.contains(m.profileId)) ||
             todayAssignedIds.contains(m.id))
         .toList();
+    final teamMembersUpcoming = teamMembers
+        .where((m) =>
+            (m.profileId != null && upcomingAssignedIds.contains(m.profileId)) ||
+            upcomingAssignedIds.contains(m.id))
+        .toList();
+    final displayTeamMembers = useUpcomingFallback ? teamMembersUpcoming : teamMembersToday;
+
+    // Smart Fallback pro graf skladby: pokud dnes nic není, použij data z dalších 7 dní.
+    final displayTasksComposition = _buildTasksCompositionMap(displayPlanTasks);
 
     int countOccupied = 0, countToClean = 0, countClean = 0;
     for (final apt in apartments) {
@@ -132,9 +164,33 @@ class AdminDashboardScreen extends ConsumerWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _DashboardHeader(profileAsync: profileAsync, now: now),
-                const SizedBox(height: 20),
-                _ActionStripWidget(summary: summary),
+                // Na širokém monitoru: pozdrav a Action Strip v jednom řádku; na úzkém sloupec.
+                LayoutBuilder(
+                  builder: (context, headerConstraints) {
+                    final headerWide = headerConstraints.maxWidth > 900;
+                    if (headerWide) {
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          _DashboardHeader(profileAsync: profileAsync, now: now),
+                          const SizedBox(width: 24),
+                          Expanded(
+                            child: _ActionStripWidget(summary: summary),
+                          ),
+                        ],
+                      );
+                    }
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _DashboardHeader(profileAsync: profileAsync, now: now),
+                        const SizedBox(height: 20),
+                        _ActionStripWidget(summary: summary),
+                      ],
+                    );
+                  },
+                ),
                 const SizedBox(height: 16),
                 // Operativa – tři sloupce (Dnešní plán, Stav apartmánů, Kdo je v akci)
                 isWide
@@ -143,7 +199,11 @@ class AdminDashboardScreen extends ConsumerWidget {
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             Expanded(
-                              child: _DashboardPlanSection(todayTasks: todayTasks),
+                              child: _DashboardPlanSection(
+                                tasks: displayPlanTasks,
+                                isUpcoming: useUpcomingFallback,
+                                today: today,
+                              ),
                             ),
                             const SizedBox(width: 16),
                             Expanded(
@@ -156,9 +216,10 @@ class AdminDashboardScreen extends ConsumerWidget {
                             const SizedBox(width: 16),
                             Expanded(
                               child: _TodaysTeamSection(
-                                members: teamMembersToday,
-                                todayTasks: todayTasks,
+                                members: displayTeamMembers,
+                                displayTasks: displayPlanTasks,
                                 profileIdsWithCash: summary.profileIdsWithCash,
+                                isUpcoming: useUpcomingFallback,
                               ),
                             ),
                           ],
@@ -167,7 +228,11 @@ class AdminDashboardScreen extends ConsumerWidget {
                     : Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          _DashboardPlanSection(todayTasks: todayTasks),
+                          _DashboardPlanSection(
+                            tasks: displayPlanTasks,
+                            isUpcoming: useUpcomingFallback,
+                            today: today,
+                          ),
                           const SizedBox(height: 16),
                           _ApartmentFleetSection(
                             countClean: countClean,
@@ -176,20 +241,72 @@ class AdminDashboardScreen extends ConsumerWidget {
                           ),
                           const SizedBox(height: 16),
                           _TodaysTeamSection(
-                            members: teamMembersToday,
-                            todayTasks: todayTasks,
+                            members: displayTeamMembers,
+                            displayTasks: displayPlanTasks,
                             profileIdsWithCash: summary.profileIdsWithCash,
+                            isUpcoming: useUpcomingFallback,
                           ),
                         ],
                       ),
                 const SizedBox(height: 16),
-                _BusinessOverviewSection(summary: summary),
+                // Operativa & Rychlé akce – nadpis sekce (stejný styl jako Finance & Pozornost).
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: Text(
+                    'admin.dashboard_section_operations'.tr(),
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black87,
+                          letterSpacing: -0.3,
+                        ),
+                  ),
+                ),
+                // Externí služby (vlevo) a Rychlé akce (vpravo) – na desktopu vedle sebe se stejnou výškou, na úzkém displeji pod sebou.
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isWide = constraints.maxWidth > 900;
+                    if (isWide) {
+                      return IntrinsicHeight(
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Expanded(
+                              child: _ExternalTasksSection(
+                                externalTasks: displayExternalTasks,
+                                isUpcoming: useUpcomingFallback,
+                                today: today,
+                              ),
+                            ),
+                            const SizedBox(width: 24),
+                            Expanded(
+                              child: _QuickActionsSection(ref: ref),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _ExternalTasksSection(
+                          externalTasks: displayExternalTasks,
+                          isUpcoming: useUpcomingFallback,
+                          today: today,
+                        ),
+                        const SizedBox(height: 16),
+                        _QuickActionsSection(ref: ref),
+                      ],
+                    );
+                  },
+                ),
                 const SizedBox(height: 16),
-                _FinanceAttentionSection(tasks: tasks),
+                _FinanceAttentionSection(tasks: tasks, apartments: apartments),
                 const SizedBox(height: 16),
-                _QuickActionsSection(ref: ref),
-                const SizedBox(height: 16),
-                _ExternalTasksSection(externalTasks: externalTasks),
+                _BusinessOverviewSection(
+                  summary: summary,
+                  tasksComposition: displayTasksComposition,
+                  compositionIsUpcoming: useUpcomingFallback,
+                ),
               ],
             ),
           );
@@ -314,9 +431,15 @@ class _EmptyStateWidget extends StatelessWidget {
 
 /// Sekce „Manažerský přehled“ – dva prémiové grafy (čárový + prstencový).
 class _BusinessOverviewSection extends StatelessWidget {
-  const _BusinessOverviewSection({required this.summary});
+  const _BusinessOverviewSection({
+    required this.summary,
+    required this.tasksComposition,
+    required this.compositionIsUpcoming,
+  });
 
   final DashboardSummary summary;
+  final Map<String, int> tasksComposition;
+  final bool compositionIsUpcoming;
 
   @override
   Widget build(BuildContext context) {
@@ -348,7 +471,10 @@ class _BusinessOverviewSection extends StatelessWidget {
                   const SizedBox(width: 16),
                   Expanded(
                     flex: 40,
-                    child: _TasksCompositionChart(tasksComposition: summary.tasksComposition),
+                    child: _TasksCompositionChart(
+                      tasksComposition: tasksComposition,
+                      isUpcoming: compositionIsUpcoming,
+                    ),
                   ),
                 ],
               );
@@ -357,7 +483,10 @@ class _BusinessOverviewSection extends StatelessWidget {
               children: [
                 _ReservationsTrendChart(reservationsTrend: summary.reservationsTrend),
                 const SizedBox(height: 16),
-                _TasksCompositionChart(tasksComposition: summary.tasksComposition),
+                _TasksCompositionChart(
+                  tasksComposition: tasksComposition,
+                  isUpcoming: compositionIsUpcoming,
+                ),
               ],
             );
           },
@@ -374,16 +503,20 @@ class _BusinessOverviewSection extends StatelessWidget {
 class _FinanceAttentionSection extends ConsumerWidget {
   const _FinanceAttentionSection({
     required this.tasks,
+    required this.apartments,
   });
 
   final List<TaskRow> tasks;
+  final List<ApartmentRow> apartments;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final payoutsAsync = ref.watch(groupedPendingPayoutsProvider);
+    final shortfallsAsync = ref.watch(cashShortfallsCountProvider);
     final settlementsActive = isModuleActive(ref, 'settlements');
     final financeExportActive = isModuleActive(ref, 'finance_export');
     final switchToTab = AdminTabScope.of(context);
+    final shortfallCount = shortfallsAsync.valueOrNull ?? 0;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -403,42 +536,47 @@ class _FinanceAttentionSection extends ConsumerWidget {
           builder: (context, constraints) {
             final isWide = constraints.maxWidth > 600;
             if (isWide) {
-              // IntrinsicHeight dává Row konečnou výšku (nejvyšší karta), aby se karty neroztahovaly
-              // do nekonečna uvnitř SingleChildScrollView. Expanded jen pro šířku karet.
               return IntrinsicHeight(
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Expanded(
                       child: _FinanceAttentionCard(
-                      titleKey: 'admin.dashboard_card_pending_payouts',
-                      icon: Icons.payments_outlined,
-                      isLocked: !settlementsActive,
-                      lockedMessageKey: 'admin.dashboard_card_pending_payouts_locked',
-                      moduleKey: 'settlements',
-                      payoutsAsync: payoutsAsync,
-                      formatAmount: (v) => formatWalletAmount(context, ref, v),
-                      onTapUnlocked: () => switchToTab?.call(adminTabIndexFinance),
+                        titleKey: 'admin.dashboard_card_pending_payouts',
+                        icon: Icons.payments_outlined,
+                        isLocked: !settlementsActive,
+                        lockedMessageKey: 'admin.dashboard_card_pending_payouts_locked',
+                        moduleKey: 'settlements',
+                        payoutsAsync: payoutsAsync,
+                        formatAmount: (v) => formatWalletAmount(context, ref, v),
+                        onTapUnlocked: () => switchToTab?.call(adminTabIndexFinance),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: _ExpectedIncomeCard(
-                      tasks: tasks,
-                      isLocked: !financeExportActive,
-                      formatAmount: (v) => formatWalletAmount(context, ref, v),
-                      onTapUnlocked: () => switchToTab?.call(adminTabIndexFinance),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: _ExpectedIncomeCard(
+                        tasks: tasks,
+                        apartments: apartments,
+                        isLocked: !financeExportActive,
+                        formatAmount: (v) => formatWalletAmount(context, ref, v),
+                        onTapUnlocked: () => switchToTab?.call(adminTabIndexFinance),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: _CriticalOverdueCard(
-                      tasks: tasks,
-                      onTap: () => switchToTab?.call(adminTabIndexTasks),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: _NeedsAttentionCard(
+                        tasks: tasks,
+                        shortfallCount: shortfallCount,
+                        onTapTasks: () => switchToTab?.call(adminTabIndexTasks),
+                        onTapShortfalls: () {
+                          ref.read(financeRequestedSubTabProvider.notifier).state =
+                              financeSubTabIndexBilling;
+                          switchToTab?.call(adminTabIndexFinance);
+                        },
+                      ),
                     ),
-                  ),
-                ],
-              ),
+                  ],
+                ),
               );
             }
             return Column(
@@ -457,14 +595,21 @@ class _FinanceAttentionSection extends ConsumerWidget {
                 const SizedBox(height: 12),
                 _ExpectedIncomeCard(
                   tasks: tasks,
+                  apartments: apartments,
                   isLocked: !financeExportActive,
                   formatAmount: (v) => formatWalletAmount(context, ref, v),
                   onTapUnlocked: () => switchToTab?.call(adminTabIndexFinance),
                 ),
                 const SizedBox(height: 12),
-                _CriticalOverdueCard(
+                _NeedsAttentionCard(
                   tasks: tasks,
-                  onTap: () => switchToTab?.call(adminTabIndexTasks),
+                  shortfallCount: shortfallCount,
+                  onTapTasks: () => switchToTab?.call(adminTabIndexTasks),
+                  onTapShortfalls: () {
+                    ref.read(financeRequestedSubTabProvider.notifier).state =
+                        financeSubTabIndexBilling;
+                    switchToTab?.call(adminTabIndexFinance);
+                  },
                 ),
               ],
             );
@@ -531,7 +676,7 @@ class _FinanceAttentionCard extends StatelessWidget {
                 ),
               ),
             ),
-            error: (_, __) => Text(
+            error: (_, _) => Text(
               '—',
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     color: Colors.grey.shade600,
@@ -539,12 +684,25 @@ class _FinanceAttentionCard extends StatelessWidget {
             ),
             data: (data) {
               final total = data.groups.fold<double>(0, (s, g) => s + g.totalAmount);
-              return Text(
-                formatAmount(total),
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.green.shade700,
-                    ),
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    formatAmount(total),
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.green.shade700,
+                        ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'admin.dashboard_pending_payouts_subtitle'.tr(),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.grey.shade600,
+                        ),
+                  ),
+                ],
               );
             },
           );
@@ -567,7 +725,8 @@ class _FinanceAttentionCard extends StatelessWidget {
         opacity: isLocked ? 0.7 : 1,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
+          mainAxisSize: MainAxisSize.max,
+          mainAxisAlignment: MainAxisAlignment.start,
           children: [
             Row(
               children: [
@@ -621,25 +780,62 @@ double _taskExpectedAmount(TaskRow t) {
   return 0;
 }
 
-/// Karta „Očekávaný příjem (Fakturace)“ – součet z dokončených nevyfakturovaných úkolů. Uzamčeno při neaktivním finance_export.
+/// Vrací (rok, měsíc) úkolu pro rozdělení do aktuálního vs. příštího měsíce (scheduled_start nebo due_date, lokální čas).
+(int, int) _taskYearMonth(TaskRow t) {
+  final dt = t.scheduledStart ?? t.dueDate;
+  final local = dt.isUtc ? dt.toLocal() : dt;
+  return (local.year, local.month);
+}
+
+/// Karta „Očekávaný příjem (Fakturace)“ – B2B: hotové tento měsíc + výhled aktuálního a příštího měsíce. Uzamčeno při neaktivním finance_export.
+/// Zahrnuje i měsíční paušály za správu apartmánů (monthlyManagementFee) jako jistý příjem.
 class _ExpectedIncomeCard extends StatelessWidget {
   const _ExpectedIncomeCard({
     required this.tasks,
+    required this.apartments,
     required this.isLocked,
     required this.formatAmount,
     required this.onTapUnlocked,
   });
 
   final List<TaskRow> tasks;
+  final List<ApartmentRow> apartments;
   final bool isLocked;
   final String Function(double) formatAmount;
   final VoidCallback? onTapUnlocked;
 
   @override
   Widget build(BuildContext context) {
-    final completedSum = tasks
+    final now = DateTime.now();
+    final currentYear = now.year;
+    final currentMonth = now.month;
+    final nextYear = currentMonth == 12 ? currentYear + 1 : currentYear;
+    final nextMonth = currentMonth == 12 ? 1 : currentMonth + 1;
+
+    final currentMonthTasks = tasks.where((t) {
+      final (y, m) = _taskYearMonth(t);
+      return y == currentYear && m == currentMonth;
+    }).toList();
+    final nextMonthTasks = tasks.where((t) {
+      final (y, m) = _taskYearMonth(t);
+      return y == nextYear && m == nextMonth;
+    }).toList();
+
+    final monthlyFeeSum = apartments.fold<double>(
+        0, (sum, apt) => sum + (apt.monthlyManagementFee));
+
+    final currentMonthCompleted = currentMonthTasks
         .where((t) => _isTaskCompleted(t.status))
         .fold<double>(0, (s, t) => s + _taskExpectedAmount(t));
+    final currentMonthTotal =
+        currentMonthTasks.fold<double>(0, (s, t) => s + _taskExpectedAmount(t));
+    final nextMonthTotal =
+        nextMonthTasks.fold<double>(0, (s, t) => s + _taskExpectedAmount(t));
+
+    // Měsíční paušály za správu – jistý příjem, přičteme k hotovým i k výhledu.
+    final currentMonthCompletedWithFees = currentMonthCompleted + monthlyFeeSum;
+    final currentMonthTotalWithFees = currentMonthTotal + monthlyFeeSum;
+    final nextMonthTotalWithFees = nextMonthTotal + monthlyFeeSum;
 
     final content = isLocked
         ? Row(
@@ -656,12 +852,39 @@ class _ExpectedIncomeCard extends StatelessWidget {
               ),
             ],
           )
-        : Text(
-            formatAmount(completedSum),
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.green.shade700,
-                ),
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'admin.dashboard_expected_income_done_this_month'.tr(),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Colors.grey.shade700,
+                    ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                formatAmount(currentMonthCompletedWithFees),
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.green.shade700,
+                    ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '${'admin.dashboard_expected_income_outlook_month'.tr()}: ${formatAmount(currentMonthTotalWithFees)}',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Colors.grey.shade600,
+                    ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '${'admin.dashboard_expected_income_outlook_next'.tr()}: ${formatAmount(nextMonthTotalWithFees)}',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Colors.grey.shade600,
+                    ),
+              ),
+            ],
           );
 
     return AppCard(
@@ -682,7 +905,8 @@ class _ExpectedIncomeCard extends StatelessWidget {
         opacity: isLocked ? 0.7 : 1,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
+          mainAxisSize: MainAxisSize.max,
+          mainAxisAlignment: MainAxisAlignment.start,
           children: [
             Row(
               children: [
@@ -727,52 +951,167 @@ int _countCriticalOrOverdue(List<TaskRow> tasks) {
   }).length;
 }
 
-/// Karta „Kritické / Zpožděné úkoly“ – bez zámku, odkaz na záložku Úkoly.
-class _CriticalOverdueCard extends StatelessWidget {
-  const _CriticalOverdueCard({
+/// Mapuje raw task_type na kategorii pro graf (stejná logika jako v dashboard_provider).
+Map<String, int> _buildTasksCompositionMap(List<TaskRow> taskList) {
+  final result = <String, int>{};
+  for (final t in taskList) {
+    final cat = _taskTypeToCategoryForChart(t.taskType);
+    result[cat] = (result[cat] ?? 0) + 1;
+  }
+  return result;
+}
+
+String _taskTypeToCategoryForChart(String taskType) {
+  final t = taskType.trim().toLowerCase();
+  if (t.contains('cleaning') || t.contains('úklid')) return 'Úklidy';
+  if (t.contains('transfer_in') || (t.contains('transfer') && t.contains('in'))) return 'Transfery';
+  if (t.contains('transfer_out') || (t.contains('transfer') && t.contains('out'))) return 'Transfery';
+  if (t.contains('transfer')) return 'Transfery';
+  if (t.contains('check_in')) return 'Příjezdy';
+  if (t.contains('check_out')) return 'Odjezdy';
+  if (t.contains('issue') || t.contains('material') || t.contains('údržba') || t.contains('závada')) return 'Údržba';
+  return 'Jiné';
+}
+
+/// Formátuje datum a čas úkolu pro zobrazení v režimu „Nejbližší plán“ (Smart Fallback).
+/// Zítra → „Zítra 10:00“, jinak → „Čt 12.3. 10:00“. PROČ: Dispečer musí na první pohled vidět, že jde o budoucí den.
+String formatTaskDueForUpcoming(BuildContext context, DateTime localDue, DateTime today) {
+  final taskDay = DateTime(localDue.year, localDue.month, localDue.day);
+  final tomorrow = today.add(const Duration(days: 1));
+  final hour = localDue.hour.toString().padLeft(2, '0');
+  final minute = localDue.minute.toString().padLeft(2, '0');
+  final timeStr = '$hour:$minute';
+  if (taskDay == tomorrow) {
+    final tomorrowStr = 'common.tomorrow'.tr();
+    return '$tomorrowStr $timeStr';
+  }
+  final locale = context.locale.toString();
+  return '${DateFormat('EEE d.M.', locale).format(localDue)} $timeStr';
+}
+
+/// Sjednocená karta „Vyžaduje pozornost“ – zpožděné úkoly a nedoplatky v hotovosti.
+/// Každý řádek je samostatně kliknutelný (úkoly → záložka Úkoly, nedoplatky → Finance).
+class _NeedsAttentionCard extends StatelessWidget {
+  const _NeedsAttentionCard({
     required this.tasks,
-    required this.onTap,
+    required this.shortfallCount,
+    required this.onTapTasks,
+    required this.onTapShortfalls,
   });
 
   final List<TaskRow> tasks;
+  final int shortfallCount;
+  final VoidCallback? onTapTasks;
+  final VoidCallback? onTapShortfalls;
+
+  @override
+  Widget build(BuildContext context) {
+    final overdueCount = _countCriticalOrOverdue(tasks);
+
+    return AppCard(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, size: 22, color: Colors.orange.shade700),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'admin.dashboard_card_needs_attention'.tr(),
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: Colors.black87,
+                        ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          _NeedsAttentionRow(
+            icon: Icons.schedule,
+            iconColor: Colors.orange.shade700,
+            label: 'admin.dashboard_needs_attention_overdue'.tr(),
+            value: overdueCount,
+            valueColor: overdueCount > 0 ? Colors.orange.shade700 : Colors.grey.shade600,
+            onTap: onTapTasks,
+          ),
+          const SizedBox(height: 8),
+          _NeedsAttentionRow(
+            icon: Icons.account_balance_wallet_outlined,
+            iconColor: Colors.red.shade700,
+            label: 'admin.dashboard_needs_attention_shortfalls'.tr(),
+            value: shortfallCount,
+            valueColor: shortfallCount > 0 ? Colors.red.shade700 : Colors.grey.shade600,
+            onTap: onTapShortfalls,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Jeden řádek v kartě Vyžaduje pozornost – ikona, název, hodnota vpravo; celý řádek kliknutelný.
+class _NeedsAttentionRow extends StatelessWidget {
+  const _NeedsAttentionRow({
+    required this.icon,
+    required this.iconColor,
+    required this.label,
+    required this.value,
+    required this.valueColor,
+    this.onTap,
+  });
+
+  final IconData icon;
+  final Color iconColor;
+  final String label;
+  final int value;
+  final Color valueColor;
   final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    final count = _countCriticalOrOverdue(tasks);
-
-    return AppCard(
-      onTap: onTap,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.warning_amber_rounded, size: 22, color: Colors.orange.shade700),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'admin.dashboard_card_critical_overdue'.tr(),
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                        color: Colors.black87,
-                      ),
+    final row = Row(
+      children: [
+        Icon(icon, size: 20, color: iconColor),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            label,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Colors.black87,
                 ),
+          ),
+        ),
+        Text(
+          '$value',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: valueColor,
               ),
-            ],
+        ),
+      ],
+    );
+    if (onTap != null) {
+      return Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+            child: row,
           ),
-          const SizedBox(height: 12),
-          Text(
-            '$count',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: count > 0 ? Colors.orange.shade700 : Colors.grey.shade600,
-                ),
-          ),
-        ],
-      ),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+      child: row,
     );
   }
 }
@@ -939,11 +1278,18 @@ final _compositionColors = [
   Colors.indigo.shade400,
 ];
 
-/// Prstencový graf – skladba dnešních úkolů s legendou.
+/// Prstencový graf – skladba dnešních úkolů nebo dalších 7 dní (Smart Fallback) s legendou.
 class _TasksCompositionChart extends StatelessWidget {
-  const _TasksCompositionChart({required this.tasksComposition});
+  const _TasksCompositionChart({
+    required this.tasksComposition,
+    this.isUpcoming = false,
+  });
 
   final Map<String, int> tasksComposition;
+  final bool isUpcoming;
+
+  String _titleKey(BuildContext context) =>
+      isUpcoming ? 'admin.dashboard_upcoming_composition'.tr() : 'admin.dashboard_chart_tasks_composition'.tr();
 
   @override
   Widget build(BuildContext context) {
@@ -968,7 +1314,7 @@ class _TasksCompositionChart extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'admin.dashboard_chart_tasks_composition'.tr(),
+              _titleKey(context),
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
                     fontWeight: FontWeight.bold,
                     color: Colors.black87,
@@ -1018,7 +1364,7 @@ class _TasksCompositionChart extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'admin.dashboard_chart_tasks_composition'.tr(),
+            _titleKey(context),
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: Colors.black87,
@@ -1118,14 +1464,14 @@ class _ActionStripWidget extends StatelessWidget {
         summary.employeesWithCashCount > 0;
 
     if (!hasWarnings) {
-      return Container(
+      final greenPill = Container(
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: [Colors.green.shade400, Colors.green.shade700],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(12),
           boxShadow: [
             BoxShadow(
               color: Colors.green.withValues(alpha: 0.3),
@@ -1136,27 +1482,34 @@ class _ActionStripWidget extends StatelessWidget {
         ),
         child: Material(
           color: Colors.transparent,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(12),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.check_circle_outline, color: Colors.white, size: 36),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Text(
-                    'admin.dashboard_action_strip_all_clear'.tr(),
-                    style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
+                Icon(Icons.check_circle_outline, color: Colors.white, size: 22),
+                const SizedBox(width: 10),
+                Text(
+                  'admin.dashboard_action_strip_all_clear'.tr(),
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
                   ),
                 ),
               ],
             ),
           ),
         ),
+      );
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth > 900) {
+            return Align(alignment: Alignment.centerRight, child: greenPill);
+          }
+          return greenPill;
+        },
       );
     }
 
@@ -1212,13 +1565,12 @@ class _ActionStripWidget extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final isWide = constraints.maxWidth > 600;
+        final isWide = constraints.maxWidth > 900;
         return Wrap(
+          alignment: isWide ? WrapAlignment.end : WrapAlignment.start,
           spacing: 12,
           runSpacing: 12,
-          children: cards
-              .map((c) => isWide ? c : SizedBox(width: constraints.maxWidth, child: c))
-              .toList(),
+          children: cards,
         );
       },
     );
@@ -1244,7 +1596,7 @@ class _ActionCard extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         gradient: gradient,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.2),
@@ -1255,22 +1607,22 @@ class _ActionCard extends StatelessWidget {
       ),
       child: Material(
         color: Colors.transparent,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(12),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(icon, color: Colors.white, size: 32),
-                const SizedBox(width: 16),
+                Icon(icon, color: Colors.white, size: 22),
+                const SizedBox(width: 10),
                 Flexible(
                   child: Text(
                     text,
                     style: const TextStyle(
-                      fontSize: 15,
+                      fontSize: 14,
                       fontWeight: FontWeight.bold,
                       color: Colors.white,
                     ),
@@ -1300,7 +1652,7 @@ class _QuickActionsSection extends StatelessWidget {
       decoration: _premiumCardDecoration,
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
             'admin.dashboard_quick_actions'.tr(),
@@ -1310,10 +1662,13 @@ class _QuickActionsSection extends StatelessWidget {
                 ),
           ),
           const SizedBox(height: 12),
-          Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: [
+          Center(
+            child: Wrap(
+              alignment: WrapAlignment.center,
+              runAlignment: WrapAlignment.center,
+              spacing: 12,
+              runSpacing: 12,
+              children: [
                   FilledButton.icon(
                     onPressed: () {
                       AdminTasksScreen.showAddTaskDialog(context, ref);
@@ -1341,17 +1696,24 @@ class _QuickActionsSection extends StatelessWidget {
                   ),
                 ],
               ),
+            ),
         ],
       ),
     );
   }
 }
 
-/// Sekce „Dnešní externí služby“ – úkoly bez apartment_id (transfery, služby u klienta).
+/// Sekce „Dnešní externí služby“ nebo „Nejbližší externí služby“ (Smart Fallback).
 class _ExternalTasksSection extends StatelessWidget {
-  const _ExternalTasksSection({required this.externalTasks});
+  const _ExternalTasksSection({
+    required this.externalTasks,
+    required this.isUpcoming,
+    required this.today,
+  });
 
   final List<TaskRow> externalTasks;
+  final bool isUpcoming;
+  final DateTime today;
 
   @override
   Widget build(BuildContext context) {
@@ -1363,7 +1725,7 @@ class _ExternalTasksSection extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'admin.dashboard_external_services'.tr(),
+            isUpcoming ? 'admin.dashboard_upcoming_external'.tr() : 'admin.dashboard_external_services'.tr(),
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.w600,
                   color: Colors.black87,
@@ -1378,8 +1740,9 @@ class _ExternalTasksSection extends StatelessWidget {
           else
             ...externalTasks.map((t) {
               final local = t.dueDate.isUtc ? t.dueDate.toLocal() : t.dueDate;
-              final timeStr =
-                  '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+              final dateTimeStr = isUpcoming
+                  ? formatTaskDueForUpcoming(context, local, today)
+                  : '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
               final title = t.customTitle?.trim().isNotEmpty == true
                   ? t.customTitle!
                   : t.title.trim().isNotEmpty
@@ -1402,7 +1765,7 @@ class _ExternalTasksSection extends StatelessWidget {
                         const SizedBox(width: 10),
                         Expanded(
                           child: Text(
-                            '$title • $timeStr',
+                            '$title • $dateTimeStr',
                             style: const TextStyle(
                               fontSize: 13,
                               color: Colors.black87,
@@ -1423,11 +1786,17 @@ class _ExternalTasksSection extends StatelessWidget {
   }
 }
 
-/// Sekce „Dnešní plán“ – scrollovací timeline úkolů.
+/// Sekce „Dnešní plán“ nebo „Nejbližší plán“ (Smart Fallback) – scrollovací timeline úkolů.
 class _DashboardPlanSection extends StatelessWidget {
-  const _DashboardPlanSection({required this.todayTasks});
+  const _DashboardPlanSection({
+    required this.tasks,
+    required this.isUpcoming,
+    required this.today,
+  });
 
-  final List<TaskRow> todayTasks;
+  final List<TaskRow> tasks;
+  final bool isUpcoming;
+  final DateTime today;
 
   @override
   Widget build(BuildContext context) {
@@ -1439,14 +1808,14 @@ class _DashboardPlanSection extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            'admin.dashboard_plan_today'.tr(),
+            isUpcoming ? 'admin.dashboard_upcoming_plan'.tr() : 'admin.dashboard_plan_today'.tr(),
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: Colors.black87,
                 ),
           ),
           const SizedBox(height: 12),
-          if (todayTasks.isEmpty)
+          if (tasks.isEmpty)
             _EmptyStateWidget(
               icon: Icons.coffee_outlined,
               message: 'admin.dashboard_today_done_coffee'.tr(),
@@ -1456,16 +1825,19 @@ class _DashboardPlanSection extends StatelessWidget {
               height: 140,
               child: ListView.separated(
                 shrinkWrap: true,
-                itemCount: todayTasks.length,
+                itemCount: tasks.length,
                 separatorBuilder: (_, _) => const SizedBox(height: 8),
                 itemBuilder: (context, index) {
-                  final t = todayTasks[index];
+                  final t = tasks[index];
                   final icon = TaskVisuals.getIconStatic(t.taskType);
                   final bgColor = TaskVisuals.getBackgroundColorStatic(t.taskType);
                   final iconColor = TaskVisuals.getBorderColorStatic(t.taskType);
                   final local = t.dueDate.isUtc ? t.dueDate.toLocal() : t.dueDate;
                   final timeStr =
                       '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+                  final subtitleStr = isUpcoming
+                      ? formatTaskDueForUpcoming(context, local, today)
+                      : '${t.apartmentName ?? t.apartmentId} • $timeStr';
                   final hasAssignee = t.assignedToName != null && t.assignedToName!.trim().isNotEmpty;
                   return Material(
                     color: Colors.transparent,
@@ -1510,7 +1882,7 @@ class _DashboardPlanSection extends StatelessWidget {
                                   ),
                                   const SizedBox(height: 2),
                                   Text(
-                                    '${t.apartmentName ?? t.apartmentId} • $timeStr',
+                                    subtitleStr,
                                     style: TextStyle(
                                       fontSize: 11,
                                       color: Colors.grey.shade600,
@@ -1551,22 +1923,24 @@ class _DashboardPlanSection extends StatelessWidget {
   }
 }
 
-/// Sekce „Kdo je dnes v akci“ – avatary pracovníků s počtem úkolů. Ikona 💰 u těch s nevybranou hotovostí.
+/// Sekce „Kdo je dnes v akci“ nebo „Nejbližší směny“ (Smart Fallback) – avatary pracovníků s počtem úkolů.
 class _TodaysTeamSection extends StatelessWidget {
   const _TodaysTeamSection({
     required this.members,
-    required this.todayTasks,
+    required this.displayTasks,
     required this.profileIdsWithCash,
+    required this.isUpcoming,
   });
 
   final List<TeamMember> members;
-  final List<TaskRow> todayTasks;
+  final List<TaskRow> displayTasks;
   final Set<String> profileIdsWithCash;
+  final bool isUpcoming;
 
   @override
   Widget build(BuildContext context) {
     int taskCountFor(TeamMember m) {
-      return todayTasks
+      return displayTasks
           .where((t) =>
               (t.assignedTo == m.profileId || t.assignedTo == m.id) &&
               (t.assignedTo != null && t.assignedTo!.trim().isNotEmpty))
@@ -1581,7 +1955,7 @@ class _TodaysTeamSection extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'admin.dashboard_todays_team'.tr(),
+            isUpcoming ? 'admin.dashboard_upcoming_team'.tr() : 'admin.dashboard_todays_team'.tr(),
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: Colors.black87,

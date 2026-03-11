@@ -20,10 +20,8 @@ class ZonesRepository {
   /// Načte seznam aktivních oblastí (deleted_at IS NULL) tenant_id, seřazené podle názvu.
   /// Soft delete: záznamy s deleted_at vyplněným se ve výpisu neukazují.
   static Future<List<ZoneRow>> fetchList(String tenantId) async {
-    final res = await SupabaseService.client
-        .from('zones')
+    final res = await SupabaseService.safeFrom('zones', tenantId)
         .select()
-        .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
         .order('name', ascending: true);
     final list = res as List;
@@ -37,8 +35,10 @@ class ZonesRepository {
   /// Id generuje databáze (gen_random_uuid).
   static Future<void> insert(ZoneRow zone) async {
     if (zone.name.trim().isEmpty) throw ArgumentError('Název oblasti je povinný');
-    await SupabaseService.client.from('zones').insert({
-      'tenant_id': zone.tenantId,
+    final tid = zone.tenantId;
+    if (tid.isEmpty) throw ArgumentError('tenantId je povinný');
+    await SupabaseService.safeFrom('zones', tid).insert({
+      'tenant_id': tid,
       'name': zone.name.trim(),
     });
   }
@@ -46,18 +46,19 @@ class ZonesRepository {
   /// Aktualizuje existující oblast (podle zone.id).
   static Future<void> update(ZoneRow zone) async {
     if (zone.id.isEmpty) throw ArgumentError('id je povinný pro update');
-    await SupabaseService.client
-        .from('zones')
+    final tid = zone.tenantId;
+    if (tid.isEmpty) throw ArgumentError('tenantId je povinný pro update');
+    await SupabaseService.safeFrom('zones', tid)
         .update({'name': zone.name.trim()})
         .eq('id', zone.id);
   }
 
   /// Měkké smazání oblasti: nastaví deleted_at = now(). Záznam zůstane v DB pro Audit Log.
   /// Apartmány s touto zone_id zůstanou (FK ON DELETE SET NULL) – zone_id se vynuluje.
-  static Future<void> softDelete(String zoneId) async {
+  static Future<void> softDelete(String zoneId, String tenantId) async {
     if (zoneId.trim().isEmpty) throw ArgumentError('zoneId je povinný');
-    await SupabaseService.client
-        .from('zones')
+    if (tenantId.isEmpty) throw ArgumentError('tenantId je povinný');
+    await SupabaseService.safeFrom('zones', tenantId)
         .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
         .eq('id', zoneId.trim());
   }

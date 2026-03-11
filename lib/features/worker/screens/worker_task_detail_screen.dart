@@ -56,7 +56,7 @@ class WorkerTaskDetailScreen extends ConsumerWidget {
       loading: () => const Scaffold(
         body: Center(child: CircularProgressIndicator()),
       ),
-      error: (_, __) => _buildNotFound(context),
+      error: (_, _) => _buildNotFound(context),
     );
   }
 

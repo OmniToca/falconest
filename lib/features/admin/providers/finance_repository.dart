@@ -17,10 +17,8 @@ class FinanceRepository {
 
     final now = DateTime.now().toUtc().toIso8601String();
 
-    await SupabaseService.client
-        .from('tasks')
+    await SupabaseService.safeFrom('tasks', tenantId)
         .update({'invoiced_at': now})
-        .eq('tenant_id', tenantId)
         .inFilter('id', ids);
   }
 }

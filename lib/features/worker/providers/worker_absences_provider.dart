@@ -17,11 +17,9 @@ final workerAbsencesProvider = FutureProvider<List<StaffAbsence>>((ref) async {
     return [];
   }
   try {
-    final res = await SupabaseService.client
-        .from('staff_absences')
+    final res = await SupabaseService.safeFrom('staff_absences', tenantId)
         .select('id, profile_id, invitation_id, start_date, end_date, reason, status')
         .eq('profile_id', profileId)
-        .eq('tenant_id', tenantId)
         .order('start_date', ascending: false);
     final list = res as List;
     return list

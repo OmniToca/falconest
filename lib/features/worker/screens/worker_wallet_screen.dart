@@ -326,7 +326,7 @@ class _TransactionTile extends StatelessWidget {
             width: 40,
             height: 40,
             fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => const Icon(Icons.receipt_long, size: 32),
+            errorBuilder: (_, _, _) => const Icon(Icons.receipt_long, size: 32),
           ),
         ),
       );

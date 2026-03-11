@@ -53,6 +53,7 @@
 | apartments | deleted_at | timestamp with time zone | YES |
 | apartments | zone_id | uuid | YES |
 | apartments | code | text | YES |
+| apartments | monthly_management_fee | numeric | YES – default 0.00; měsíční paušál za správu (EUR) |
 | app_super_admins | id | uuid | NO |
 | audit_logs | id | uuid | NO |
 | audit_logs | tenant_id | uuid | YES |
@@ -285,6 +286,7 @@
 | tasks | custom_title | text | YES |
 | tasks | reference_number | text | YES |
 | tasks | assigned_user_ids | ARRAY | NO |
+| tasks | unassigned_info | jsonb | YES – Soft-Unassign: při automatickém odebrání (absence/výpověď) previous_id, previous_name, unassigned_at; při novém přiřazení null. |
 | tasks | updated_at | timestamp with time zone | YES – Čas poslední změny na serveru (UTC). Pro Timestamp Merging při push pending updates z mobilu – detekce konfliktu a Smart Merge. |
 | tenant_message_templates | id | uuid | NO |
 | tenant_message_templates | tenant_id | uuid | NO |

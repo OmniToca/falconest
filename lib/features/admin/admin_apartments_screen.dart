@@ -74,6 +74,15 @@ void showAddApartmentDialog(
   );
 }
 
+/// Parsuje měsíční poplatek ze vstupu (desetinná čísla s tečkou nebo čárkou). Null/prázdné → 0.0.
+double _parseMonthlyFee(String v) {
+  final trimmed = v.trim().replaceAll(',', '.');
+  if (trimmed.isEmpty) return 0.0;
+  final parsed = double.tryParse(trimmed);
+  if (parsed == null || parsed < 0) return 0.0;
+  return parsed;
+}
+
 /// Mapování manuálních stavů z DB (edit dialog) na i18n klíče.
 const _statusKeys = {
   'Uklizeno': 'admin.status_cleaned',
@@ -367,11 +376,9 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
     if (tenantId == null || tenantId.isEmpty || apartmentId.isEmpty) return false;
     final today = DateTime.now();
     final todayIso = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
-    final res = await SupabaseService.client
-        .from('reservations')
+    final res = await SupabaseService.safeFrom('reservations', tenantId)
         .select('id')
         .eq('apartment_id', apartmentId)
-        .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
         .neq('status', 'cancelled')
         .gte('end_date', todayIso)
@@ -412,8 +419,7 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
           ..['id'] = apartment.id
           ..['tenant_id'] = apartment.tenantId;
 
-        await SupabaseService.client
-            .from('apartments')
+        await SupabaseService.safeFrom('apartments', tenantId)
             .update({'deleted_at': deletedAt})
             .eq('id', id);
         await AuditLogService.logEnterprise(
@@ -431,8 +437,7 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
 
         try {
           // A) Všechny rezervace tohoto bytu (bez filtru na datum)
-          final resRows = await SupabaseService.client
-              .from('reservations')
+          final resRows = await SupabaseService.safeFrom('reservations', tenantId)
               .select('id, guest_name, start_date')
               .eq('apartment_id', id)
               .isFilter('deleted_at', null);
@@ -448,8 +453,7 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
                 : 'super_admin.audit_log_reservation_fallback'.tr(
                     namedArgs: {'id': resId.length >= 8 ? resId.substring(0, 8) : resId});
 
-            await SupabaseService.client
-                .from('reservations')
+            await SupabaseService.safeFrom('reservations', tenantId)
                 .update({'deleted_at': deletedAt})
                 .eq('id', resId);
             await AuditLogService.logEnterprise(
@@ -466,10 +470,8 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
           }
 
           // B) Všechny úkoly přímo přiřazené k tomuto bytu (bez filtru na datum)
-          final taskRows = await SupabaseService.client
-              .from('tasks')
+          final taskRows = await SupabaseService.safeFrom('tasks', tenantId)
               .select('id, title')
-              .eq('tenant_id', tenantId)
               .eq('apartment_id', id)
               .isFilter('deleted_at', null);
           final taskList = taskRows as List;
@@ -483,8 +485,7 @@ class _AdminApartmentsScreenState extends ConsumerState<AdminApartmentsScreen> {
                 ? title
                 : '${taskId.length >= 8 ? taskId.substring(0, 8) : taskId}…';
 
-            await SupabaseService.client
-                .from('tasks')
+            await SupabaseService.safeFrom('tasks', tenantId)
                 .update({'deleted_at': deletedAt})
                 .eq('id', taskId);
             await AuditLogService.logEnterprise(
@@ -984,9 +985,13 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
   final _checkOutController = TextEditingController(text: '10:00');
   final _cleaningDurationController = TextEditingController(text: '120');
   final _ownerNotesController = TextEditingController();
+  final _monthlyManagementFeeController = TextEditingController(text: '0');
   bool _isSaving = false;
   /// Vybraná oblast (zone_id). null = Žádná oblast.
   String? _selectedZoneId;
+  /// Začátek fakturace paušálu – první den měsíce. Oba null = neúčtovat od konkrétního data (zpětná kompatibilita).
+  int? _managedFromMonth;
+  int? _managedFromYear;
   /// Služby a ceník (Tab 2): serviceId -> stav. Naplní se z tenantServicesProvider, uživatel zapíná a vyplňuje.
   Map<String, ApartmentServiceEditState> _servicesState = {};
 
@@ -1000,6 +1005,7 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
     _checkOutController.dispose();
     _cleaningDurationController.dispose();
     _ownerNotesController.dispose();
+    _monthlyManagementFeeController.dispose();
     super.dispose();
   }
 
@@ -1047,9 +1053,12 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
         'check_out_time': _checkOutController.text.trim().isEmpty ? '10:00' : _checkOutController.text.trim(),
         'standard_cleaning_duration': duration,
         'owner_notes': _ownerNotesController.text.trim().isEmpty ? null : _ownerNotesController.text.trim(),
+        'monthly_management_fee': _parseMonthlyFee(_monthlyManagementFeeController.text),
+        'managed_from': _managedFromMonth != null && _managedFromYear != null
+            ? '$_managedFromYear-${_managedFromMonth!.toString().padLeft(2, '0')}-01'
+            : null,
       };
-      final res = await SupabaseService.client
-          .from('apartments')
+      final res = await SupabaseService.safeFrom('apartments', tenantId)
           .insert(insertPayload)
           .select('id')
           .single();
@@ -1064,7 +1073,7 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
           (prefilled.clientType?.toLowerCase() ?? '') == 'owner' &&
           prefilled.profileId != null &&
           prefilled.profileId!.trim().isNotEmpty) {
-        await SupabaseService.client.from('apartment_owners').insert({
+        await SupabaseService.safeFrom('apartment_owners', tenantId).insert({
           'apartment_id': newId,
           'owner_id': prefilled.profileId!.trim(),
         });
@@ -1225,6 +1234,79 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
               error: (_, _) => const SizedBox.shrink(),
             );
           },
+        ),
+        const SizedBox(height: 12),
+        TextFormField(
+          controller: _monthlyManagementFeeController,
+          decoration: _appleVibeInputDecoration(
+            context,
+            prefixIcon: const Icon(Icons.monetization_on_outlined),
+            labelText: 'admin.apartments_monthly_management_fee'.tr(),
+            hintText: 'admin.apartments_monthly_management_fee_hint'.tr(),
+          ),
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'admin.apartments_managed_from'.tr(),
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                color: Colors.grey.shade700,
+                fontWeight: FontWeight.w600,
+              ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: DropdownButtonFormField<int?>(
+                initialValue: _managedFromMonth,
+                decoration: _appleVibeInputDecoration(
+                  context,
+                  prefixIcon: const Icon(Icons.calendar_month_outlined),
+                  labelText: 'admin.apartments_managed_from'.tr(),
+                ),
+                items: [
+                  DropdownMenuItem<int?>(
+                    value: null,
+                    child: Text('admin.apartments_managed_from_empty'.tr()),
+                  ),
+                  ...List.generate(12, (i) => i + 1).map((m) => DropdownMenuItem<int?>(
+                    value: m,
+                    child: Text(DateFormat('MMMM', context.locale.toString()).format(DateTime(2000, m, 1))),
+                  )),
+                ],
+                onChanged: (v) {
+                  setState(() {
+                    _managedFromMonth = v;
+                    if (v == null) _managedFromYear = null;
+                  });
+                },
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: DropdownButtonFormField<int?>(
+                initialValue: _managedFromYear,
+                decoration: _appleVibeInputDecoration(
+                  context,
+                  labelText: 'admin.apartments_managed_from_year'.tr(),
+                ),
+                items: [
+                  DropdownMenuItem<int?>(value: null, child: Text('—')),
+                  ...List.generate(15, (i) => DateTime.now().year - 5 + i).map((y) => DropdownMenuItem<int?>(
+                    value: y,
+                    child: Text('$y'),
+                  )),
+                ],
+                onChanged: _managedFromMonth == null ? null : (v) => setState(() => _managedFromYear = v),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'admin.apartments_managed_from_hint'.tr(),
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey.shade600),
         ),
         const SizedBox(height: 20),
         const Divider(),
@@ -1645,7 +1727,11 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
   late final TextEditingController _checkOutController;
   late final TextEditingController _cleaningDurationController;
   late final TextEditingController _ownerNotesController;
+  late final TextEditingController _monthlyManagementFeeController;
   bool _isSaving = false;
+  /// Začátek fakturace paušálu – první den měsíce. Oba null = neúčtovat od konkrétního data.
+  int? _managedFromMonth;
+  int? _managedFromYear;
   /// Tab 2: stav služeb načtený z apartment_services + katalog (tenant_services).
   Map<String, ApartmentServiceEditState> _servicesState = {};
   bool _servicesLoaded = false;
@@ -1666,6 +1752,13 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
     _cleaningDurationController =
         TextEditingController(text: '${a.standardCleaningDuration ?? 120}');
     _ownerNotesController = TextEditingController(text: a.ownerNotes ?? '');
+    _monthlyManagementFeeController = TextEditingController(
+      text: a.monthlyManagementFee == 0 ? '0' : a.monthlyManagementFee.toString(),
+    );
+    if (a.managedFrom != null) {
+      _managedFromMonth = a.managedFrom!.month;
+      _managedFromYear = a.managedFrom!.year;
+    }
   }
 
   @override
@@ -1678,6 +1771,7 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
     _checkOutController.dispose();
     _cleaningDurationController.dispose();
     _ownerNotesController.dispose();
+    _monthlyManagementFeeController.dispose();
     super.dispose();
   }
 
@@ -1707,7 +1801,7 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
     try {
       // Dvoukrokové ukládání (Override Pattern Tier 2): nejdřív úprava bytu, potom přepsání apartment_services.
       // KROK 1: Aktualizace záznamu bytu.
-      await SupabaseService.client.from('apartments').update({
+      await SupabaseService.safeFrom('apartments', tenantId).update({
         'name': _nameController.text.trim(),
         'zone_id': _selectedZoneId,
         'address': _addressController.text.trim().isEmpty
@@ -1729,6 +1823,10 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
         'owner_notes': _ownerNotesController.text.trim().isEmpty
             ? null
             : _ownerNotesController.text.trim(),
+        'monthly_management_fee': _parseMonthlyFee(_monthlyManagementFeeController.text),
+        'managed_from': _managedFromMonth != null && _managedFromYear != null
+            ? '$_managedFromYear-${_managedFromMonth!.toString().padLeft(2, '0')}-01'
+            : null,
       }).eq('id', widget.apartment.id);
 
       // KROK 2: Uložení služeb a ceníku (apartment_services) – replace všech záznamů pro tento byt (delete + insert dle stavu Tabu 2).
@@ -1928,6 +2026,79 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
               error: (_, _) => const SizedBox.shrink(),
             );
           },
+        ),
+        const SizedBox(height: 12),
+        TextFormField(
+          controller: _monthlyManagementFeeController,
+          decoration: _appleVibeInputDecoration(
+            context,
+            prefixIcon: const Icon(Icons.monetization_on_outlined),
+            labelText: 'admin.apartments_monthly_management_fee'.tr(),
+            hintText: 'admin.apartments_monthly_management_fee_hint'.tr(),
+          ),
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'admin.apartments_managed_from'.tr(),
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                color: Colors.grey.shade700,
+                fontWeight: FontWeight.w600,
+              ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: DropdownButtonFormField<int?>(
+                initialValue: _managedFromMonth,
+                decoration: _appleVibeInputDecoration(
+                  context,
+                  prefixIcon: const Icon(Icons.calendar_month_outlined),
+                  labelText: 'admin.apartments_managed_from'.tr(),
+                ),
+                items: [
+                  DropdownMenuItem<int?>(
+                    value: null,
+                    child: Text('admin.apartments_managed_from_empty'.tr()),
+                  ),
+                  ...List.generate(12, (i) => i + 1).map((m) => DropdownMenuItem<int?>(
+                    value: m,
+                    child: Text(DateFormat('MMMM', context.locale.toString()).format(DateTime(2000, m, 1))),
+                  )),
+                ],
+                onChanged: (v) {
+                  setState(() {
+                    _managedFromMonth = v;
+                    if (v == null) _managedFromYear = null;
+                  });
+                },
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: DropdownButtonFormField<int?>(
+                initialValue: _managedFromYear,
+                decoration: _appleVibeInputDecoration(
+                  context,
+                  labelText: 'admin.apartments_managed_from_year'.tr(),
+                ),
+                items: [
+                  DropdownMenuItem<int?>(value: null, child: Text('—')),
+                  ...List.generate(15, (i) => DateTime.now().year - 5 + i).map((y) => DropdownMenuItem<int?>(
+                    value: y,
+                    child: Text('$y'),
+                  )),
+                ],
+                onChanged: _managedFromMonth == null ? null : (v) => setState(() => _managedFromYear = v),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'admin.apartments_managed_from_hint'.tr(),
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey.shade600),
         ),
         const SizedBox(height: 20),
         const Divider(),
@@ -2263,7 +2434,7 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
                         Container(
                           margin: const EdgeInsets.only(bottom: 24.0),
                           child: DropdownButtonFormField<String>(
-                            value: _requiresPhotoToKey(state.requiresPhoto),
+                            initialValue: _requiresPhotoToKey(state.requiresPhoto),
                             decoration: _appleVibeInputDecoration(
                               context,
                               prefixIcon: const Icon(Icons.camera_alt_outlined),
@@ -2338,6 +2509,7 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
               children: owners.map((o) => _OwnerListTile(
                 owner: o,
                 onRemove: () => _removeOwner(context, o.id, o.name),
+                onSetPrimaryBilling: () => _setPrimaryBillingOwner(context, o.id),
               )).toList(),
             );
           },
@@ -2364,6 +2536,36 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
     );
   }
 
+  /// Nastaví majitele jako hlavního plátce pro tento byt (is_primary_billing).
+  /// Ostatní majitelé téhož bytu se automaticky přepnou na false.
+  Future<void> _setPrimaryBillingOwner(BuildContext context, String apartmentOwnersRecordId) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await ApartmentOwnersRepository.setPrimaryBillingOwner(
+        apartmentId: widget.apartment.id,
+        apartmentOwnersRecordId: apartmentOwnersRecordId,
+      );
+      if (!mounted) return;
+      ref.invalidate(apartmentOwnersForApartmentProvider(widget.apartment.id));
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('admin.owners_primary_billing_set'.tr()),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('common.error_with_message'.tr(namedArgs: {'message': '$e'})),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   /// Odebere majitele z bytu (soft delete v apartment_owners).
   Future<void> _removeOwner(BuildContext context, String apartmentOwnersId, String ownerName) async {
     final messenger = ScaffoldMessenger.of(context);
@@ -2385,8 +2587,13 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
         ),
     );
     if (ok != true || !mounted) return;
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return;
     try {
-      await ApartmentOwnersRepository.removeOwner(apartmentOwnersId: apartmentOwnersId);
+      await ApartmentOwnersRepository.removeOwner(
+        apartmentOwnersId: apartmentOwnersId,
+        tenantId: tenantId,
+      );
       if (!mounted) return;
       ref.invalidate(apartmentOwnersForApartmentProvider(widget.apartment.id));
       messenger.showSnackBar(
@@ -2971,7 +3178,7 @@ class _ApartmentReservationsTabState extends ConsumerState<_ApartmentReservation
               );
             },
             loading: () => const Center(child: CircularProgressIndicator()),
-            error: (err, __) => Center(
+            error: (err, _) => Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
                 child: Column(
@@ -3147,7 +3354,7 @@ class _ApartmentTasksTabState extends ConsumerState<_ApartmentTasksTab> {
               );
             },
             loading: () => const Center(child: CircularProgressIndicator()),
-            error: (err, __) => Center(
+            error: (err, _) => Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
                 child: Column(
@@ -3172,15 +3379,17 @@ class _ApartmentTasksTabState extends ConsumerState<_ApartmentTasksTab> {
   }
 }
 
-/// Řádek seznamu majitele – jméno, e-mail, badge „Čeká“, tlačítko Odebrat.
+/// Řádek seznamu majitele – jméno, e-mail, badge „Čeká“, hlavní plátce (hvězda), tlačítko Odebrat.
 class _OwnerListTile extends StatelessWidget {
   const _OwnerListTile({
     required this.owner,
     required this.onRemove,
+    required this.onSetPrimaryBilling,
   });
 
   final ApartmentOwnerRow owner;
   final VoidCallback onRemove;
+  final VoidCallback onSetPrimaryBilling;
 
   @override
   Widget build(BuildContext context) {
@@ -3198,7 +3407,23 @@ class _OwnerListTile extends StatelessWidget {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (owner.isPending)
+            Tooltip(
+              message: 'admin.owners_primary_billing'.tr(),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(20),
+                onTap: owner.isPrimaryBilling ? null : onSetPrimaryBilling,
+                child: Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: Icon(
+                    owner.isPrimaryBilling ? Icons.star : Icons.star_border,
+                    size: 24,
+                    color: owner.isPrimaryBilling ? Colors.amber.shade700 : Colors.grey.shade600,
+                  ),
+                ),
+              ),
+            ),
+            if (owner.isPending) ...[
+              const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
@@ -3210,6 +3435,7 @@ class _OwnerListTile extends StatelessWidget {
                   style: TextStyle(fontSize: 11, color: Colors.orange.shade800),
                 ),
               ),
+            ],
             const SizedBox(width: 8),
             IconButton(
               icon: Icon(Icons.remove_circle_outline, color: Colors.red.shade600),
@@ -3271,7 +3497,7 @@ class _AssignOwnerFromClientsDialogState extends ConsumerState<_AssignOwnerFromC
               );
             }
             return DropdownButtonFormField<ClientModel>(
-              value: _selectedClient,
+              initialValue: _selectedClient,
               decoration: InputDecoration(
                 labelText: 'admin.owners_select_hint'.tr(),
                 border: const OutlineInputBorder(),

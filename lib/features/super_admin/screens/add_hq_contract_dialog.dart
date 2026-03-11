@@ -1,7 +1,6 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 
 import 'package:falconest/core/utils/app_modal_utils.dart';
 import 'package:falconest/features/super_admin/providers/hq_team_providers.dart';
@@ -121,7 +120,7 @@ class _AddHqContractDialogState extends ConsumerState<AddHqContractDialog> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     DropdownButtonFormField<String>(
-                      value: _employmentType,
+                      initialValue: _employmentType,
                       decoration: InputDecoration(
                         labelText: 'super_admin.hq_staff_contract_label_employment'.tr(),
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),

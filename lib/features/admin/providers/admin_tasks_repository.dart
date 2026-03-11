@@ -16,7 +16,7 @@ class AdminTasksRepository {
   Stream<List<Map<String, dynamic>>> watchTasksRaw(String tenantId) {
     if (tenantId.isEmpty) return Stream.value([]);
 
-    List<Map<String, dynamic>> _filterAndSort(List<Map<String, dynamic>> rows) {
+    List<Map<String, dynamic>> filterAndSort(List<Map<String, dynamic>> rows) {
       final filtered = rows
           .where((r) => r['deleted_at'] == null && r['invoiced_at'] == null)
           .toList();
@@ -28,30 +28,29 @@ class AdminTasksRepository {
       return filtered;
     }
 
+    // Frontend Firewall: safeFrom vnutí .eq('tenant_id', tenantId) / .inFilter('tenant_id', [tenantId])
+    // – při převtělení Super Admina nelze zapomenout na filtr.
+    final safeTasks = SupabaseService.safeFrom('tasks', tenantId);
     final stream = resilientSupabaseStream<List<Map<String, dynamic>>>(
-      streamBuilder: () => SupabaseService.client
-          .from('tasks')
+      streamBuilder: () => safeTasks
           .stream(primaryKey: ['id'])
-          .inFilter('tenant_id', [tenantId])
           .order('scheduled_start', ascending: false)
           .limit(500)
-          .map((List<Map<String, dynamic>> rows) => _filterAndSort(rows)),
+          .map((List<Map<String, dynamic>> rows) => filterAndSort(rows)),
       debugLabel: 'AdminTasksRepository.watchTasksRaw',
     );
 
     return _streamWithInitialFetch(
       stream: stream,
       initialFetch: () async {
-        final res = await SupabaseService.client
-            .from('tasks')
+        final res = await safeTasks
             .select()
-            .eq('tenant_id', tenantId)
             .isFilter('deleted_at', null)
             .isFilter('invoiced_at', null)
             .order('scheduled_start', ascending: false)
             .limit(500);
         final list = (res as List).cast<Map<String, dynamic>>();
-        return _filterAndSort(list);
+        return filterAndSort(list);
       },
     );
   }
@@ -68,7 +67,7 @@ class AdminTasksRepository {
     final startIso = start.toIso8601String();
     final endIso = end.toIso8601String();
 
-    bool _isInMonth(Map<String, dynamic> r) {
+    bool isInMonth(Map<String, dynamic> r) {
       final s = r['scheduled_start'] ?? r['due_date'];
       if (s == null) return false;
       final dt = DateTime.tryParse(s.toString());
@@ -76,9 +75,9 @@ class AdminTasksRepository {
       return !dt.isBefore(start) && dt.isBefore(end);
     }
 
-    List<Map<String, dynamic>> _filterAndSort(List<Map<String, dynamic>> rows) {
+    List<Map<String, dynamic>> filterAndSort(List<Map<String, dynamic>> rows) {
       final filtered = rows
-          .where((r) => r['deleted_at'] == null && _isInMonth(r))
+          .where((r) => r['deleted_at'] == null && isInMonth(r))
           .toList();
       filtered.sort((a, b) {
         final aVal = a['due_date'] ?? a['scheduled_start'] ?? '';
@@ -88,42 +87,38 @@ class AdminTasksRepository {
       return filtered;
     }
 
+    final safeTasks = SupabaseService.safeFrom('tasks', tenantId);
     final stream = resilientSupabaseStream<List<Map<String, dynamic>>>(
-      streamBuilder: () => SupabaseService.client
-          .from('tasks')
+      streamBuilder: () => safeTasks
           .stream(primaryKey: ['id'])
-          .inFilter('tenant_id', [tenantId])
           .order('scheduled_start', ascending: false)
           .limit(500)
-          .map((List<Map<String, dynamic>> rows) => _filterAndSort(rows)),
+          .map((List<Map<String, dynamic>> rows) => filterAndSort(rows)),
       debugLabel: 'AdminTasksRepository.watchTasksRawForMonth',
     );
 
     return _streamWithInitialFetch(
       stream: stream,
       initialFetch: () async {
-        final res = await SupabaseService.client
-            .from('tasks')
+        final res = await safeTasks
             .select()
-            .eq('tenant_id', tenantId)
             .isFilter('deleted_at', null)
             .gte('scheduled_start', startIso)
             .lt('scheduled_start', endIso)
             .order('scheduled_start', ascending: false)
             .limit(500);
         final list = (res as List).cast<Map<String, dynamic>>();
-        return _filterAndSort(list);
+        return filterAndSort(list);
       },
     );
   }
 
-  /// Realtime stream úkolů pouze pro Nástěnku – zúžené časové okno.
+  /// Realtime stream úkolů pouze pro Nástěnku – B2B měsíční výhled.
   ///
-  /// PROČ: Dashboard nepotřebuje 500 úkolů; stačí výřez „včera 00:00 → dnes + 14 dní 23:59“.
-  /// Snižuje zátěž paměti i databáze. Ostatní moduly (záložka Úkoly) dál používají [watchTasksRaw].
-  ///
+  /// PROČ: Dashboard zobrazuje Očekávaný příjem za aktuální + příští měsíc; provider předává
+  /// [from] = 1. den aktuálního měsíce, [to] = poslední den příštího měsíce 23:59. Limit 1500.
   /// Filtry: tenant_id, deleted_at IS NULL, invoiced_at IS NULL, scheduled_start v [from, to].
-  /// [from] a [to] – provider předává UTC (např. z lokálního „včera 00:00“ přes .toUtc()).
+  /// [from] a [to] – provider předává UTC.
   Stream<List<Map<String, dynamic>>> watchTasksForDashboard(
     String tenantId, {
     required DateTime from,
@@ -136,7 +131,7 @@ class AdminTasksRepository {
     final fromIso = fromUtc.toIso8601String();
     final toIso = toUtc.toIso8601String();
 
-    List<Map<String, dynamic>> _filterAndSort(List<Map<String, dynamic>> rows) {
+    List<Map<String, dynamic>> filterAndSort(List<Map<String, dynamic>> rows) {
       final filtered = rows
           .where((r) {
             if (r['deleted_at'] != null || r['invoiced_at'] != null) return false;
@@ -155,33 +150,29 @@ class AdminTasksRepository {
       return filtered;
     }
 
-    // Realtime stream: Supabase stream nepodporuje .gte/.lte, proto bereme výřez a filtrujeme v map.
+    final safeTasks = SupabaseService.safeFrom('tasks', tenantId);
     final stream = resilientSupabaseStream<List<Map<String, dynamic>>>(
-      streamBuilder: () => SupabaseService.client
-          .from('tasks')
+      streamBuilder: () => safeTasks
           .stream(primaryKey: ['id'])
-          .inFilter('tenant_id', [tenantId])
           .order('scheduled_start', ascending: false)
-          .limit(300)
-          .map((List<Map<String, dynamic>> rows) => _filterAndSort(rows)),
+          .limit(1500)
+          .map((List<Map<String, dynamic>> rows) => filterAndSort(rows)),
       debugLabel: 'AdminTasksRepository.watchTasksForDashboard',
     );
 
     return _streamWithInitialFetch(
       stream: stream,
       initialFetch: () async {
-        final res = await SupabaseService.client
-            .from('tasks')
+        final res = await safeTasks
             .select()
-            .eq('tenant_id', tenantId)
             .isFilter('deleted_at', null)
             .isFilter('invoiced_at', null)
             .gte('scheduled_start', fromIso)
             .lte('scheduled_start', toIso)
             .order('scheduled_start', ascending: false)
-            .limit(300);
+            .limit(1500);
         final list = (res as List).cast<Map<String, dynamic>>();
-        return _filterAndSort(list);
+        return filterAndSort(list);
       },
     );
   }
@@ -194,10 +185,8 @@ class AdminTasksRepository {
   static Future<List<Map<String, dynamic>>> fetchTasksForReservation(String tenantId, String reservationId) async {
     if (tenantId.isEmpty || reservationId.isEmpty) return [];
     try {
-      final res = await SupabaseService.client
-          .from('tasks')
+      final res = await SupabaseService.safeFrom('tasks', tenantId)
           .select()
-          .eq('tenant_id', tenantId)
           .eq('reservation_id', reservationId)
           .isFilter('deleted_at', null)
           .order('scheduled_start', ascending: true);
@@ -215,10 +204,8 @@ class AdminTasksRepository {
   static Future<Map<String, dynamic>?> fetchTaskById(String tenantId, String taskId) async {
     if (tenantId.isEmpty || taskId.isEmpty) return null;
     try {
-      final res = await SupabaseService.client
-          .from('tasks')
+      final res = await SupabaseService.safeFrom('tasks', tenantId)
           .select()
-          .eq('tenant_id', tenantId)
           .eq('id', taskId)
           .maybeSingle();
       return res != null ? Map<String, dynamic>.from(res as Map) : null;

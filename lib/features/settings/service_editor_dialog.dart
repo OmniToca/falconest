@@ -241,7 +241,7 @@ class _ServiceEditorDialogState extends ConsumerState<ServiceEditorDialog> {
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
-                  value: validServiceType,
+                  initialValue: validServiceType,
                   decoration: InputDecoration(
                     labelText: 'settings.field_service_type'.tr(),
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),

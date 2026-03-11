@@ -99,7 +99,7 @@ class DefaultTaskScreen extends ConsumerWidget {
         );
       },
       loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
-      error: (_, __) => Scaffold(
+      error: (_, _) => Scaffold(
         body: Center(child: Text('worker.task_detail_not_found'.tr())),
       ),
     );

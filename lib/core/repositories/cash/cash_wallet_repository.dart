@@ -38,12 +38,14 @@ class CashWalletRepository {
   ///
   /// [profileId] – profiles.id aktuálně přihlášeného zaměstnance (převzal hotovost).
   /// [expectedAmount] – očekávaná částka z metadata.amount_to_collect (pro výpočet spropitného).
+  /// [note] – volitelná poznámka (např. důvod nedoplatku: „Host pošle na účet. Poznámka: …“).
   Future<void> recordCashCollection({
     required String taskId,
     required double amount,
     required String tenantId,
     required String profileId,
     double? expectedAmount,
+    String? note,
   }) async {
     if (amount <= 0) return;
 
@@ -74,13 +76,14 @@ class CashWalletRepository {
         currentBalance = (_toDouble(existing['balance']) ?? 0);
       }
 
-      // (b) Vložení transakce do účetní knihy (expected_amount pro výpočet spropitného)
+      // (b) Vložení transakce do účetní knihy (expected_amount pro výpočet spropitného; note pro nedoplatek)
       await client.from('employee_cash_transactions').insert({
         'tenant_id': tenantId,
         'wallet_id': walletId,
         'task_id': taskId,
         'amount': amount,
         if (expectedAmount != null && expectedAmount > 0) 'expected_amount': expectedAmount,
+        if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
         'transaction_type': 'COLLECTED_FROM_GUEST',
         'created_by': profileId,
       });
@@ -94,12 +97,26 @@ class CashWalletRepository {
 
       // PROČ: Informujeme dispečink o pohybu hotovosti. Zabaleno v try-catch,
       // aby případný výpadek notifikací neshodil finanční transakci.
-      await _sendAdminNotification(
-        tenantId: tenantId,
-        profileId: profileId,
-        title: 'Nová hotovost',
-        message: 'Pracovník právě zaznamenal příjem ${amount.toStringAsFixed(2)} EUR.',
-      );
+      // Nedoplatek (amount < expected_amount) → varovná notifikace s typem finance_shortfall.
+      final isShortfall = expectedAmount != null && expectedAmount > 0 && amount < expectedAmount;
+      if (isShortfall) {
+        final diff = expectedAmount - amount;
+        final notePart = (note != null && note.trim().isNotEmpty) ? note.trim() : '';
+        await _sendAdminNotification(
+          tenantId: tenantId,
+          profileId: profileId,
+          title: 'admin.notification_cash_shortfall_title',
+          message: '${diff.toStringAsFixed(2)}|$notePart',
+          type: 'finance_shortfall',
+        );
+      } else {
+        await _sendAdminNotification(
+          tenantId: tenantId,
+          profileId: profileId,
+          title: 'Nová hotovost',
+          message: 'Pracovník právě zaznamenal příjem ${amount.toStringAsFixed(2)} EUR.',
+        );
+      }
     } catch (e) {
       if (!kIsWeb && MutationQueueService.isNetworkError(e)) {
         // PROČ: Peníze se nesmí ztratit. Pokud jsme offline, uložíme výběr do fronty
@@ -113,6 +130,7 @@ class CashWalletRepository {
             'task_id': taskId,
             'amount': amount,
             if (expectedAmount != null && expectedAmount > 0) 'expected_amount': expectedAmount,
+            if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
           },
         );
         return;
@@ -401,11 +419,13 @@ class CashWalletRepository {
   ///
   /// PROČ: Informujeme dispečink o pohybu hotovosti (výběr od hosta, firemní výdaj).
   /// Zabaleno v try-catch – selhání notifikací nikdy nesmí zabránit uložení peněz.
+  /// [type] – volitelný typ (finance, finance_shortfall); finance_shortfall zobrazí dispečer červeně.
   Future<void> _sendAdminNotification({
     required String tenantId,
     required String profileId,
     required String title,
     required String message,
+    String type = 'finance',
   }) async {
     try {
       final client = SupabaseService.client;
@@ -430,7 +450,7 @@ class CashWalletRepository {
           'profile_id': adminId,
           'title': title,
           'message': message,
-          'type': 'finance',
+          'type': type,
         });
       }
       if (payloads.isEmpty) return;

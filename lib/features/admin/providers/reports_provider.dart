@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/reservation_services_repository.dart';
 
 // =============================================================================
@@ -117,6 +118,17 @@ final reportsDataProvider = FutureProvider<ReportsSummary>((ref) async {
   final startOfMonth = DateTime.utc(year, month, 1);
   final startOfNextMonth = DateTime.utc(year, month + 1, 1);
 
+  final apartments = ref.watch(apartmentsFullListProvider).valueOrNull ?? [];
+  final startOfReportMonth = DateTime.utc(year, month, 1);
+  final monthlyFeeSum = apartments.fold<double>(
+      0, (sum, apt) {
+        if (apt.managedFrom != null) {
+          final firstDayManaged = DateTime.utc(apt.managedFrom!.year, apt.managedFrom!.month, 1);
+          if (startOfReportMonth.isBefore(firstDayManaged)) return sum;
+        }
+        return sum + apt.monthlyManagementFee;
+      });
+
   try {
     // Krok 1: Načti dokončené úkoly tenantu POUZE pro vybraný měsíc (časové okno v DB).
     // PROČ: Výkon – bez filtru by se stahovala celá historie (OOM při 10 000+ úkolech).
@@ -142,7 +154,7 @@ final reportsDataProvider = FutureProvider<ReportsSummary>((ref) async {
         employeePerformances: [],
         apartmentRevenues: [],
         clientRevenues: [],
-        totalMonthRevenue: 0,
+        totalMonthRevenue: monthlyFeeSum,
         month: month,
         year: year,
       );
@@ -392,8 +404,9 @@ final reportsDataProvider = FutureProvider<ReportsSummary>((ref) async {
         .toList()
       ..sort((a, b) => b.totalRevenue.compareTo(a.totalRevenue));
 
-    final totalMonthRevenue =
+    final revenueFromTasks =
         apartmentRevenues.fold<double>(0, (s, a) => s + a.totalRevenue);
+    final totalMonthRevenue = revenueFromTasks + monthlyFeeSum;
 
     return ReportsSummary(
       employeePerformances: employeePerformances,

@@ -12,15 +12,19 @@ import 'package:falconest/features/settings/providers/tenant_services_provider.d
 /// PROČ ref.read pro tenantServicesProvider: ref.watch() vytváří závislost – při každé změně
 /// katalogu by se provider invalidoval a znovu načítal. V kontextu dialogu rezervace to mohlo
 /// vést k nekonečnému cyklu (stream refactor). ref.read() zajistí jedno načtení bez reaktivity.
+///
+/// PROČ select na auth: ref.watch(authNotifierProvider) by při každé notifikaci auth
+/// invalidoval provider a přispíval k nekonečnému loading stavu v Tabu 2 (stejně jako u Finance).
+/// .select((s) => s.tenantIdForData) omezí re-exekuci jen na změnu tenantId.
 final apartmentServicesOptionsProvider =
     FutureProvider.autoDispose.family<List<ApartmentServiceOption>, String>((ref, apartmentId) async {
   if (apartmentId.isEmpty) return [];
-  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  final tenantId = ref.read(authNotifierProvider.select((s) => s.tenantIdForData));
   if (tenantId == null || tenantId.isEmpty) return [];
   final tenantServices = await ref.read(tenantServicesProvider.future);
   final rows = await fetchByApartmentId(apartmentId, tenantId);
   final serviceById = {for (final s in tenantServices) s.id: s};
-  return rows.map((r) {
+  final options = rows.map((r) {
     final ts = serviceById[r.serviceId];
     final name = ts?.name ?? 'admin.service_fallback'.tr();
     final defaultPrice = r.customPrice?.toDouble() ?? ts?.defaultPrice?.toDouble() ?? 0.0;
@@ -38,6 +42,14 @@ final apartmentServicesOptionsProvider =
       requiresPhotoFromCatalog: ts?.requiresPhoto ?? false,
     );
   }).toList();
+
+  // Řazení podle pořadí z katalogu (tenant_services.order_index). Služby bez indexu na konec.
+  options.sort((a, b) {
+    final orderA = serviceById[a.serviceId]?.orderIndex ?? 999;
+    final orderB = serviceById[b.serviceId]?.orderIndex ?? 999;
+    return orderA.compareTo(orderB);
+  });
+  return options;
 });
 
 /// Vrací cenu služby pro manuální úkol – Historical pricing auto-fill.

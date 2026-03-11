@@ -18,7 +18,7 @@ import 'package:falconest/features/worker/providers/worker_detail_provider.dart'
 /// - true = úkol byl dokončen (ANO nebo NEVYBRAL), volající může zavřít obrazovku,
 /// - false = uživatel zrušil, úkol zůstává nedokončený.
 ///
-/// Při potvrzení převzetí se sečte plánovaná částka + zadaná extra částka.
+/// Při potvrzení převzetí se zapíše skutečně převzatá částka; při nedoplatku je povinný důvod.
 Future<bool?> maybeShowCashCollectionDialog(
   BuildContext context,
   WidgetRef ref,
@@ -61,7 +61,10 @@ Future<bool?> maybeShowCashCollectionDialog(
   );
 }
 
-/// Vnitřní StatefulWidget pro dialog s polem Extra částka.
+/// Důvody nedoplatku – klíče pro i18n (worker.cash_collection_reason_*).
+const _shortfallReasonKeys = ['guest_will_transfer', 'owner_invoice', 'other'];
+
+/// Vnitřní StatefulWidget pro dialog se skutečně převzatou částkou a důvodem nedoplatku.
 class _CashCollectionDialogContent extends StatefulWidget {
   const _CashCollectionDialogContent({
     required this.plannedAmount,
@@ -90,24 +93,91 @@ class _CashCollectionDialogContent extends StatefulWidget {
 }
 
 class _CashCollectionDialogContentState extends State<_CashCollectionDialogContent> {
-  final _extraController = TextEditingController();
+  late final TextEditingController _actualAmountController;
+  final _shortfallNoteController = TextEditingController();
+  String? _selectedShortfallReason;
+
+  void _onActualAmountChanged() => setState(() {});
+
+  @override
+  void initState() {
+    super.initState();
+    _actualAmountController = TextEditingController(
+      text: widget.plannedAmount > 0 ? widget.plannedAmount.toStringAsFixed(2) : '',
+    );
+    _actualAmountController.addListener(_onActualAmountChanged);
+  }
 
   @override
   void dispose() {
-    _extraController.dispose();
+    _actualAmountController.removeListener(_onActualAmountChanged);
+    _actualAmountController.dispose();
+    _shortfallNoteController.dispose();
     super.dispose();
   }
 
-  double? _parseExtra() {
-    final t = _extraController.text.trim();
-    if (t.isEmpty) return 0;
-    return double.tryParse(t.replaceAll(',', '.'));
+  double? _parseActualAmount() {
+    final t = _actualAmountController.text.trim().replaceAll(',', '.');
+    if (t.isEmpty) return null;
+    return double.tryParse(t);
+  }
+
+  /// Rozdíl: skutečně převzatá − očekávaná. Kladný = dýško, záporný = nedoplatek.
+  double? get _diff {
+    final actual = _parseActualAmount();
+    if (actual == null) return null;
+    return actual - widget.plannedAmount;
+  }
+
+  /// Zobrazí text rozdílu: částka sedí / dýško / chybí X.
+  Widget _buildDiffText(BuildContext context, double diff) {
+    if (diff == 0) {
+      return Text(
+        'worker.cash_collection_diff_exact'.tr(),
+        style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
+      );
+    }
+    if (diff > 0) {
+      final formatted = formatTaskAmount(context, widget.ref, diff);
+      return Text(
+        'worker.cash_collection_diff_tip'.tr(namedArgs: {'amount': formatted}),
+        style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: Colors.green.shade700),
+      );
+    }
+    final formatted = formatTaskAmount(context, widget.ref, diff.abs());
+    return Text(
+      'worker.cash_collection_diff_missing'.tr(namedArgs: {'amount': formatted}),
+      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.red.shade700),
+    );
   }
 
   Future<void> _onYes() async {
-    final extra = _parseExtra() ?? 0;
-    final total = widget.plannedAmount + extra;
-    if (total <= 0) return;
+    final actual = _parseActualAmount();
+    if (actual == null || actual <= 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('worker.cash_collection_validation_positive'.tr())),
+        );
+      }
+      return;
+    }
+
+    final d = _diff ?? 0;
+    if (d < 0 && (_selectedShortfallReason == null || _selectedShortfallReason!.isEmpty)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('worker.cash_collection_missing_reason_required'.tr())),
+        );
+      }
+      return;
+    }
+
+    String? finalNote;
+    if (d < 0 && _selectedShortfallReason != null) {
+      final reasonText = 'worker.cash_collection_reason_${_selectedShortfallReason!}'.tr();
+      final noteText = _shortfallNoteController.text.trim();
+      finalNote = 'NEDOPLATEK: $reasonText${noteText.isNotEmpty ? '. Poznámka: $noteText' : ''}';
+    }
 
     final tenantId = widget.ref.read(authNotifierProvider).tenantIdForData;
     final profileId = widget.ref.read(authNotifierProvider).state.profileId;
@@ -125,10 +195,11 @@ class _CashCollectionDialogContentState extends State<_CashCollectionDialogConte
     try {
       await CashWalletRepository.instance.recordCashCollection(
         taskId: widget.taskId,
-        amount: total,
+        amount: actual,
         tenantId: tenantId,
         profileId: profileId,
         expectedAmount: widget.plannedAmount > 0 ? widget.plannedAmount : null,
+        note: finalNote,
       );
       if (widget.completeTaskOnConfirm) {
         await widget.ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
@@ -164,26 +235,78 @@ class _CashCollectionDialogContentState extends State<_CashCollectionDialogConte
     final contentText = isExtraOnly
         ? 'worker.cash_collection_extra_only'.tr()
         : 'worker.cash_collection_planned_extra'.tr(namedArgs: {'amount': widget.formattedPlanned});
+    final diff = _diff;
+    final isShortfall = diff != null && diff < 0;
 
     return AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
       title: Text('worker.cash_collection_confirm_title'.tr()),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(contentText),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _extraController,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: InputDecoration(
-              labelText: 'worker.cash_collection_extra_label'.tr(),
-              hintText: 'common.zero_placeholder'.tr(),
-              border: const OutlineInputBorder(),
+      content: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => FocusScope.of(context).unfocus(),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(contentText),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _actualAmountController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                textInputAction: TextInputAction.done,
+                decoration: InputDecoration(
+                labelText: 'worker.cash_collection_actual_amount'.tr(),
+                hintText: 'common.zero_placeholder'.tr(),
+                border: const OutlineInputBorder(),
+              ),
+              onChanged: (_) => setState(() {}),
             ),
-          ),
-        ],
+            const SizedBox(height: 8),
+            if (diff != null) ...[
+              _buildDiffText(context, diff),
+              const SizedBox(height: 12),
+            ],
+            if (isShortfall) ...[
+              Text(
+                'worker.cash_collection_missing_reason'.tr(),
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: Colors.red.shade700,
+                    ),
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                initialValue: _selectedShortfallReason,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                hint: Text('worker.cash_collection_reason_hint'.tr()),
+                items: _shortfallReasonKeys.map((key) {
+                  return DropdownMenuItem<String>(
+                    value: key,
+                    child: Text('worker.cash_collection_reason_$key'.tr()),
+                  );
+                }).toList(),
+                onChanged: (v) => setState(() => _selectedShortfallReason = v),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _shortfallNoteController,
+                decoration: InputDecoration(
+                  labelText: 'worker.cash_collection_shortfall_note'.tr(),
+                  border: const OutlineInputBorder(),
+                  isDense: true,
+                ),
+                maxLines: 2,
+                onChanged: (_) => setState(() {}),
+              ),
+            ],
+          ],
+        ),
+        ),
       ),
       contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
       actionsPadding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
@@ -195,9 +318,17 @@ class _CashCollectionDialogContentState extends State<_CashCollectionDialogConte
           children: [
             FilledButton(
               onPressed: () async {
-                final extra = _parseExtra() ?? 0;
-                final total = widget.plannedAmount + extra;
-                if (total <= 0) return;
+                final actual = _parseActualAmount();
+                if (actual == null || actual <= 0) return;
+                final d = _diff ?? 0;
+                if (d < 0 && (_selectedShortfallReason == null || _selectedShortfallReason!.isEmpty)) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('worker.cash_collection_missing_reason_required'.tr())),
+                    );
+                  }
+                  return;
+                }
                 await _onYes();
               },
               style: FilledButton.styleFrom(

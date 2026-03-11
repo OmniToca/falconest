@@ -31,7 +31,7 @@ class BillingActionService {
   ) async {
     if (tenantId.isEmpty || profileId.isEmpty) return;
 
-    // Posbírej všechna taskId ze všech skupin
+    // Posbírej všechna taskId ze všech skupin (pro označení vyfakturovaných). Skupiny mohou být i jen s paušálem (0 úkolů).
     final allTaskIds = <String>{};
     for (final group in groups) {
       for (final task in group.tasks) {
@@ -40,8 +40,6 @@ class BillingActionService {
         }
       }
     }
-
-    if (allTaskIds.isEmpty) return;
 
     final billingPeriod = DateTime(month.year, month.month, 1);
     final billingPeriodStr =
@@ -69,6 +67,8 @@ class BillingActionService {
           'reservation_start': t.reservationStart?.toUtc().toIso8601String(),
           'reservation_end': t.reservationEnd?.toUtc().toIso8601String(),
           'media_urls': t.mediaUrls,
+          'cash_shortfall_missing_amount': t.cashShortfallMissingAmount,
+          'is_shortfall_resolved': t.isShortfallResolved,
         };
       }).toList();
 
@@ -89,6 +89,7 @@ class BillingActionService {
         'expenses': expensesData,
         'final_to_invoice': group.finalToInvoice,
         'items': items,
+        'monthly_management_fee': group.monthlyManagementFee,
       };
 
       snapshotsToInsert.add({
@@ -102,7 +103,7 @@ class BillingActionService {
     }
 
     if (snapshotsToInsert.isEmpty) {
-      // Žádné platné skupiny (jen external?) – přesto označíme úkoly
+      // Žádné platné skupiny (jen external?) – přesto označíme úkoly, pokud nějaké jsou
       await _markTasksInvoiced(tenantId, allTaskIds.toList(), lockedAt);
       return;
     }
@@ -113,6 +114,7 @@ class BillingActionService {
         onConflict: 'tenant_id,client_id,billing_period',
       );
 
+      // Označ úkoly jako vyfakturované (allTaskIds může být prázdné u měsíců jen s paušály)
       await _markTasksInvoiced(tenantId, allTaskIds.toList(), lockedAt);
     } catch (e) {
       rethrow;

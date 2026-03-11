@@ -5,6 +5,7 @@
 /// jsou no-op (web nemá lokální úkoly).
 ///
 /// STRICT: Tento soubor nesmí importovat isar ani .g.dart.
+library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/features/tasks/models/task_detail_data.dart';

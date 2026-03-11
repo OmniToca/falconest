@@ -1,6 +1,7 @@
 /// Mobilní implementace task_detail_provider – čte z Drift (SQLite).
 ///
 /// Isar odstraněn. Načítá db.Task a db.Apartment z Drift a mapuje na TaskDetailData.
+library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/database/drift/database_provider.dart';

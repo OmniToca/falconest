@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/offline/mutation_queue_service.dart';
+import 'package:falconest/core/services/absence_notification_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/settings/providers/profile_provider.dart';
@@ -69,44 +70,6 @@ class _AddAbsenceDialogState extends ConsumerState<AddAbsenceDialog> {
     }
   }
 
-  /// Odešle notifikaci všem adminům/manažerům agentury (zvoneček) – stejný vzor jako výběr hotovosti.
-  /// Volá se po úspěšném vložení absence se statusem pending.
-  Future<void> _notifyAdminsAboutAbsenceRequest({
-    required String tenantId,
-    required String userName,
-    required String formattedStart,
-    required String formattedEnd,
-  }) async {
-    try {
-      final client = SupabaseService.client;
-      final adminsRes = await client
-          .from('profiles')
-          .select('id')
-          .eq('tenant_id', tenantId)
-          .inFilter('role', ['admin', 'manager'])
-          .isFilter('deleted_at', null);
-      final admins = List<dynamic>.from(adminsRes as List);
-      if (admins.isEmpty) return;
-      final title = 'admin.notification_absence_request_title'.tr(namedArgs: {'name': userName});
-      final message = 'admin.notification_absence_request_message'.tr(namedArgs: {'start': formattedStart, 'end': formattedEnd});
-      final payloads = <Map<String, dynamic>>[];
-      for (final a in admins) {
-        final m = Map<String, dynamic>.from(a as Map);
-        final adminId = (m['id'] as String?)?.trim();
-        if (adminId == null || adminId.isEmpty) continue;
-        payloads.add({
-          'tenant_id': tenantId,
-          'profile_id': adminId,
-          'title': title,
-          'message': message,
-          'type': 'absence',
-        });
-      }
-      if (payloads.isEmpty) return;
-      await client.from('notifications').insert(payloads);
-    } catch (_) {}
-  }
-
   Future<void> _submit() async {
     if (_startDate == null) return;
     if (_endDate != null && _endDate!.isBefore(_startDate!)) {
@@ -158,8 +121,8 @@ class _AddAbsenceDialogState extends ConsumerState<AddAbsenceDialog> {
     };
 
     try {
-      await SupabaseService.client.from('staff_absences').insert(payload);
-      await _notifyAdminsAboutAbsenceRequest(
+      await SupabaseService.safeFrom('staff_absences', tenantId).insert(payload);
+      await AbsenceNotificationService.notifyAdminsAboutAbsenceRequest(
         tenantId: tenantId,
         userName: userName,
         formattedStart: formattedStart,

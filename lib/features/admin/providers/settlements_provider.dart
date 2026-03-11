@@ -9,26 +9,41 @@ import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 
-/// Jedna položka v rozbaleném seznamu „K výplatě“ – úkol, datum, částka pro daného příjemce.
+/// Jedna položka v rozbaleném seznamu „K výplatě“ / výplatní páska – úkol, časy, částka.
 ///
-/// PROČ: Rozbalovací karta zobrazuje historii – z jakých úkolů se celková suma skládá.
+/// PROČ: Rozbalovací karta a PDF výplatní pásky potřebují datum, časy od–do, trvání
+/// a volitelné spropitné. Data se ukládají do payout_snapshots.items_data (JSONB).
 class PayoutLineItem {
   const PayoutLineItem({
     required this.taskId,
     required this.taskTitle,
     this.date,
     required this.amount,
+    this.scheduledStart,
+    this.scheduledEnd,
+    this.durationMinutes = 0,
+    this.tipAmount = 0.0,
   });
 
   final String taskId;
   final String taskTitle;
+  /// Datum úkolu (completed_at nebo scheduled_start) – pro řazení a zobrazení.
   final DateTime? date;
   final double amount;
+  /// Začátek úkolu (tasks.scheduled_start) – pro PDF sloupec Od.
+  final DateTime? scheduledStart;
+  /// Konec úkolu (tasks.completed_at jako konec práce) – pro PDF sloupec Do.
+  final DateTime? scheduledEnd;
+  /// Trvání v minutách – z rozdílu časů nebo metadata; pro výpočet hodinové mzdy.
+  final int durationMinutes;
+  /// Spropitné (pro budoucí rozšíření; v DB zatím nemáme, ukládáme 0).
+  final double tipAmount;
 }
 
 /// Jedna skupina k výplatě – buď Zaměstnanec (payouts) nebo Partner (commissions).
 ///
-/// PROČ: Admin vidí přehled „komu dlužíme kolik“ – seskupeno podle příjemce.
+/// PROČ: Admin vidí přehled „komu dlužíme kolik“ – seskupeno podle příjemce a MĚSÍCE ÚKOLU.
+/// [taskMonth] = první den měsíce, ve kterém byly úkoly odvedeny (pro účetní správný payout_period).
 /// [items] = rozpad po úkolech pro rozbalovací seznam (název úkolu, datum, částka).
 class PayoutGroup {
   const PayoutGroup({
@@ -38,6 +53,7 @@ class PayoutGroup {
     required this.totalAmount,
     required this.payoutIds,
     required this.commissionIds,
+    required this.taskMonth,
     this.items = const [],
   });
 
@@ -53,22 +69,57 @@ class PayoutGroup {
   final List<String> payoutIds;
   /// ID provizí z task_commissions – u zaměstnanců (profile_id) i partnerů (client_id).
   final List<String> commissionIds;
+  /// Měsíc, ve kterém byly úkoly odvedeny (1. den měsíce) – pro zápis do payout_snapshots a zobrazení v UI.
+  final DateTime taskMonth;
   /// Rozpad po úkolech – pro rozbalovací kartu (název, datum, částka).
   final List<PayoutLineItem> items;
+}
+
+/// Jeden řádek rozpadu marže – naúčtováno a náklady za konkrétní úkol.
+class TaskMarginDetail {
+  const TaskMarginDetail({
+    required this.taskId,
+    required this.taskTitle,
+    required this.invoiced,
+    required this.costs,
+    this.date,
+  });
+
+  final String taskId;
+  final String taskTitle;
+  /// Hodnota úkolu (z metadata) – naúčtováno klientům.
+  final double invoiced;
+  /// Součet výplat/provizí za tento úkol (náklady na personál).
+  final double costs;
+  /// Datum úkolu – pro řazení a zobrazení.
+  final DateTime? date;
+
+  double get margin => invoiced - costs;
 }
 
 /// Data pro záložku „K výplatě“ – skupiny příjemců + celkový zisk agentury (marže).
 ///
 /// PROČ: Jedna struktura vracená providerem – skupiny i souhrnná marže po schválení výplat.
+/// totalTaskValue / totalPayouts umožňují v UI zobrazit rozpad (naúčtováno vs. náklady).
+/// taskMargins = drill-down po jednotlivých úkolech (Naúčtováno − Náklady = Marže úkolu).
 class PayrollTabData {
   const PayrollTabData({
     required this.groups,
     required this.agencyMarginTotal,
+    required this.totalTaskValue,
+    required this.totalPayouts,
+    this.taskMargins = const [],
   });
 
   final List<PayoutGroup> groups;
   /// Součet (hodnota úkolů − výplaty − provize) za všechny pending záznamy.
   final double agencyMarginTotal;
+  /// Hodnota úkolů (z metadata) – naúčtováno klientům. Každý úkol jen jednou.
+  final double totalTaskValue;
+  /// Součet všech výplat a provizí (náklady na personál).
+  final double totalPayouts;
+  /// Rozpad marže po úkolech – pro drill-down v kartě celkové marže.
+  final List<TaskMarginDetail> taskMargins;
 }
 
 /// Provider: množina ID úkolů, které už mají záznam v task_payouts.
@@ -229,6 +280,52 @@ DateTime? _taskDateFromRow(Map<String, dynamic> row) {
   return null;
 }
 
+/// Začátek úkolu (tasks.scheduled_start) – pro výplatní pásky PDF.
+DateTime? _taskScheduledStartFromRow(Map<String, dynamic> row) {
+  final tasks = row['tasks'];
+  if (tasks is! Map) return null;
+  final t = Map<String, dynamic>.from(tasks);
+  final v = t['scheduled_start'];
+  if (v == null) return null;
+  return v is DateTime ? v : DateTime.tryParse(v.toString());
+}
+
+/// Konec úkolu (tasks.completed_at) – pro výplatní pásky PDF (sloupec Do).
+DateTime? _taskScheduledEndFromRow(Map<String, dynamic> row) {
+  final tasks = row['tasks'];
+  if (tasks is! Map) return null;
+  final t = Map<String, dynamic>.from(tasks);
+  final v = t['completed_at'];
+  if (v == null) return null;
+  return v is DateTime ? v : DateTime.tryParse(v.toString());
+}
+
+/// Trvání v minutách – z rozdílu completed_at − scheduled_start, nebo z metadata.
+int _taskDurationMinutesFromRow(Map<String, dynamic> row) {
+  final tasks = row['tasks'];
+  if (tasks is! Map) return 0;
+  final t = Map<String, dynamic>.from(tasks);
+  final start = _taskScheduledStartFromRow(row);
+  final end = _taskScheduledEndFromRow(row);
+  if (start != null && end != null && end.isAfter(start)) {
+    return end.difference(start).inMinutes;
+  }
+  final meta = t['metadata'];
+  if (meta is Map) {
+    final m = Map<String, dynamic>.from(meta);
+    final d = m['duration_minutes'];
+    if (d != null) return (d is num) ? d.toInt() : (int.tryParse(d.toString()) ?? 0);
+  }
+  return 0;
+}
+
+/// Vrátí první den měsíce úkolu (pro seskupení a payout_period). Fallback na aktuální měsíc.
+DateTime _taskMonthFromRow(Map<String, dynamic> row) {
+  final d = _taskDateFromRow(row);
+  if (d != null) return DateTime(d.year, d.month, 1);
+  return DateTime(DateTime.now().year, DateTime.now().month, 1);
+}
+
 /// Z raw řádku (tasks.metadata) vrátí celkovou hodnotu úkolu pro výpočet marže.
 double _taskValueFromRow(Map<String, dynamic> row) {
   final tasks = row['tasks'];
@@ -252,12 +349,19 @@ double _taskValueFromRow(Map<String, dynamic> row) {
 
 /// Provider: seskupené pending výplaty a provize + celkový zisk agentury – pro pohled "K výplatě".
 ///
-/// Seskupuje podle příjemce, přidává rozpad po úkolech (items) a dopočítá [PayrollTabData.agencyMarginTotal].
+/// Seskupuje podle PŘÍJEMCE + MĚSÍCE ÚKOLU (rok a měsíc z task_date), aby účetní viděl,
+/// za jaký měsíc dané peníze schvaluje. [taskMonth] = první den měsíce odvedené práce.
 final groupedPendingPayoutsProvider =
     FutureProvider<PayrollTabData>((ref) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) {
-    return const PayrollTabData(groups: [], agencyMarginTotal: 0);
+    return const PayrollTabData(
+      groups: [],
+      agencyMarginTotal: 0,
+      totalTaskValue: 0,
+      totalPayouts: 0,
+      taskMargins: [],
+    );
   }
 
   final repo = SettlementRepository.instance;
@@ -269,15 +373,21 @@ final groupedPendingPayoutsProvider =
   final taskValueByTaskId = <String, double>{};
 
   final groups = <PayoutGroup>[];
+  // Klíč = příjemce + měsíc úkolu (profileId_year_month), aby se seskupovalo po měsíci.
   final employeeData = <String, ({
+    String recipientId,
     String name,
+    DateTime taskMonth,
     List<String> payoutIds,
     List<String> commissionIds,
     double total,
     List<PayoutLineItem> items,
   })>{};
 
-  // 1. Výplaty podle profile_id včetně položek pro rozbalovací seznam
+  String employeeKey(String profileId, DateTime taskMonth) =>
+      '${profileId}_${taskMonth.year}_${taskMonth.month}';
+
+  // 1. Výplaty podle profile_id + měsíc úkolu
   for (final p in payoutsRaw) {
     final profileId = (p['profile_id'] as String?)?.trim() ?? '';
     if (profileId.isEmpty) continue;
@@ -287,6 +397,7 @@ final groupedPendingPayoutsProvider =
     final taskId = (p['task_id'] as String?)?.trim() ?? '';
     final profiles = p['profiles'] as Map<String, dynamic>?;
     final name = _profileDisplayName(profiles);
+    final taskMonth = _taskMonthFromRow(p);
     if (taskId.isNotEmpty) taskValueByTaskId.putIfAbsent(taskId, () => _taskValueFromRow(p));
 
     final line = PayoutLineItem(
@@ -294,20 +405,28 @@ final groupedPendingPayoutsProvider =
       taskTitle: _taskTitleFromRow(p),
       date: _taskDateFromRow(p),
       amount: amount,
+      scheduledStart: _taskScheduledStartFromRow(p),
+      scheduledEnd: _taskScheduledEndFromRow(p),
+      durationMinutes: _taskDurationMinutesFromRow(p),
     );
 
-    final existing = employeeData[profileId];
+    final key = employeeKey(profileId, taskMonth);
+    final existing = employeeData[key];
     if (existing != null) {
-      employeeData[profileId] = (
+      employeeData[key] = (
+        recipientId: existing.recipientId,
         name: existing.name,
+        taskMonth: existing.taskMonth,
         payoutIds: [...existing.payoutIds, id],
         commissionIds: existing.commissionIds,
         total: existing.total + amount,
         items: [...existing.items, line],
       );
     } else {
-      employeeData[profileId] = (
+      employeeData[key] = (
+        recipientId: profileId,
         name: name.isEmpty ? 'common.removed_user'.tr() : name,
+        taskMonth: taskMonth,
         payoutIds: [id],
         commissionIds: [],
         total: amount,
@@ -316,7 +435,7 @@ final groupedPendingPayoutsProvider =
     }
   }
 
-  // 2. Provize pro zaměstnance (profile_id) – sloučit včetně items
+  // 2. Provize pro zaměstnance (profile_id) – sloučit do stejného klíče příjemce + měsíc
   for (final c in commissionsProfileRaw) {
     final profileId = (c['profile_id'] as String?)?.trim() ?? '';
     if (profileId.isEmpty) continue;
@@ -326,6 +445,7 @@ final groupedPendingPayoutsProvider =
     final taskId = (c['task_id'] as String?)?.trim() ?? '';
     final profiles = c['profiles'] as Map<String, dynamic>?;
     final name = _profileDisplayName(profiles);
+    final taskMonth = _taskMonthFromRow(c);
     if (taskId.isNotEmpty) taskValueByTaskId.putIfAbsent(taskId, () => _taskValueFromRow(c));
 
     final line = PayoutLineItem(
@@ -333,20 +453,28 @@ final groupedPendingPayoutsProvider =
       taskTitle: _taskTitleFromRow(c),
       date: _taskDateFromRow(c),
       amount: amount,
+      scheduledStart: _taskScheduledStartFromRow(c),
+      scheduledEnd: _taskScheduledEndFromRow(c),
+      durationMinutes: _taskDurationMinutesFromRow(c),
     );
 
-    final existing = employeeData[profileId];
+    final key = employeeKey(profileId, taskMonth);
+    final existing = employeeData[key];
     if (existing != null) {
-      employeeData[profileId] = (
+      employeeData[key] = (
+        recipientId: existing.recipientId,
         name: existing.name,
+        taskMonth: existing.taskMonth,
         payoutIds: existing.payoutIds,
         commissionIds: [...existing.commissionIds, id],
         total: existing.total + amount,
         items: [...existing.items, line],
       );
     } else {
-      employeeData[profileId] = (
+      employeeData[key] = (
+        recipientId: profileId,
         name: name.isEmpty ? 'common.removed_user'.tr() : name,
+        taskMonth: taskMonth,
         payoutIds: [],
         commissionIds: [id],
         total: amount,
@@ -360,45 +488,81 @@ final groupedPendingPayoutsProvider =
     if (d.payoutIds.isEmpty && d.commissionIds.isEmpty) continue;
     groups.add(PayoutGroup(
       isEmployee: true,
-      recipientId: entry.key,
+      recipientId: d.recipientId,
       recipientName: d.name,
       totalAmount: d.total,
       payoutIds: d.payoutIds,
       commissionIds: d.commissionIds,
+      taskMonth: d.taskMonth,
       items: d.items,
     ));
   }
 
-  // 3. Provize pro partnery (client_id) včetně items a taskValue
-  final commissionByClient = <String, List<Map<String, dynamic>>>{};
+  // 3. Provize pro partnery (client_id) – seskupit podle client_id + měsíc úkolu
+  final partnerData = <String, ({
+    String recipientId,
+    String name,
+    DateTime taskMonth,
+    List<String> commissionIds,
+    double total,
+    List<PayoutLineItem> items,
+  })>{};
+
+  String partnerKey(String clientId, DateTime taskMonth) =>
+      '${clientId}_${taskMonth.year}_${taskMonth.month}';
+
   for (final c in commissionsClientRaw) {
     final clientId = (c['client_id'] as String?)?.trim() ?? '';
     if (clientId.isEmpty) continue;
     final taskId = (c['task_id'] as String?)?.trim() ?? '';
+    final taskMonth = _taskMonthFromRow(c);
     if (taskId.isNotEmpty) taskValueByTaskId.putIfAbsent(taskId, () => _taskValueFromRow(c));
-    commissionByClient.putIfAbsent(clientId, () => []).add(c);
-  }
-  for (final entry in commissionByClient.entries) {
-    final list = entry.value;
-    final ids = list.map((c) => (c['id'] as String?) ?? '').where((id) => id.isNotEmpty).toList();
-    if (ids.isEmpty) continue;
-    final total = list.fold<double>(0, (s, c) => s + ((c['amount'] as num?) ?? 0).toDouble());
-    final clients = list.first['clients'] as Map<String, dynamic>?;
+    final key = partnerKey(clientId, taskMonth);
+    final clients = c['clients'] as Map<String, dynamic>?;
     final name = (clients?['name'] as String?)?.trim() ?? '';
-    final items = list.map((c) => PayoutLineItem(
-      taskId: (c['task_id'] as String?)?.trim() ?? '',
+    final id = (c['id'] as String?)?.trim() ?? '';
+    final amount = ((c['amount'] as num?) ?? 0).toDouble();
+    final line = PayoutLineItem(
+      taskId: taskId,
       taskTitle: _taskTitleFromRow(c),
       date: _taskDateFromRow(c),
-      amount: ((c['amount'] as num?) ?? 0).toDouble(),
-    )).toList();
+      amount: amount,
+      scheduledStart: _taskScheduledStartFromRow(c),
+      scheduledEnd: _taskScheduledEndFromRow(c),
+      durationMinutes: _taskDurationMinutesFromRow(c),
+    );
+    final existing = partnerData[key];
+    if (existing != null) {
+      partnerData[key] = (
+        recipientId: existing.recipientId,
+        name: existing.name,
+        taskMonth: existing.taskMonth,
+        commissionIds: [...existing.commissionIds, id],
+        total: existing.total + amount,
+        items: [...existing.items, line],
+      );
+    } else {
+      partnerData[key] = (
+        recipientId: clientId,
+        name: name.isEmpty ? '—' : name,
+        taskMonth: taskMonth,
+        commissionIds: [id],
+        total: amount,
+        items: [line],
+      );
+    }
+  }
+  for (final entry in partnerData.entries) {
+    final d = entry.value;
     groups.add(PayoutGroup(
       isEmployee: false,
-      recipientId: entry.key,
-      recipientName: name.isEmpty ? '—' : name,
-      totalAmount: total,
+      recipientId: d.recipientId,
+      recipientName: d.name,
+      totalAmount: d.total,
       payoutIds: const [],
-      commissionIds: ids,
-      items: items,
+      commissionIds: d.commissionIds,
+      taskMonth: d.taskMonth,
+      items: d.items,
     ));
   }
 
@@ -407,116 +571,204 @@ final groupedPendingPayoutsProvider =
   final totalPayouts = groups.fold<double>(0, (s, g) => s + g.totalAmount);
   final agencyMarginTotal = (totalTaskValue - totalPayouts).clamp(0.0, double.infinity);
 
-  return PayrollTabData(groups: groups, agencyMarginTotal: agencyMarginTotal);
+  // Rozpad marže po úkolech: náklady seskupené podle taskId z items ve všech skupinách
+  final costsByTaskId = <String, double>{};
+  final titleByTaskId = <String, String>{};
+  final dateByTaskId = <String, DateTime?>{};
+  for (final g in groups) {
+    for (final item in g.items) {
+      if (item.taskId.isEmpty) continue;
+      costsByTaskId[item.taskId] = (costsByTaskId[item.taskId] ?? 0) + item.amount;
+      titleByTaskId.putIfAbsent(item.taskId, () => item.taskTitle);
+      dateByTaskId.putIfAbsent(item.taskId, () => item.date);
+    }
+  }
+  final allTaskIds = <String>{...taskValueByTaskId.keys, ...costsByTaskId.keys};
+  final taskMargins = allTaskIds.map((taskId) {
+    final invoiced = taskValueByTaskId[taskId] ?? 0.0;
+    final costs = costsByTaskId[taskId] ?? 0.0;
+    final taskTitle = titleByTaskId[taskId]?.trim().isNotEmpty == true
+        ? titleByTaskId[taskId]!
+        : 'admin.task_no_title'.tr();
+    return TaskMarginDetail(
+      taskId: taskId,
+      taskTitle: taskTitle,
+      invoiced: invoiced,
+      costs: costs,
+      date: dateByTaskId[taskId],
+    );
+  }).toList();
+  taskMargins.sort((a, b) {
+    final byMargin = b.margin.compareTo(a.margin);
+    if (byMargin != 0) return byMargin;
+    final aDate = a.date ?? DateTime(0);
+    final bDate = b.date ?? DateTime(0);
+    return bDate.compareTo(aDate);
+  });
+
+  return PayrollTabData(
+    groups: groups,
+    agencyMarginTotal: agencyMarginTotal,
+    totalTaskValue: totalTaskValue,
+    totalPayouts: totalPayouts,
+    taskMargins: taskMargins,
+  );
 });
 
-/// Provider: historie vyplacených výplat a provizí pro daný měsíc.
+/// Parametr pro výběr měsíce historie výplat – rok a měsíc.
 ///
-/// PROČ: Dialog "Historie výplat" seskupuje záznamy podle příjemce (zaměstnanec vs partner)
-/// stejným způsobem jako groupedPendingPayoutsProvider – jen pro status 'paid'.
-/// Měsíc určuje rozsah podle updated_at (kdy bylo označeno jako vyplaceno).
-final paidSettlementsByMonthProvider =
-    FutureProvider.autoDispose.family<List<PayoutGroup>, DateTime>((ref, month) async {
+/// KRITICKÉ: Přepis [==] a [hashCode] je nutný pro správnou funkci Riverpod
+/// FutureProvider.family – stejný vzor jako BillingMonthParam v Podkladech pro fakturaci.
+/// Bez něj by stejné (rok, měsíc) vedly k nekonečné smyčce kvůli porovnávání instancí.
+class PayoutMonthParam {
+  const PayoutMonthParam({required this.year, required this.month});
+
+  final int year;
+  final int month;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PayoutMonthParam &&
+          runtimeType == other.runtimeType &&
+          year == other.year &&
+          month == other.month;
+
+  @override
+  int get hashCode => year.hashCode ^ month.hashCode;
+}
+
+/// Z jednoho řádku payout_snapshots (items_data = JSONB) sestaví seznam [PayoutLineItem].
+List<PayoutLineItem> _itemsFromSnapshotRow(Map<String, dynamic> row) {
+  final raw = row['items_data'];
+  if (raw == null) return [];
+  if (raw is! List) return [];
+  final items = <PayoutLineItem>[];
+  for (final e in raw) {
+    if (e is! Map) continue;
+    final m = Map<String, dynamic>.from(e);
+    final taskId = (m['task_id'] as String?)?.trim() ?? '';
+    final taskTitle = (m['task_title'] as String?)?.trim() ?? '—';
+    final amount = (m['amount'] is num) ? (m['amount'] as num).toDouble() : 0.0;
+    DateTime? date;
+    final d = m['date'];
+    if (d != null) date = DateTime.tryParse(d.toString());
+    DateTime? scheduledStart;
+    final s1 = m['scheduled_start'];
+    if (s1 != null) scheduledStart = DateTime.tryParse(s1.toString());
+    DateTime? scheduledEnd;
+    final s2 = m['scheduled_end'];
+    if (s2 != null) scheduledEnd = DateTime.tryParse(s2.toString());
+    final durationMinutes = (m['duration_minutes'] is num)
+        ? (m['duration_minutes'] as num).toInt()
+        : (int.tryParse(m['duration_minutes']?.toString() ?? '') ?? 0);
+    final tipAmount = (m['tip_amount'] is num) ? (m['tip_amount'] as num).toDouble() : 0.0;
+    items.add(PayoutLineItem(
+      taskId: taskId,
+      taskTitle: taskTitle,
+      date: date,
+      amount: amount,
+      scheduledStart: scheduledStart,
+      scheduledEnd: scheduledEnd,
+      durationMinutes: durationMinutes,
+      tipAmount: tipAmount,
+    ));
+  }
+  return items;
+}
+
+/// Provider: historie výplat pro daný měsíc – čte VÝHRADNĚ z tabulky [payout_snapshots].
+///
+/// Žádné dynamické joinování task_payouts/task_commissions. Data pochází z uzamčených
+/// snapshotů (stejný princip jako billing_snapshots u fakturace).
+final payoutHistoryReportProvider =
+    FutureProvider.autoDispose.family<List<PayoutGroup>, PayoutMonthParam>((ref, param) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];
 
+  final monthDate = DateTime.utc(param.year, param.month, 1);
   final repo = SettlementRepository.instance;
-  final data = await repo.getPaidSettlementsByMonth(tenantId, month);
+  final rows = await repo.getPayoutSnapshotsByMonth(tenantId, monthDate);
 
-  final groups = <PayoutGroup>[];
-  final employeeData = <String, ({String name, double total})>{};
-
-  // 1. Výplaty podle profile_id (zaměstnanci)
-  for (final p in data.payouts) {
-    final profileId = (p['profile_id'] as String?)?.trim() ?? '';
-    if (profileId.isEmpty) continue;
-    final amount = ((p['amount'] as num?) ?? 0).toDouble();
-    final profiles = p['profiles'] as Map<String, dynamic>?;
-    final name = _profileDisplayName(profiles);
-
-    final existing = employeeData[profileId];
-    if (existing != null) {
-      employeeData[profileId] = (name: existing.name, total: existing.total + amount);
-    } else {
-      employeeData[profileId] = (name: name.isEmpty ? 'common.removed_user'.tr() : name, total: amount);
-    }
-  }
-
-  // 2. Provize pro zaměstnance (profile_id)
-  for (final c in data.commissionsProfile) {
-    final profileId = (c['profile_id'] as String?)?.trim() ?? '';
-    if (profileId.isEmpty) continue;
-    final amount = ((c['amount'] as num?) ?? 0).toDouble();
-    final profiles = c['profiles'] as Map<String, dynamic>?;
-    final name = _profileDisplayName(profiles);
-
-    final existing = employeeData[profileId];
-    if (existing != null) {
-      employeeData[profileId] = (name: existing.name, total: existing.total + amount);
-    } else {
-      employeeData[profileId] = (name: name.isEmpty ? 'common.removed_user'.tr() : name, total: amount);
-    }
-  }
-
-  for (final entry in employeeData.entries) {
-    groups.add(PayoutGroup(
-      isEmployee: true,
-      recipientId: entry.key,
-      recipientName: entry.value.name,
-      totalAmount: entry.value.total,
+  final groups = rows.map((row) {
+    final isEmployee = row['is_employee'] as bool? ?? true;
+    final profileId = (row['profile_id'] as String?)?.trim();
+    final clientId = (row['client_id'] as String?)?.trim();
+    final recipientId = (profileId ?? clientId ?? '').trim();
+    final recipientName = (row['recipient_name'] as String?)?.trim() ?? '—';
+    final totalAmount = (row['total_amount'] is num)
+        ? (row['total_amount'] as num).toDouble()
+        : 0.0;
+    final items = _itemsFromSnapshotRow(row);
+    // Snapshot řádky jsou vždy pro daný měsíc (param); taskMonth = první den toho měsíce.
+    return PayoutGroup(
+      isEmployee: isEmployee,
+      recipientId: recipientId.isEmpty ? 'unknown' : recipientId,
+      recipientName: recipientName,
+      totalAmount: totalAmount,
       payoutIds: const [],
       commissionIds: const [],
-    ));
-  }
-
-  // 3. Provize pro partnery (client_id)
-  final partnerByClient = <String, ({String name, double total})>{};
-  for (final c in data.commissionsClient) {
-    final clientId = (c['client_id'] as String?)?.trim() ?? '';
-    if (clientId.isEmpty) continue;
-    final amount = ((c['amount'] as num?) ?? 0).toDouble();
-    final clients = c['clients'] as Map<String, dynamic>?;
-    final name = (clients?['name'] as String?)?.trim() ?? '';
-
-    final existing = partnerByClient[clientId];
-    if (existing != null) {
-      partnerByClient[clientId] = (name: existing.name, total: existing.total + amount);
-    } else {
-      partnerByClient[clientId] = (name: name.isEmpty ? '—' : name, total: amount);
-    }
-  }
-
-  for (final entry in partnerByClient.entries) {
-    groups.add(PayoutGroup(
-      isEmployee: false,
-      recipientId: entry.key,
-      recipientName: entry.value.name,
-      totalAmount: entry.value.total,
-      payoutIds: const [],
-      commissionIds: const [],
-    ));
-  }
+      taskMonth: monthDate,
+      items: items,
+    );
+  }).toList();
 
   groups.sort((a, b) => a.recipientName.compareTo(b.recipientName));
   return groups;
 });
 
-/// Označí skupinu jako vyplacenou a invaliduje providery.
+/// Označí skupinu jako vyplacenou, zapíše snapshot do [payout_snapshots] a invaliduje providery.
 ///
-/// PROČ: Jedna akce pro Admin – po kliknutí „Označit jako vyplaceno“ updatují
-/// se záznamy v DB (status → 'paid') a skupina zmizí z přehledu "K výplatě".
-/// Invalidace [groupedPendingPayoutsProvider] odstraní vyplacenou skupinu z listu.
-/// Invalidace [paidSettlementsByMonthProvider] (celá family) zajistí, že dialog
-/// "Historie výplat" se při příštím zobrazení nebo už při otevřeném okně znovu
-/// načte ze serveru a zobrazí aktuální vyplacené záznamy (.eq('status', 'paid')).
+/// KROK A: Označí task_payouts a task_commissions jako 'paid'.
+/// KROK B: Vloží (nebo sloučí) záznam do payout_snapshots, aby Historie výplat měla data.
+/// Invalidace [groupedPendingPayoutsProvider] odstraní vyplacenou skupinu z záložky K výplatě.
+/// Invalidace [payoutHistoryReportProvider] obnoví záložku Historie výplat.
 Future<void> markPayoutGroupAsPaid({required dynamic ref, required PayoutGroup group}) async {
   final repo = SettlementRepository.instance;
+
+  // KROK A: Označit výplaty a provize jako vyplacené.
   if (group.payoutIds.isNotEmpty) {
     await repo.markPayoutsAsPaid(group.payoutIds);
   }
   if (group.commissionIds.isNotEmpty) {
     await repo.markCommissionsAsPaid(group.commissionIds);
   }
+
+  // KROK B: Zápis do payout_snapshots – měsíc ÚKOLU (group.taskMonth), ne datum vyplacení!
+  // PROČ: Účetní proplácí únorové úkoly 10. března → snapshot musí patřit do ÚNORA.
+  final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+  final lockedByProfileId = ref.read(authNotifierProvider).state.profileId;
+  if (tenantId != null &&
+      tenantId.isNotEmpty &&
+      lockedByProfileId != null &&
+      lockedByProfileId.trim().isNotEmpty) {
+    final periodFirstDay = DateTime(group.taskMonth.year, group.taskMonth.month, 1);
+    final itemsData = group.items.map((item) {
+      return <String, dynamic>{
+        'task_id': item.taskId,
+        'task_title': item.taskTitle,
+        'date': item.date?.toUtc().toIso8601String(),
+        'amount': item.amount,
+        'scheduled_start': item.scheduledStart?.toUtc().toIso8601String(),
+        'scheduled_end': item.scheduledEnd?.toUtc().toIso8601String(),
+        'duration_minutes': item.durationMinutes,
+        'tip_amount': item.tipAmount,
+      };
+    }).toList();
+
+    await repo.upsertPayoutSnapshot(
+      tenantId: tenantId,
+      payoutPeriodFirstDay: periodFirstDay,
+      isEmployee: group.isEmployee,
+      profileId: group.isEmployee ? group.recipientId : null,
+      clientId: group.isEmployee ? null : group.recipientId,
+      recipientName: group.recipientName,
+      totalAmount: group.totalAmount,
+      itemsData: itemsData,
+      lockedByProfileId: lockedByProfileId,
+    );
+  }
+
   ref.invalidate(groupedPendingPayoutsProvider);
-  ref.invalidate(paidSettlementsByMonthProvider);
+  ref.invalidate(payoutHistoryReportProvider);
 }

@@ -62,8 +62,8 @@ final myEarningsProvider = FutureProvider<WorkerEarningsSummary>((ref) async {
   final payoutsFuture = SettlementRepository.instance.getMyPayouts(tenantId, profileId);
   final commissionsFuture = SettlementRepository.instance.getMyCommissions(tenantId, profileId);
   final results = await Future.wait([payoutsFuture, commissionsFuture]);
-  final payoutsRaw = results[0] as List<Map<String, dynamic>>;
-  final commissionsRaw = results[1] as List<Map<String, dynamic>>;
+  final payoutsRaw = results[0];
+  final commissionsRaw = results[1];
 
   double pendingTotal = 0;
   double paidTotal = 0;

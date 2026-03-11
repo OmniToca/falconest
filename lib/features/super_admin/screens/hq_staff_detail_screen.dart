@@ -1,7 +1,6 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 
 import 'package:falconest/core/utils/app_modal_utils.dart';
 import 'package:falconest/features/super_admin/providers/hq_staff_provider.dart';
@@ -167,7 +166,7 @@ class _ProfileTab extends ConsumerWidget {
         );
       },
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (_, __) => Center(child: Text('super_admin.hq_team_load_error'.tr())),
+      error: (_, _) => Center(child: Text('super_admin.hq_team_load_error'.tr())),
     );
   }
 }
@@ -254,7 +253,7 @@ class _ContractTab extends ConsumerWidget {
         );
       },
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (_, __) => Center(child: Text('super_admin.hq_team_load_error'.tr())),
+      error: (_, _) => Center(child: Text('super_admin.hq_team_load_error'.tr())),
     );
   }
 
@@ -345,7 +344,7 @@ class _PortfolioTab extends ConsumerWidget {
         );
       },
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (_, __) => Center(child: Text('super_admin.hq_team_load_error'.tr())),
+      error: (_, _) => Center(child: Text('super_admin.hq_team_load_error'.tr())),
     );
   }
 
@@ -447,7 +446,7 @@ class _AbsencesTab extends ConsumerWidget {
         );
       },
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (_, __) => Center(child: Text('super_admin.hq_team_load_error'.tr())),
+      error: (_, _) => Center(child: Text('super_admin.hq_team_load_error'.tr())),
     );
   }
 }

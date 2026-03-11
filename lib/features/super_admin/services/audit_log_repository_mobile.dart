@@ -2,6 +2,7 @@
 ///
 /// Kompiluje se pouze pro dart:io. Používá Drift PendingAuditActions pro offline zápis.
 /// Isar odstraněn.
+library;
 import 'package:falconest/core/database/drift/repositories/drift_pending_audit_action_repository.dart';
 import 'package:falconest/core/database/drift/app_database.dart';
 import 'package:falconest/features/super_admin/services/audit_log_shared.dart';
@@ -11,8 +12,8 @@ class AuditLogRepository {
   AuditLogRepository._();
 
   static final _client = SupabaseService.client;
-  static late final AppDatabase _db = AppDatabase();
-  static late final DriftPendingAuditActionRepository _pendingRepo =
+  static final AppDatabase _db = AppDatabase();
+  static final DriftPendingAuditActionRepository _pendingRepo =
       DriftPendingAuditActionRepository(_db);
 
   static Future<Map<String, String>> fetchActorNames(Set<String> userIds) async {

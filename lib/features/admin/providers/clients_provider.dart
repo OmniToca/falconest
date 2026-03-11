@@ -125,7 +125,7 @@ final addClientProvider = Provider<Future<void> Function(ClientModel client)>((r
       ..remove('deleted_at')
       ..['tenant_id'] = tenantId; // Explicitně přepsat z auth – obrana v hloubce pro RLS
 
-    await SupabaseService.client.from('clients').insert(map);
+    await SupabaseService.safeFrom('clients', tenantId).insert(map);
   };
 });
 
@@ -154,11 +154,9 @@ final updateClientProvider = Provider<Future<void> Function(ClientModel client)>
       'agency_id': client.agencyId,
     };
 
-    await SupabaseService.client
-        .from('clients')
+    await SupabaseService.safeFrom('clients', tenantId)
         .update(map)
-        .eq('id', client.id)
-        .eq('tenant_id', tenantId);
+        .eq('id', client.id);
   };
 });
 
@@ -229,10 +227,8 @@ final clientsRecommendedByAgencyProvider =
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];
 
-  final response = await SupabaseService.client
-      .from('clients')
+  final response = await SupabaseService.safeFrom('clients', tenantId)
       .select('id, tenant_id, name, email, phone, client_type, profile_id, agency_id, created_at, deleted_at')
-      .eq('tenant_id', tenantId)
       .eq('agency_id', agencyId)
       .isFilter('deleted_at', null)
       .order('name');
@@ -255,11 +251,9 @@ final softDeleteClientProvider = Provider<Future<void> Function(String clientId)
       throw StateError('Žádný tenant v kontextu.');
     }
 
-    await SupabaseService.client
-        .from('clients')
+    await SupabaseService.safeFrom('clients', tenantId)
         .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
-        .eq('id', clientId)
-        .eq('tenant_id', tenantId);
+        .eq('id', clientId);
   };
 });
 

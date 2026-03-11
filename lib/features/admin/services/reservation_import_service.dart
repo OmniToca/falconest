@@ -87,19 +87,15 @@ class ReservationImportService {
     final tenantServices = <Map<String, dynamic>>[];
 
     try {
-      final aptRes = await SupabaseService.client
-          .from('apartments')
+      final aptRes = await SupabaseService.safeFrom('apartments', tenantId)
           .select('id, code')
-          .eq('tenant_id', tenantId)
           .isFilter('deleted_at', null);
       for (final e in aptRes as List) {
         apartments.add(e as Map<String, dynamic>);
       }
 
-      final tsRes = await SupabaseService.client
-          .from('tenant_services')
+      final tsRes = await SupabaseService.safeFrom('tenant_services', tenantId)
           .select('id, service_type')
-          .eq('tenant_id', tenantId)
           .eq('is_active', true)
           .isFilter('deleted_at', null);
       for (final e in tsRes as List) {
@@ -292,10 +288,8 @@ class ReservationImportService {
     final aptServiceRowById = <String, Map<String, dynamic>>{};
     final tenantServiceRowById = <String, Map<String, dynamic>>{};
     try {
-      final tsRes = await SupabaseService.client
-          .from('tenant_services')
+      final tsRes = await SupabaseService.safeFrom('tenant_services', tenantId)
           .select('id, service_type, default_price')
-          .eq('tenant_id', tenantId)
           .isFilter('deleted_at', null);
       for (final e in tsRes as List) {
         final m = e as Map<String, dynamic>;
@@ -308,10 +302,8 @@ class ReservationImportService {
           tenantServiceRowById[id] = m;
         }
       }
-      final asRes = await SupabaseService.client
-          .from('apartment_services')
-          .select('id, apartment_id, service_id, custom_price, payer_type')
-          .eq('tenant_id', tenantId);
+      final asRes = await SupabaseService.safeFrom('apartment_services', tenantId)
+          .select('id, apartment_id, service_id, custom_price, payer_type');
       for (final e in asRes as List) {
         final m = e as Map<String, dynamic>;
         final rawApt = m['apartment_id'];
@@ -465,7 +457,7 @@ class ReservationImportService {
         }
 
         final insertRes =
-            await SupabaseService.client.from('reservations').insert(insertPayload).select('id');
+            await SupabaseService.safeFrom('reservations', tenantId).insert(insertPayload).select('id');
 
         String? reservationId;
         final insertList = insertRes as List;
@@ -498,7 +490,7 @@ class ReservationImportService {
 
     if (pendingReservationServices.isNotEmpty) {
       try {
-        await SupabaseService.client.from('reservation_services').insert(pendingReservationServices);
+        await SupabaseService.safeFrom('reservation_services', tenantId).insert(pendingReservationServices);
       } catch (_) {
         // Rezervace už jsou uložené – služby lze doplnit ručně
       }
@@ -571,8 +563,9 @@ class ReservationImportService {
       String? payerType = defaultPayer ?? 'host';
       if (parts.length > 1 && parts[1].isNotEmpty) {
         final p = parts[1].toLowerCase();
-        if (p == 'owner' || p == 'majitel') payerType = 'owner';
-        else if (p == 'guest' || p == 'host') payerType = 'guest';
+        if (p == 'owner' || p == 'majitel') {
+          payerType = 'owner';
+        } else if (p == 'guest' || p == 'host') payerType = 'guest';
       }
 
       String? flightNumber;

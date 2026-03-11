@@ -133,7 +133,7 @@ class _TemplateEditorDialogState extends ConsumerState<TemplateEditorDialog> {
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
-                  value: _triggerContext,
+                  initialValue: _triggerContext,
                   decoration: InputDecoration(
                     labelText: 'communication.template_trigger'.tr(),
                     border: const OutlineInputBorder(),
@@ -145,7 +145,7 @@ class _TemplateEditorDialogState extends ConsumerState<TemplateEditorDialog> {
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String?>(
-                  value: _languageCode,
+                  initialValue: _languageCode,
                   decoration: InputDecoration(
                     labelText: 'communication.template_language'.tr(),
                     border: const OutlineInputBorder(),

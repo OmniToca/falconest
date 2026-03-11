@@ -266,7 +266,7 @@ class _WeeklySummaryTile extends ConsumerWidget {
           ],
         ),
       ),
-      error: (_, __) => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
     );
   }
 
@@ -349,7 +349,7 @@ class _WorkerDrawer extends ConsumerWidget {
                   ),
                 ),
                 loading: () => Text('worker.drawer_my_profile'.tr(), style: const TextStyle(fontWeight: FontWeight.bold)),
-                error: (_, __) => Text('worker.drawer_my_profile'.tr(), style: const TextStyle(fontWeight: FontWeight.bold)),
+                error: (_, _) => Text('worker.drawer_my_profile'.tr(), style: const TextStyle(fontWeight: FontWeight.bold)),
               ),
               accountEmail: profileAsync.when(
                 data: (p) => Text(
@@ -357,7 +357,7 @@ class _WorkerDrawer extends ConsumerWidget {
                   style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
                 ),
                 loading: () => const SizedBox.shrink(),
-                error: (_, __) => const SizedBox.shrink(),
+                error: (_, _) => const SizedBox.shrink(),
               ),
               decoration: BoxDecoration(color: _primaryBlue.withValues(alpha: 0.08)),
                 ),

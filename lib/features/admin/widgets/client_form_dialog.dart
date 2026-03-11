@@ -41,7 +41,7 @@ class _AgencyDropdown extends ConsumerWidget {
                 c.id != (currentClientId ?? ''))
             .toList();
         return DropdownButtonFormField<String>(
-          value: selectedAgencyId != null && selectedAgencyId!.isNotEmpty
+          initialValue: selectedAgencyId != null && selectedAgencyId!.isNotEmpty
               ? (agencies.any((a) => a.id == selectedAgencyId)
                   ? selectedAgencyId
                   : null)
@@ -185,7 +185,7 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
-                  value: _selectedClientType,
+                  initialValue: _selectedClientType,
                   decoration: InputDecoration(
                     labelText: 'clients.type'.tr(),
                     border: const OutlineInputBorder(),

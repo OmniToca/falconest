@@ -320,7 +320,7 @@ class _IssueReporterDialogState extends ConsumerState<IssueReporterDialog> {
     };
 
     try {
-      await SupabaseService.client.from('tasks').insert(payload);
+      await SupabaseService.safeFrom('tasks', widget.tenantId).insert(payload);
 
       if (!mounted) return;
       setState(() => _submitting = false);

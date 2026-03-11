@@ -2,13 +2,16 @@ import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/models/apartment_service_model.dart';
 
 /// Načte všechny záznamy apartment_services pro daný byt (pro předvyplnění Tabu 2 v dialogu).
+///
+/// PROČ timeout: Tab 2 „Služby a požadavky“ nesmí donekonečna točit kolečko – při zablokování
+/// DB/sítě po 10 s výjimka probublá a UI zobrazí formulář (fallback z finally).
 Future<List<ApartmentServiceRow>> fetchByApartmentId(String apartmentId, String tenantId) async {
   if (apartmentId.isEmpty || tenantId.isEmpty) return [];
-  final res = await SupabaseService.client
-      .from('apartment_services')
+  const timeout = Duration(seconds: 10);
+  final res = await SupabaseService.safeFrom('apartment_services', tenantId)
       .select()
       .eq('apartment_id', apartmentId)
-      .eq('tenant_id', tenantId); // Defense in depth: Explicitní multi-tenant izolace.
+      .timeout(timeout);
   final list = res as List;
   return list
       .map((e) => ApartmentServiceRow.fromJson(e as Map<String, dynamic>))
@@ -25,14 +28,11 @@ Future<void> saveForApartment({
   required Map<String, ApartmentServiceEditState> states,
 }) async {
   final toInsert = states.values.where((s) => s.enabled).toList();
-  await SupabaseService.client
-      .from('apartment_services')
-      .delete()
-      .eq('apartment_id', apartmentId);
+  final safeAps = SupabaseService.safeFrom('apartment_services', tenantId);
+  await safeAps.delete().eq('apartment_id', apartmentId);
   if (toInsert.isEmpty) return;
   for (final s in toInsert) {
-    await SupabaseService.client.from('apartment_services').insert({
-      'tenant_id': tenantId,
+    await safeAps.insert({
       'apartment_id': apartmentId,
       'service_id': s.serviceId,
       'custom_price': s.customPriceEur,

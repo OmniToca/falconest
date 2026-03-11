@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
@@ -27,23 +28,23 @@ import 'package:falconest/features/calendar/providers/planning_calendar_provider
 /// Bez [fromDate]/[toDate] (např. při mazání člena): odpojí od VŠECH nedokončených úkolů.
 /// S [fromDate]/[toDate] (např. při ukládání nepřítomnosti): pouze úkoly v daném intervalu.
 /// Zachovává historii: úkoly se stavem „Hotovo“ se nemění.
+/// [memberName] – pro Soft-Unassign: zapíše se do unassigned_info.previous_name v DB (UI „Původně přiřazený: …“).
 ///
-/// OPRAVA: (a) hlavní řešitel → assigned_to = null; (b) spolupracovník → odstranění z assigned_user_ids.
+/// OPRAVA: (a) hlavní řešitel → assigned_to = null + unassigned_info; (b) spolupracovník → odstranění z assigned_user_ids.
 Future<void> _unassignTasksForMember(
   WidgetRef ref,
   String memberId, {
   DateTime? fromDate,
   DateTime? toDate,
+  String? memberName,
 }) async {
   if (memberId.isEmpty) return;
   final tenantId = ref.read(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return;
   try {
     // Worker vidí úkol při assigned_to NEBO v assigned_user_ids.
-    final tasksRes = await SupabaseService.client
-        .from('tasks')
+    final tasksRes = await SupabaseService.safeFrom('tasks', tenantId)
         .select('id, due_date, status, assigned_to, assigned_user_ids')
-        .eq('tenant_id', tenantId)
         .or('assigned_to.eq.$memberId,assigned_user_ids.cs.{$memberId}')
         .isFilter('deleted_at', null);
     final taskList = tasksRes as List<dynamic>? ?? [];
@@ -93,20 +94,31 @@ Future<void> _unassignTasksForMember(
       }
       final newIds = currentIds.where((id) => id != memberId).toList();
 
-      await SupabaseService.client
-          .from('tasks')
-          .update({
-            'assigned_to': newAssignedTo,
-            'assigned_user_ids': newIds,
-            'status': 'pending',
-          })
-          .eq('id', taskId)
-          .eq('tenant_id', tenantId);
+      final payload = <String, dynamic>{
+        'assigned_to': newAssignedTo,
+        'assigned_user_ids': newIds,
+        'status': 'pending',
+      };
+      // Soft-Unassign: při odebrání hlavního řešitele zapíšeme kontext pro UI.
+      // Supabase JSONB očekává JSON string, ne Dart Mapu – jinak sloupec zůstane NULL.
+      if (newAssignedTo == null) {
+        payload['unassigned_info'] = jsonEncode({
+          'previous_id': memberId,
+          'previous_name': memberName ?? '',
+          'unassigned_at': DateTime.now().toUtc().toIso8601String(),
+        });
+      }
+
+      await SupabaseService.safeFrom('tasks', tenantId)
+          .update(payload)
+          .eq('id', taskId);
     }
     ref.invalidate(adminTasksProvider);
     ref.invalidate(planningCalendarAllTasksProvider);
     ref.invalidate(planningCalendarAllTasksForMonthProvider);
-  } catch (_) {}
+  } catch (e, st) {
+    debugPrint('Chyba při _unassignTasksForMember: $e\n$st');
+  }
 }
 
 /// Obrazovka správy týmu – profiles + invitations, editace, mazání.
@@ -393,19 +405,15 @@ class _DeleteConfirmDialogState extends ConsumerState<_DeleteConfirmDialog> {
             .eq('id', widget.member.id);
         // Bezpečnostní zneplatnění pozvánky při smazání čekajícího uživatele.
         if (tenantId != null && tenantId.isNotEmpty) {
-          try {
-            await SupabaseService.client
-                .from('invitations')
+            try {
+            await SupabaseService.safeFrom('invitations', tenantId)
                 .update({'deleted_at': deletedAt})
-                .eq('profile_id', widget.member.id)
-                .eq('tenant_id', tenantId);
+                .eq('profile_id', widget.member.id);
           } catch (_) {
             // Fallback: tabulka invitations nemá deleted_at – fyzický DELETE.
-            await SupabaseService.client
-                .from('invitations')
+            await SupabaseService.safeFrom('invitations', tenantId)
                 .delete()
-                .eq('profile_id', widget.member.id)
-                .eq('tenant_id', tenantId);
+                .eq('profile_id', widget.member.id);
           }
         }
       } else {
@@ -427,7 +435,7 @@ class _DeleteConfirmDialogState extends ConsumerState<_DeleteConfirmDialog> {
         triggeredBy: AuditTriggeredBy.manual,
       );
 
-      await _unassignTasksForMember(ref, widget.member.id);
+      await _unassignTasksForMember(ref, widget.member.id, memberName: widget.member.name);
 
       if (!mounted) return;
       Navigator.of(context).pop();
@@ -905,7 +913,7 @@ class _MemberCardExtra extends ConsumerWidget {
     int nextWeek = 0;
     int nextWeekMinutes = 0;
 
-    int _minutesForTask(TaskRow t) {
+    int minutesForTask(TaskRow t) {
       // Priorita 1: Odhad na úkolu – TaskRow zatím nemá pole estimateMinutes. Po přidání: if (t.estimateMinutes != null && t.estimateMinutes! > 0) return t.estimateMinutes!;
 
       final service = _findServiceForTask(t, services);
@@ -931,7 +939,7 @@ class _MemberCardExtra extends ConsumerWidget {
       // PROČ toLocal(): dueDate je UTC; pro týdenní souhrn potřebujeme lokální datum.
       final local = t.dueDate.isUtc ? t.dueDate.toLocal() : t.dueDate;
       final dueDay = DateTime(local.year, local.month, local.day);
-      final minutes = _minutesForTask(t);
+      final minutes = minutesForTask(t);
       if (!dueDay.isBefore(monday) && !dueDay.isAfter(sunday)) {
         thisWeek++;
         thisWeekMinutes += minutes;
@@ -1036,11 +1044,35 @@ class _MemberCardExtra extends ConsumerWidget {
         final thisWeekPlannedHours = capacity.thisWeekMinutes / 60.0;
         final nextWeekPlannedHours = capacity.nextWeekMinutes / 60.0;
         final maxHours = member.weeklyHours.toDouble();
+        final absences = absencesAsync.valueOrNull ?? [];
+        final hasPendingAbsence = absences.any((a) => a.belongsTo(member) && a.isPending);
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (hasPendingAbsence)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Icon(Icons.event_busy, size: 16, color: Colors.orange.shade700),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        'admin.team_absence_pending_banner'.tr(),
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.orange.shade800,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             // Dvojice ukazatelů kapacity – tento týden a příští týden.
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
@@ -1206,11 +1238,11 @@ class _AbsenceDialogState extends ConsumerState<_AbsenceDialog> {
 
     setState(() => _isSaving = true);
     try {
-      await SupabaseService.client.from('staff_absences').insert(payload);
+      await SupabaseService.safeFrom('staff_absences', tenantId).insert(payload);
       if (!mounted) return;
       ref.invalidate(staffAbsencesProvider);
       final memberId = widget.member.profileId ?? widget.member.id;
-      await _unassignTasksForMember(ref, memberId, fromDate: _fromDate, toDate: _toDate);
+      await _unassignTasksForMember(ref, memberId, fromDate: _fromDate, toDate: _toDate, memberName: widget.member.name);
       if (!mounted) return;
       widget.onSaved();
       _reasonController.clear();
@@ -1244,7 +1276,7 @@ class _AbsenceDialogState extends ConsumerState<_AbsenceDialog> {
       if (!mounted) return;
       ref.invalidate(staffAbsencesProvider);
       final memberId = widget.member.profileId ?? widget.member.id;
-      await _unassignTasksForMember(ref, memberId, fromDate: a.startDate, toDate: a.endDate);
+      await _unassignTasksForMember(ref, memberId, fromDate: a.startDate, toDate: a.endDate, memberName: widget.member.name);
       if (!mounted) return;
       ref.invalidate(adminTasksProvider);
       ref.invalidate(planningCalendarAllTasksProvider);
@@ -1492,6 +1524,8 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
   bool _isSaving = false;
   DateTime? _startDate;
   DateTime? _endDate;
+  /// Zobrazit chybu pod polem Datum nástupu při pokusu o uložení bez vyplnění.
+  bool _showStartDateError = false;
   final ScrollController _tab1ScrollController = ScrollController();
   final ScrollController _tab2ScrollController = ScrollController();
 
@@ -1529,6 +1563,19 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('admin.team_validation_apartments_owner'.tr()),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      return;
+    }
+    // Povinné datum nástupu pro personál (ne majitele) – sjednocení dostupnosti a plánování.
+    if (_systemRole != 'property_owner' && _startDate == null) {
+      setState(() => _showStartDateError = true);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.team_validation_start_date_required'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
@@ -1606,7 +1653,7 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
         if (_startDate != null) invPayload['start_date'] = _startDate!.toIso8601String();
         if (_endDate != null) invPayload['end_date'] = _endDate!.toIso8601String();
       }
-      await SupabaseService.client.from('invitations').insert(invPayload);
+      await SupabaseService.safeFrom('invitations', tenantId).insert(invPayload);
 
       // Pro majitele: přiřadit vybrané apartmány do apartment_owners.
       if (_systemRole == 'property_owner' && _selectedApartmentIds.isNotEmpty) {
@@ -1743,12 +1790,18 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
                     firstDate: DateTime(2000),
                     lastDate: DateTime(2100),
                   );
-                  if (picked != null && mounted) setState(() => _startDate = picked);
+                  if (picked != null && mounted) {
+                    setState(() {
+                    _startDate = picked;
+                    _showStartDateError = false;
+                  });
+                  }
                 },
                 child: InputDecorator(
                   decoration: InputDecoration(
                     prefixIcon: const Icon(Icons.calendar_today_outlined),
                     labelText: 'admin.team_contract_start_date'.tr(),
+                    errorText: (_showStartDateError && _startDate == null) ? 'admin.team_validation_start_date_required'.tr() : null,
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
                     enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
                     focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Theme.of(context).colorScheme.primary)),
@@ -2134,9 +2187,12 @@ class _EditMemberDialogState extends ConsumerState<_EditMemberDialog> {
   bool _emailEnabled = true;
   DateTime? _startDate;
   DateTime? _endDate;
+  /// Zobrazit chybu pod polem Datum nástupu při pokusu o uložení bez vyplnění.
+  bool _showStartDateError = false;
   final ScrollController _tab1ScrollController = ScrollController();
   final ScrollController _tab2ScrollController = ScrollController();
   final ScrollController _tab3ScrollController = ScrollController();
+  final ScrollController _tab4ScrollController = ScrollController();
 
   @override
   void initState() {
@@ -2167,6 +2223,7 @@ class _EditMemberDialogState extends ConsumerState<_EditMemberDialog> {
     _tab1ScrollController.dispose();
     _tab2ScrollController.dispose();
     _tab3ScrollController.dispose();
+    _tab4ScrollController.dispose();
     _firstNameController.dispose();
     _lastNameController.dispose();
     _emailController.dispose();
@@ -2185,6 +2242,19 @@ class _EditMemberDialogState extends ConsumerState<_EditMemberDialog> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('admin.team_validation_roles_required'.tr()),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      return;
+    }
+    // Povinné datum nástupu pro personál (ne majitele) – sjednocení dostupnosti a plánování.
+    if (_systemRole != 'property_owner' && _startDate == null) {
+      setState(() => _showStartDateError = true);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.team_validation_start_date_required'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
@@ -2228,6 +2298,7 @@ class _EditMemberDialogState extends ConsumerState<_EditMemberDialog> {
           ref,
           widget.member.id,
           fromDate: _endDate!.add(const Duration(days: 1)),
+          memberName: widget.member.name,
         );
       }
 
@@ -2329,12 +2400,18 @@ class _EditMemberDialogState extends ConsumerState<_EditMemberDialog> {
                       firstDate: DateTime(2000),
                       lastDate: DateTime(2100),
                     );
-                    if (picked != null && mounted) setState(() => _startDate = picked);
+                    if (picked != null && mounted) {
+                      setState(() {
+                        _startDate = picked;
+                        _showStartDateError = false;
+                      });
+                    }
                   },
                   child: InputDecorator(
                     decoration: InputDecoration(
                       prefixIcon: const Icon(Icons.calendar_today_outlined),
                       labelText: 'admin.team_contract_start_date'.tr(),
+                      errorText: (_showStartDateError && _startDate == null) ? 'admin.team_validation_start_date_required'.tr() : null,
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
                       enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade300)),
                       focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Theme.of(context).colorScheme.primary)),
@@ -2449,7 +2526,7 @@ class _EditMemberDialogState extends ConsumerState<_EditMemberDialog> {
       maxWidth: 800,
       content: Form(
         child: DefaultTabController(
-          length: 3,
+          length: 4,
           child: Column(
             mainAxisSize: MainAxisSize.max,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2462,6 +2539,7 @@ class _EditMemberDialogState extends ConsumerState<_EditMemberDialog> {
                   Tab(icon: const Icon(Icons.info_outline), text: 'admin.tab_basic_info'.tr()),
                   Tab(icon: const Icon(Icons.task_alt), text: 'admin.tab_tasks'.tr()),
                   Tab(icon: const Icon(Icons.attach_money), text: 'clients.tab_finance'.tr()),
+                  Tab(icon: const Icon(Icons.event_busy), text: 'admin.tab_absence'.tr()),
                 ],
               ),
               const SizedBox(height: 8),
@@ -2521,6 +2599,22 @@ class _EditMemberDialogState extends ConsumerState<_EditMemberDialog> {
                         controller: _tab3ScrollController,
                         padding: EdgeInsets.zero,
                         child: MemberFinanceTab(member: widget.member),
+                      ),
+                    ),
+                    Scrollbar(
+                      controller: _tab4ScrollController,
+                      thumbVisibility: true,
+                      child: SingleChildScrollView(
+                        controller: _tab4ScrollController,
+                        padding: EdgeInsets.zero,
+                        child: MemberAbsenceTab(
+                          member: widget.member,
+                          onSaved: () {
+                            ref.invalidate(staffAbsencesProvider);
+                          },
+                          onUnassignTasksForMember: (memberId, {fromDate, toDate, memberName}) =>
+                              _unassignTasksForMember(ref, memberId, fromDate: fromDate, toDate: toDate, memberName: memberName),
+                        ),
                       ),
                     ),
                   ],

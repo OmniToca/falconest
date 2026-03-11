@@ -2,7 +2,6 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/models/client_address_model.dart';
@@ -310,7 +309,7 @@ class _RecommendingAgencyRow extends ConsumerWidget {
         );
       },
       loading: () => const SizedBox.shrink(),
-      error: (_, __) => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
     );
   }
 }
@@ -514,8 +513,9 @@ class _FinanceTab extends ConsumerWidget {
             final createdAt = row['created_at'];
             DateTime? date;
             if (createdAt != null) {
-              if (createdAt is DateTime) date = createdAt;
-              else if (createdAt is String) date = DateTime.tryParse(createdAt);
+              if (createdAt is DateTime) {
+                date = createdAt;
+              } else if (createdAt is String) date = DateTime.tryParse(createdAt);
             }
             final statusLabel = status == 'paid'
                 ? 'clients.finance_status_paid'.tr()
@@ -650,7 +650,7 @@ class _RecommendedClientsTab extends ConsumerWidget {
         );
       },
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (err, __) => Center(
+      error: (err, _) => Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Column(
@@ -810,7 +810,7 @@ class _PortalStatusSection extends ConsumerWidget {
           Text('common.loading'.tr(), style: Theme.of(context).textTheme.bodySmall),
         ],
       ),
-      error: (_, __) => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
     );
   }
 }
@@ -834,7 +834,7 @@ class _ApartmentsCountSection extends ConsumerWidget {
         );
       },
       loading: () => const SizedBox.shrink(),
-      error: (_, __) => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
     );
   }
 }
@@ -894,7 +894,7 @@ class _AddressDirectorySection extends ConsumerWidget {
               child: CircularProgressIndicator(strokeWidth: 2),
             )),
           ),
-          error: (_, __) => const SizedBox.shrink(),
+          error: (_, _) => const SizedBox.shrink(),
         ),
       ],
     );
@@ -1127,7 +1127,7 @@ class _ApartmentsTab extends ConsumerWidget {
               );
             },
             loading: () => const Center(child: CircularProgressIndicator()),
-            error: (err, __) => Center(
+            error: (err, _) => Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
                 child: Column(
@@ -1356,7 +1356,7 @@ class _ReservationsTabState extends ConsumerState<_ReservationsTab> {
               );
             },
             loading: () => const Center(child: CircularProgressIndicator()),
-            error: (err, __) => Center(
+            error: (err, _) => Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
                 child: Column(
@@ -1576,7 +1576,7 @@ class _TasksTabState extends ConsumerState<_TasksTab> {
               );
             },
             loading: () => const Center(child: CircularProgressIndicator()),
-            error: (err, __) => Center(
+            error: (err, _) => Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
                 child: Column(

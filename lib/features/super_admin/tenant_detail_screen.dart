@@ -1,6 +1,5 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/foundation.dart';
-import 'package:intl/intl.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -485,7 +484,7 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
                   borderRadius: BorderRadius.circular(16),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.05),
+                      color: Colors.black.withValues(alpha: 0.05),
                       blurRadius: 16,
                       offset: const Offset(0, 4),
                     ),
@@ -755,7 +754,7 @@ class _InfoBillingTab extends ConsumerWidget {
               ),
               const SizedBox(height: 4),
               DropdownButtonFormField<String?>(
-                value: acquiredBy,
+                initialValue: acquiredBy,
                 decoration: _inputDecoration(),
                 items: items,
                 onChanged: (v) async {
@@ -771,7 +770,7 @@ class _InfoBillingTab extends ConsumerWidget {
               ),
               const SizedBox(height: 4),
               DropdownButtonFormField<String?>(
-                value: managedBy,
+                initialValue: managedBy,
                 decoration: _inputDecoration(),
                 items: items,
                 onChanged: (v) async {
@@ -785,7 +784,7 @@ class _InfoBillingTab extends ConsumerWidget {
         );
       },
       loading: () => _sectionCard(context, child: const Center(child: CircularProgressIndicator())),
-      error: (_, __) => _sectionCard(context, child: Text('super_admin.load_error'.tr())),
+      error: (_, _) => _sectionCard(context, child: Text('super_admin.load_error'.tr())),
     );
   }
 
@@ -1698,7 +1697,7 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
                   itemCount: modules.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 12),
+                  separatorBuilder: (_, _) => const SizedBox(height: 12),
                   itemBuilder: (_, i) {
                     final module = modules[i];
                     final isEnabled = _pending.containsKey(module.id)
@@ -1912,7 +1911,7 @@ class _TeamStatsTab extends StatelessWidget {
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
               itemCount: profiles.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 12),
+              separatorBuilder: (_, _) => const SizedBox(height: 12),
               itemBuilder: (_, i) {
                 final p = profiles[i];
                 return Container(

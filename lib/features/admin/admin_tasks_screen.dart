@@ -1,7 +1,6 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -62,8 +61,24 @@ Widget _buildAdditionalAssigneesChips({
         runSpacing: 4,
         children: available.map((m) {
           final isSelected = selectedIds.contains(m.dropdownId);
+          final rolesString = m.roles.isNotEmpty
+              ? m.roles.map((r) => 'admin.role_$r'.tr()).join(', ')
+              : null;
+          final hasRoles = rolesString != null && rolesString.isNotEmpty;
+          final String chipLabel;
+          if (hasRoles) {
+            chipLabel = m.isFromInvitation
+                ? '${m.name} ($pendingLabel) • $rolesString'
+                : '${m.name} ($rolesString)';
+          } else {
+            chipLabel = m.isFromInvitation ? '${m.name} ($pendingLabel)' : m.name;
+          }
           return FilterChip(
-            label: Text(m.isFromInvitation ? '${m.name} ($pendingLabel)' : m.name),
+            label: Text(
+              chipLabel,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
             selected: isSelected,
             onSelected: isReadOnly ? null : (v) {
               if (v == true) {
@@ -502,11 +517,9 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
         return;
       }
       final deletedAt = DateTime.now().toUtc().toIso8601String();
-      await SupabaseService.client
-          .from('tasks')
+      await SupabaseService.safeFrom('tasks', tenantId)
           .update({'deleted_at': deletedAt})
-          .eq('id', taskId)
-          .eq('tenant_id', tenantId);
+          .eq('id', taskId);
       await AuditLogService.log(
         tenantId: auth.tenantIdForData,
         userId: SupabaseService.client.auth.currentUser?.id,
@@ -738,21 +751,24 @@ class _RecalculateProposalsDialogState extends State<_RecalculateProposalsDialog
     });
   }
 
+  /// Formátuje řádek návrhu; časy zobrazuje v lokálním čase (.toLocal()), aby dispečer neviděl falešný posun UTC vs Local.
   String _formatProposalRow(TaskRecalculationProposal p) {
     final newly = 'admin.recalculate_proposals_newly'.tr();
     final newName = p.newAssigneeName ?? 'common.none'.tr();
+    final newStartLocal = p.newStart.isUtc ? p.newStart.toLocal() : p.newStart;
     String newTime = '';
     try {
-      newTime = DateFormat('HH:mm').format(p.newStart);
+      newTime = DateFormat('HH:mm').format(newStartLocal);
     } catch (_) {}
     final hasOldAssignee = p.oldAssigneeName != null &&
         p.oldAssigneeName!.trim().isNotEmpty &&
         p.oldAssigneeName != 'common.none'.tr();
     if (hasOldAssignee) {
       final originally = 'admin.recalculate_proposals_originally'.tr();
+      final oldStartLocal = p.oldStart.isUtc ? p.oldStart.toLocal() : p.oldStart;
       String oldTime = '';
       try {
-        oldTime = DateFormat('HH:mm').format(p.oldStart);
+        oldTime = DateFormat('HH:mm').format(oldStartLocal);
       } catch (_) {}
       return '${p.taskTitle}\n$originally: ${p.oldAssigneeName} ($oldTime)\n$newly: $newName ($newTime)';
     }
@@ -1636,11 +1652,6 @@ String _taskTypeLabelKey(String taskType) {
   }
 }
 
-/// Zda má být karta úkolu vizuálně zvýrazněna (závada, materiál).
-bool _isTaskTypeAlert(String? taskType) {
-  return taskType == 'issue' || taskType == 'material';
-}
-
 /// Zda je typ úkolu transfer – pro zobrazení pole čísla letu a uložení do metadata.
 bool _isTransferTaskType(String? taskType) {
   if (taskType == null || taskType.trim().isEmpty) return false;
@@ -1649,11 +1660,13 @@ bool _isTransferTaskType(String? taskType) {
 
 /// Vrací položky dropdownu pro výběr služby z katalogu. Value = service.id.
 /// [includeNone] – přidá položku "Žádná" pro Edit dialog, aby šlo odebrat službu.
-/// PROČ: Umožňuje přenos requires_photo do metadata při manuální tvorbě/úpravě úkolu.
+/// [taskType] – u Edit dialogu: pokud úkol má task_type (např. check_out) ale service_id není v katalogu,
+/// přidá se fallback položka s názvem z task_categories (Check-Out, Úklid), aby se neukazovala pomlčka.
 List<DropdownMenuItem<String?>> _buildServiceDropdownItems(
   List<TenantServiceModel> catalog,
   String? selectedServiceId, {
   bool includeNone = false,
+  String? taskType,
 }) {
   if (catalog.isEmpty) {
     return [DropdownMenuItem(value: null, child: Text('admin.no_services_in_catalog'.tr()))];
@@ -1667,36 +1680,17 @@ List<DropdownMenuItem<String?>> _buildServiceDropdownItems(
   if (includeNone) {
     items.insert(0, DropdownMenuItem(value: null, child: Text('common.none'.tr())));
   }
-  return items;
-}
-
-/// Dynamické načtení typů úkolů z katalogu klienta (tenant_services) s fallbackem pro smazané/systémové typy.
-/// [catalog] = aktivní služby z DB, [currentValue] = typ úkolu při editaci – pokud není v katalogu, přidá se uměle.
-List<DropdownMenuItem<String>> _buildTaskTypeDropdownItems(
-  List<TenantServiceModel> catalog,
-  String? currentValue,
-) {
-  final typeToName = <String, String>{};
-  for (final s in catalog) {
-    final st = s.serviceType.trim().toLowerCase();
-    if (st.isNotEmpty && !typeToName.containsKey(st)) {
-      typeToName[st] = s.name.trim().isEmpty ? st : s.name.trim();
-    }
-  }
-  final items = typeToName.entries
-      .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
-      .toList();
-  if (currentValue != null && currentValue.trim().isNotEmpty) {
-    final cv = currentValue.trim().toLowerCase();
-    if (!typeToName.containsKey(cv)) {
-      items.insert(0, DropdownMenuItem(
-        value: cv,
-        child: Text(_taskTypeLabelKey(cv).tr()),
-      ));
-    }
-  }
-  if (items.isEmpty) {
-    items.add(DropdownMenuItem(value: 'extra', child: Text(_taskTypeLabelKey('extra').tr())));
+  // Fallback: úkol má service_id (např. smazaná služba) a task_type – zobrazíme název typu místo pomlčky.
+  final taskTypeNorm = taskType?.trim().toLowerCase().replaceAll('-', '_');
+  if (taskTypeNorm != null &&
+      taskTypeNorm.isNotEmpty &&
+      selectedServiceId != null &&
+      selectedServiceId.trim().isNotEmpty &&
+      !catalog.any((s) => s.id == selectedServiceId)) {
+    items.add(DropdownMenuItem<String?>(
+      value: selectedServiceId,
+      child: Text(_taskTypeLabelKey(taskTypeNorm).tr()),
+    ));
   }
   return items;
 }
@@ -1857,7 +1851,7 @@ class _TaskAddressQuickSelectWrapper extends ConsumerWidget {
         );
       },
       loading: () => const SizedBox.shrink(),
-      error: (_, __) => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
     );
   }
 }
@@ -1934,7 +1928,7 @@ class _ClientAddressQuickSelect extends ConsumerWidget {
         );
       },
       loading: () => const SizedBox.shrink(),
-      error: (_, __) => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
     );
   }
 }
@@ -2109,6 +2103,13 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
         if (fn.isNotEmpty) metadata['flight_number'] = fn;
       }
 
+      // KROK 3 OPRAVA: Explicitní payer_type – úkol nese 100 % finančních dat (viz AUDIT_TASK_FINANCE_LIFECYCLE).
+      if (isExternal) {
+        metadata['payer_type'] = _staffCollectsCash ? 'guest' : 'client';
+      } else {
+        metadata['payer_type'] = 'owner';
+      }
+
       final assignedToUuid = _selectedAssignedTo != null && _selectedAssignedTo!.isNotEmpty
           ? _selectedAssignedTo
           : null;
@@ -2202,7 +2203,9 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
   @override
   Widget build(BuildContext context) {
     final apartmentsAsync = ref.watch(apartmentsFullListProvider);
-    final teamAsync = ref.watch(teamFullListProvider);
+    // Dostupný personál v den úkolu (smlouva + schválené absence) – stejná logika jako automatický generátor.
+    final taskDate = _parseDateTime(_dueDateController.text.trim()) ?? DateTime.now();
+    final teamAsync = ref.watch(availableTeamForTaskProvider(taskDate));
     final catalogAsync = ref.watch(tenantServicesProvider);
 
     // Historical pricing – auto-fill ceny při výběru bytu a služby. Provider reaguje na oba parametry.
@@ -2313,7 +2316,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         DropdownButtonFormField<String?>(
-                          value: validValue,
+                          initialValue: validValue,
                           decoration: InputDecoration(
                             prefixIcon: const Icon(Icons.list_alt_outlined),
                             labelText: 'admin.task_service_label'.tr(),
@@ -2338,7 +2341,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                     );
                   },
                   loading: () => DropdownButtonFormField<String>(
-                    value: null,
+                    initialValue: null,
                     decoration: InputDecoration(
                       prefixIcon: const Icon(Icons.list_alt_outlined),
                       labelText: 'admin.task_service_label'.tr(),
@@ -2347,8 +2350,8 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                     items: [DropdownMenuItem(value: null, child: Text('common.loading'.tr()))],
                     onChanged: null,
                   ),
-                  error: (_, __) => DropdownButtonFormField<String>(
-                    value: null,
+                  error: (_, _) => DropdownButtonFormField<String>(
+                    initialValue: null,
                     decoration: InputDecoration(
                       prefixIcon: const Icon(Icons.list_alt_outlined),
                       labelText: 'admin.task_service_label'.tr(),
@@ -2368,7 +2371,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                       apartmentsAsync.when(
                         data: (apartments) {
                           return DropdownButtonFormField<String?>(
-                            value: _selectedApartmentId,
+                            initialValue: _selectedApartmentId,
                             decoration: InputDecoration(
                               prefixIcon: const Icon(Icons.apartment),
                               labelText: 'admin.task_field_apartment'.tr(),
@@ -2434,7 +2437,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                             (_) => setState(() => _selectedClientId = validValue));
                       }
                       return DropdownButtonFormField<String?>(
-                        value: validValue,
+                        initialValue: validValue,
                         decoration: InputDecoration(
                           prefixIcon: const Icon(Icons.person),
                           labelText: 'tasks.form_client'.tr(),
@@ -2539,6 +2542,28 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                   isUploading: _isSaving,
                 ),
                 const SizedBox(height: 12),
+                // PROČ Termín před výběrem personálu: Dostupný personál se filtruje podle data (availableTeamForTaskProvider).
+                // Uživatel nejdřív zvolí termín, pak vidí roletku s lidmi – logický průchod formulářem.
+                TextFormField(
+                  controller: _dueDateController,
+                  readOnly: true,
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.calendar_today_outlined),
+                    labelText: 'admin.task_field_due_date'.tr(),
+                    border: OutlineInputBorder(),
+                    suffixIcon: Icon(Icons.calendar_today_outlined),
+                  ),
+                  onTap: () async {
+                    final initial = _parseDateTime(_dueDateController.text);
+                    final result = await _showDateTimePicker(context, initial: initial);
+                    if (result != null && mounted) {
+                      setState(() => _dueDateController.text = result);
+                    }
+                  },
+                  validator: (v) =>
+                      (v == null || v.trim().isEmpty) ? 'admin.validation_datetime_required_short'.tr() : null,
+                ),
+                const SizedBox(height: 12),
                 teamAsync.when(
                   data: (members) {
                     // BUGFIX: Majitelé apartmánů (owners) jsou klienti, nesmí se jim přiřazovat úkoly. Filtrujeme pouze reálný personál.
@@ -2561,13 +2586,33 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                       seenValues.add(value);
                       unique.add(m);
                     }
+                    // PROČ stejná logika jako v Edit dialogu: sjednocení UX – v roletce „Přiřadit osobě“ zobrazujeme i pracovní pozice (role).
                     final pendingLabel = 'admin.team_status_pending'.tr();
                     final items = <DropdownMenuItem<String?>>[
                       DropdownMenuItem<String?>(value: null, child: Text('admin.tasks_assign_nobody'.tr())),
-                      ...unique.map((m) => DropdownMenuItem<String?>(
+                      ...unique.map((m) {
+                        final rolesString = m.roles.isNotEmpty
+                            ? m.roles.map((r) => 'admin.role_$r'.tr()).join(', ')
+                            : null;
+                        final hasRoles = rolesString != null && rolesString.isNotEmpty;
+                        final String label;
+                        if (hasRoles) {
+                          label = m.isFromInvitation
+                              ? '${m.name} ($pendingLabel) • $rolesString'
+                              : '${m.name} ($rolesString)';
+                        } else {
+                          label = m.isFromInvitation ? '${m.name} ($pendingLabel)' : m.name;
+                        }
+                        return DropdownMenuItem<String?>(
                           value: m.dropdownId,
-                          child: Text(m.isFromInvitation ? '${m.name} ($pendingLabel)' : m.name),
-                        )),
+                          child: Text(
+                            label,
+                            style: TextStyle(color: m.isFromInvitation ? Colors.grey : Colors.black),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        );
+                      }),
                     ];
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2600,28 +2645,24 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                       ],
                     );
                   },
-                  loading: () => const LinearProgressIndicator(),
-                  error: (e, st) => Text('admin.team_load_error'.tr()),
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _dueDateController,
-                  readOnly: true,
-                  decoration: InputDecoration(
-                    prefixIcon: const Icon(Icons.calendar_today_outlined),
-                    labelText: 'admin.task_field_due_date'.tr(),
-                    border: OutlineInputBorder(),
-                    suffixIcon: Icon(Icons.calendar_today_outlined),
+                  loading: () => DropdownButtonFormField<String?>(
+                    initialValue: null,
+                    items: const [],
+                    onChanged: null,
+                    decoration: InputDecoration(
+                      labelText: 'admin.task_field_assign_to'.tr(),
+                      prefixIcon: const Padding(
+                        padding: EdgeInsets.all(12.0),
+                        child: SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
+                      hintText: 'admin.team_loading_available'.tr(),
+                    ),
                   ),
-                  onTap: () async {
-                    final initial = _parseDateTime(_dueDateController.text);
-                    final result = await _showDateTimePicker(context, initial: initial);
-                    if (result != null && mounted) {
-                      setState(() => _dueDateController.text = result);
-                    }
-                  },
-                  validator: (v) =>
-                      (v == null || v.trim().isEmpty) ? 'admin.validation_datetime_required_short'.tr() : null,
+                  error: (e, st) => Text('admin.team_load_error'.tr()),
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
@@ -3030,7 +3071,7 @@ class _TaskMediaSection extends StatelessWidget {
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               itemCount: mediaUrls.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              separatorBuilder: (_, _) => const SizedBox(width: 8),
               itemBuilder: (context, index) {
                 final url = mediaUrls[index];
                 return GestureDetector(
@@ -3042,7 +3083,7 @@ class _TaskMediaSection extends StatelessWidget {
                       width: 100,
                       height: 100,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Container(
+                      errorBuilder: (_, _, _) => Container(
                         width: 100,
                         height: 100,
                         color: Colors.grey.shade200,
@@ -3254,6 +3295,10 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
         }
       }
 
+      // KROK 3 OPRAVA: Explicitní payer_type při úpravě úkolu.
+      mergedMetadata['payer_type'] =
+          _isExternal ? (_staffCollectsCash ? 'guest' : 'client') : 'owner';
+
       // PROČ: Při dokončení úkolu s výběrem hotovosti nabídneme zápis do peněženky administrátora.
       if (_status == 'completed') {
         final amount = _amountToCollectFromMetadata(mergedMetadata);
@@ -3345,6 +3390,10 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
         'service_id': service?.id,
         'media_urls': mediaUrls,
       };
+      // Při novém přiřazení vymažeme Soft-Unassign kontext (UI už neukáže „Původní pracovník“).
+      if (assignedToUuid != null && assignedToUuid.isNotEmpty) {
+        updateFields['unassigned_info'] = null;
+      }
       await ref.read(adminTasksProvider.notifier).updateTaskInAdmin(widget.task.id, updateFields);
       if (!mounted) return;
       Navigator.of(context).pop();
@@ -3382,7 +3431,9 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
   @override
   Widget build(BuildContext context) {
     final apartmentsAsync = ref.watch(apartmentsFullListProvider);
-    final teamAsync = ref.watch(teamFullListProvider);
+    // Dostupný personál v den úkolu (smlouva + schválené absence) – stejná logika jako automatický generátor.
+    final taskDate = widget.task.scheduledStart ?? widget.task.dueDate;
+    final teamAsync = ref.watch(availableTeamForTaskProvider(taskDate));
     final catalogAsync = ref.watch(tenantServicesProvider);
     final lockedTaskIds = ref.watch(lockedFinancialTaskIdsProvider).valueOrNull ?? {};
 
@@ -3530,7 +3581,13 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                 catalogAsync.when(
                   data: (catalog) {
                     // PROČ: Výběr služby umožňuje aktualizovat metadata.requires_photo při změně služby.
-                    final items = _buildServiceDropdownItems(catalog, _selectedServiceId, includeNone: true);
+                    // taskType: fallback položka, když service_id není v katalogu (např. Check-Out z task_categories).
+                    final items = _buildServiceDropdownItems(
+                      catalog,
+                      _selectedServiceId,
+                      includeNone: true,
+                      taskType: widget.task.taskType,
+                    );
                     final validValue = items.any((i) => i.value == _selectedServiceId)
                         ? _selectedServiceId
                         : (items.isNotEmpty ? items.first.value : _selectedServiceId);
@@ -3548,7 +3605,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         DropdownButtonFormField<String?>(
-                          value: validValue,
+                          initialValue: validValue,
                           decoration: InputDecoration(
                             prefixIcon: const Icon(Icons.list_alt_outlined),
                             labelText: 'admin.task_service_label'.tr(),
@@ -3574,7 +3631,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                     );
                   },
                   loading: () => DropdownButtonFormField<String?>(
-                    value: _selectedServiceId,
+                    initialValue: _selectedServiceId,
                     decoration: InputDecoration(
                       prefixIcon: const Icon(Icons.list_alt_outlined),
                       labelText: 'admin.task_service_label'.tr(),
@@ -3583,8 +3640,8 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                     items: [DropdownMenuItem(value: _selectedServiceId, child: Text('common.loading'.tr()))],
                     onChanged: null,
                   ),
-                  error: (_, __) => DropdownButtonFormField<String?>(
-                    value: _selectedServiceId,
+                  error: (_, _) => DropdownButtonFormField<String?>(
+                    initialValue: _selectedServiceId,
                     decoration: InputDecoration(
                       prefixIcon: const Icon(Icons.list_alt_outlined),
                       labelText: 'admin.task_service_label'.tr(),
@@ -3604,7 +3661,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                           ? _selectedApartmentId
                           : (apartments.isNotEmpty ? apartments.first.id : null);
                       return DropdownButtonFormField<String?>(
-                        value: validId,
+                        initialValue: validId,
                         decoration: InputDecoration(
                           prefixIcon: const Icon(Icons.apartment),
                           labelText: 'admin.task_field_apartment'.tr(),
@@ -3657,7 +3714,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                           ? _selectedClientId!.substring(0, 8)
                           : (_selectedClientId ?? '');
                       return DropdownButtonFormField<String?>(
-                        value: dropdownValue,
+                        initialValue: dropdownValue,
                         decoration: InputDecoration(
                           prefixIcon: const Icon(Icons.person),
                           labelText: 'tasks.form_client'.tr(),
@@ -3773,39 +3830,51 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                   data: (members) {
                     // BUGFIX: Majitelé apartmánů (owners) jsou klienti, nesmí se jim přiřazovat úkoly. Filtrujeme pouze reálný personál.
                     final staffMembers = members.where((m) => m.role != 'property_owner').toList();
-                    final currentUserId = widget.task.assignedTo;
-                    final currentUserName = widget.task.assignedToName ?? 'planning_calendar.unknown'.tr();
+                    final availableIds = staffMembers.map((m) => m.dropdownId).toSet();
+                    // Původně přiřazený není v tento termín dostupný → datově musí být null, UX varování zobrazíme pod dropdownem.
+                    final isOriginalUnavailable = widget.task.assignedTo != null &&
+                        widget.task.assignedTo!.isNotEmpty &&
+                        !availableIds.contains(widget.task.assignedTo!);
+                    if (isOriginalUnavailable && _selectedAssignedTo == widget.task.assignedTo) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) setState(() => _selectedAssignedTo = null);
+                      });
+                    }
                     final pendingLabel = 'admin.team_status_pending'.tr();
                     final dropdownItems = <DropdownMenuItem<String?>>[];
                     final seenIds = <String>{};
 
-                    void addProfileItem(String id, String name, bool isPending) {
+                    void addProfileItem(String id, String name, bool isPending, {List<String> roles = const []}) {
                       if (id.isEmpty || seenIds.contains(id)) return;
                       seenIds.add(id);
+                      final rolesString = roles.isNotEmpty
+                          ? roles.map((r) => 'admin.role_$r'.tr()).join(', ')
+                          : null;
+                      final hasRoles = rolesString != null && rolesString.isNotEmpty;
+                      final String label;
+                      if (hasRoles) {
+                        label = isPending
+                            ? '$name ($pendingLabel) • $rolesString'
+                            : '$name ($rolesString)';
+                      } else {
+                        label = isPending ? '$name ($pendingLabel)' : name;
+                      }
                       dropdownItems.add(
                         DropdownMenuItem<String?>(
                           value: id,
                           child: Text(
-                            isPending ? '$name ($pendingLabel)' : name,
+                            label,
                             style: TextStyle(color: isPending ? Colors.grey : Colors.black),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       );
                     }
 
                     dropdownItems.add(DropdownMenuItem<String?>(value: null, child: Text('admin.tasks_assign_nobody'.tr())));
-
-                    if (currentUserId != null && currentUserId.isNotEmpty) {
-                      final known = members.where((m) => m.dropdownId == currentUserId).toList();
-                      if (known.isNotEmpty) {
-                        addProfileItem(currentUserId, known.first.name, known.first.isFromInvitation);
-                      } else {
-                        addProfileItem(currentUserId, currentUserName, true);
-                      }
-                    }
-
                     for (final m in staffMembers) {
-                      addProfileItem(m.dropdownId, m.name, m.isFromInvitation);
+                      addProfileItem(m.dropdownId, m.name, m.isFromInvitation, roles: m.roles);
                     }
 
                     return Column(
@@ -3813,7 +3882,9 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         DropdownButtonFormField<String?>(
-                          initialValue: _selectedAssignedTo != null && seenIds.contains(_selectedAssignedTo) ? _selectedAssignedTo : null,
+                          initialValue: _selectedAssignedTo != null && seenIds.contains(_selectedAssignedTo)
+                              ? _selectedAssignedTo
+                              : null,
                           decoration: InputDecoration(
                             prefixIcon: const Icon(Icons.person_outline),
                             labelText: 'admin.task_field_assign_to'.tr(),
@@ -3830,6 +3901,57 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                                     }
                                   }),
                         ),
+                        if (isOriginalUnavailable) ...[
+                          const SizedBox(height: 8),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(Icons.warning_amber_rounded, color: Colors.red.shade700, size: 20),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'admin.task_assignee_original_unavailable_warning'.tr(
+                                    namedArgs: {'name': widget.task.assignedToName ?? 'planning_calendar.unknown'.tr()},
+                                  ),
+                                  style: TextStyle(
+                                    color: Colors.red.shade700,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                        if (widget.task.assignedTo == null &&
+                            widget.task.unassignedInfo != null &&
+                            widget.task.unassignedInfo!.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(Icons.warning_amber_rounded, color: Colors.red.shade700, size: 20),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'admin.task_auto_unassigned_warning'.tr(
+                                    namedArgs: {
+                                      'name': (widget.task.unassignedInfo!['previous_name']?.toString().trim() ?? '')
+                                          .isEmpty
+                                          ? 'planning_calendar.unknown'.tr()
+                                          : widget.task.unassignedInfo!['previous_name'].toString(),
+                                    },
+                                  ),
+                                  style: TextStyle(
+                                    color: Colors.red.shade700,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                         const SizedBox(height: 12),
                         _buildAdditionalAssigneesChips(
                           context: context,

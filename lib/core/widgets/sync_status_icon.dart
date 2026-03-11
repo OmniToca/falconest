@@ -24,7 +24,7 @@ class SyncStatusIcon extends ConsumerWidget {
         context,
         const SyncStatusState(isOffline: false, isSyncing: true, pendingCount: 0),
       ),
-      error: (_, __) => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
     );
   }
 

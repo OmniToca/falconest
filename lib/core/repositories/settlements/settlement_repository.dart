@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import 'package:falconest/core/models/task_commission_model.dart';
 import 'package:falconest/core/models/task_payout_model.dart';
 import 'package:falconest/core/services/supabase_service.dart';
@@ -354,78 +356,159 @@ class SettlementRepository {
     }
   }
 
-  /// Načte vyplacené výplaty a provize pro daný měsíc – filtrováno podle updated_at.
+  /// Načte zmražené snapshoty výplat pro daný měsíc z tabulky [payout_snapshots].
   ///
-  /// PROČ: Historie výplat zobrazuje, co bylo v daném měsíci označeno jako vyplaceno.
-  /// updated_at se nastaví při markPayoutsAsPaid / markCommissionsAsPaid.
+  /// PROČ: Historie výplat čte výhradně z uzamčených snapshotů (jako billing_snapshots u fakturace).
+  /// Žádné dynamické joinování task_payouts/task_commissions – ochrana před změnou historických dat.
   ///
-  /// [tenantId] – agentura. [month] – první den měsíce (rok a měsíc určují rozsah).
-  /// Vrací dvojici: (payouts s profiles join, commissions s clients a profiles join).
-  Future<({
-    List<Map<String, dynamic>> payouts,
-    List<Map<String, dynamic>> commissionsClient,
-    List<Map<String, dynamic>> commissionsProfile,
-  })> getPaidSettlementsByMonth(String tenantId, DateTime month) async {
-    if (tenantId.trim().isEmpty) {
-      return (
-        payouts: <Map<String, dynamic>>[],
-        commissionsClient: <Map<String, dynamic>>[],
-        commissionsProfile: <Map<String, dynamic>>[],
-      );
-    }
+  /// [tenantId] – agentura. [month] – první den měsíce (rok a měsíc).
+  /// Vrací surové řádky z DB: is_employee, profile_id?, client_id?, recipient_name, total_amount, items_data.
+  /// Mapování na [PayoutGroup] provádí provider (aby repo nezávisel na feature vrstvě).
+  Future<List<Map<String, dynamic>>> getPayoutSnapshotsByMonth(
+    String tenantId,
+    DateTime month,
+  ) async {
+    if (tenantId.trim().isEmpty) return [];
 
-    final start = DateTime.utc(month.year, month.month, 1);
-    final end = DateTime.utc(month.year, month.month + 1, 1);
-    final startStr = start.toIso8601String();
-    final endStr = end.toIso8601String();
+    final period = DateTime.utc(month.year, month.month, 1);
+    final periodStr = '${period.year}-${period.month.toString().padLeft(2, '0')}-01';
 
     try {
-      final client = SupabaseService.client;
-
-      final payoutsFuture = client
-          .from('task_payouts')
-          .select('id, profile_id, amount, updated_at, profiles(name, first_name, last_name)')
+      final res = await SupabaseService.client
+          .from('payout_snapshots')
+          .select('id, is_employee, profile_id, client_id, recipient_name, total_amount, items_data')
           .eq('tenant_id', tenantId)
-          .eq('status', 'paid')
-          .gte('updated_at', startStr)
-          .lt('updated_at', endStr);
+          .eq('payout_period', periodStr)
+          .order('recipient_name');
 
-      final commissionsClientFuture = client
-          .from('task_commissions')
-          .select('id, client_id, amount, updated_at, clients(name)')
-          .eq('tenant_id', tenantId)
-          .eq('status', 'paid')
-          .not('client_id', 'is', null)
-          .gte('updated_at', startStr)
-          .lt('updated_at', endStr);
-
-      final commissionsProfileFuture = client
-          .from('task_commissions')
-          .select('id, profile_id, amount, updated_at, profiles(name, first_name, last_name)')
-          .eq('tenant_id', tenantId)
-          .eq('status', 'paid')
-          .not('profile_id', 'is', null)
-          .gte('updated_at', startStr)
-          .lt('updated_at', endStr);
-
-      final results = await Future.wait([
-        payoutsFuture,
-        commissionsClientFuture,
-        commissionsProfileFuture,
-      ]);
-
-      return (
-        payouts: (results[0] as List).cast<Map<String, dynamic>>(),
-        commissionsClient: (results[1] as List).cast<Map<String, dynamic>>(),
-        commissionsProfile: (results[2] as List).cast<Map<String, dynamic>>(),
-      );
-    } catch (_) {
-      return (
-        payouts: <Map<String, dynamic>>[],
-        commissionsClient: <Map<String, dynamic>>[],
-        commissionsProfile: <Map<String, dynamic>>[],
-      );
+      final list = (res as List).cast<Map<String, dynamic>>();
+      return list;
+    } catch (e, st) {
+      debugPrint('getPayoutSnapshotsByMonth ERROR: $e');
+      debugPrint('getPayoutSnapshotsByMonth STACK: $st');
+      rethrow;
     }
+  }
+
+  /// Vloží nebo sloučí jeden snapshot výplaty do [payout_snapshots] (UPSERT podle příjemce a měsíce).
+  ///
+  /// PROČ: Po kliknutí „Vyplatit“ v záložce K výplatě musíme kromě statusu paid zapsat
+  /// uzamčený záznam do payout_snapshots, aby Historie výplat měla co zobrazit.
+  /// Při doplacení ve stejném měsíci se položky a částka sloučí do existujícího řádku.
+  ///
+  /// [itemsData] – seznam map: [{ "task_id", "task_title", "date" (ISO nebo null), "amount" }].
+  /// Může být prázdný (např. skupina bez rozpadu po úkolech) – snapshot se i tak uloží.
+  Future<void> upsertPayoutSnapshot({
+    required String tenantId,
+    required DateTime payoutPeriodFirstDay,
+    required bool isEmployee,
+    required String? profileId,
+    required String? clientId,
+    required String recipientName,
+    required double totalAmount,
+    required List<Map<String, dynamic>> itemsData,
+    required String lockedByProfileId,
+  }) async {
+    if (tenantId.trim().isEmpty || lockedByProfileId.trim().isEmpty) {
+      throw ArgumentError('tenantId a lockedByProfileId jsou povinné.');
+    }
+    if (isEmployee && (profileId == null || profileId.trim().isEmpty)) {
+      throw ArgumentError('U zaměstnance je profileId povinné.');
+    }
+    if (!isEmployee && (clientId == null || clientId.trim().isEmpty)) {
+      throw ArgumentError('U partnera je clientId povinné.');
+    }
+
+    final periodStr =
+        '${payoutPeriodFirstDay.year}-${payoutPeriodFirstDay.month.toString().padLeft(2, '0')}-01';
+    final client = SupabaseService.client;
+
+    // Načtení existujícího řádku pro tento měsíc a příjemce (pro merge při doplacení).
+    final existingRaw = isEmployee
+        ? await client
+            .from('payout_snapshots')
+            .select('id, total_amount, items_data')
+            .eq('tenant_id', tenantId)
+            .eq('payout_period', periodStr)
+            .eq('profile_id', profileId!)
+            .maybeSingle()
+        : await client
+            .from('payout_snapshots')
+            .select('id, total_amount, items_data')
+            .eq('tenant_id', tenantId)
+            .eq('payout_period', periodStr)
+            .eq('client_id', clientId!)
+            .maybeSingle();
+    final existing = existingRaw != null ? Map<String, dynamic>.from(existingRaw as Map) : null;
+
+    if (existing != null && existing['id'] != null) {
+      // Sloučení: přidat položky a částku k existujícímu snapshotu.
+      final existingAmount = (existing['total_amount'] is num)
+          ? (existing['total_amount'] as num).toDouble()
+          : 0.0;
+      final existingItems = existing['items_data'] is List
+          ? List<Map<String, dynamic>>.from(
+              (existing['items_data'] as List).map((e) => Map<String, dynamic>.from(e as Map)))
+          : <Map<String, dynamic>>[];
+      final mergedItems = [...existingItems, ...itemsData];
+      final mergedAmount = existingAmount + totalAmount;
+
+      await client.from('payout_snapshots').update({
+        'total_amount': mergedAmount,
+        'items_data': mergedItems,
+        'locked_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', existing['id']);
+    } else {
+      // Nový řádek.
+      await client.from('payout_snapshots').insert({
+        'tenant_id': tenantId,
+        'payout_period': periodStr,
+        'is_employee': isEmployee,
+        'profile_id': isEmployee ? profileId : null,
+        'client_id': isEmployee ? null : clientId,
+        'recipient_name': recipientName.trim().isEmpty ? '—' : recipientName,
+        'total_amount': totalAmount,
+        'items_data': itemsData,
+        'locked_by': lockedByProfileId,
+      });
+    }
+  }
+
+  /// Příprava pro budoucí uzamčení měsíce výplat – zápis snapshotů do [payout_snapshots].
+  ///
+  /// PROČ: Při akci „Uzamknout měsíc“ se sestaví data z aktuálních paid záznamů
+  /// a vloží do payout_snapshots (RPC nebo batch insert). Zatím jen kostra – implementace
+  /// doplní volání Supabase (insert řádků nebo RPC lock_payout_month).
+  Future<void> lockPayoutMonth({
+    required String tenantId,
+    required DateTime month,
+    required String lockedByProfileId,
+    required List<Map<String, dynamic>> snapshotRows,
+  }) async {
+    if (tenantId.trim().isEmpty || lockedByProfileId.trim().isEmpty) {
+      throw ArgumentError('tenantId a lockedByProfileId jsou povinné.');
+    }
+    if (snapshotRows.isEmpty) return;
+
+    final period = DateTime.utc(month.year, month.month, 1);
+    final periodStr = '${period.year}-${period.month.toString().padLeft(2, '0')}-01';
+    final client = SupabaseService.client;
+
+    final rows = snapshotRows.map((row) {
+      return {
+        'tenant_id': tenantId,
+        'payout_period': periodStr,
+        'is_employee': row['is_employee'] as bool,
+        'profile_id': row['profile_id'] as String?,
+        'client_id': row['client_id'] as String?,
+        'recipient_name': row['recipient_name'] as String,
+        'total_amount': (row['total_amount'] as num).toDouble(),
+        'items_data': row['items_data'],
+        'locked_by': lockedByProfileId,
+      };
+    }).toList();
+
+    await client.from('payout_snapshots').insert(rows);
   }
 
   /// Načte surové řádky úkolů pro frontu „Ke schválení“ – dokončené úkoly bez výplat/provizí.

@@ -74,7 +74,7 @@ class _AddHqMemberDialogState extends ConsumerState<AddHqMemberDialog> {
           .select('id')
           .single();
 
-      final profileId = (profileRes as Map<String, dynamic>)['id']?.toString();
+      final profileId = profileRes['id']?.toString();
       if (profileId == null || profileId.isEmpty) {
         throw Exception('super_admin.hq_member_profile_error'.tr());
       }
@@ -186,7 +186,7 @@ class _AddHqMemberDialogState extends ConsumerState<AddHqMemberDialog> {
                     ),
                     const SizedBox(height: 16),
                     DropdownButtonFormField<String>(
-                      value: _role,
+                      initialValue: _role,
                       decoration: InputDecoration(
                         labelText: 'super_admin.hq_member_role'.tr(),
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),

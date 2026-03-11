@@ -9,6 +9,7 @@ import 'package:falconest/features/admin/providers/apartments_provider.dart';
 ///
 /// Spojuje záznam z apartment_owners s údaji z profiles (nebo invitations).
 /// [isPending] true = majitel ještě neakceptoval pozvánku (ghost profil bez auth_id).
+/// [isPrimaryBilling] true = u spoluvlastnictví tento majitel je hlavní plátce (fakturace jde jen jemu).
 class ApartmentOwnerRow {
   const ApartmentOwnerRow({
     required this.id,
@@ -16,6 +17,7 @@ class ApartmentOwnerRow {
     required this.name,
     this.email,
     required this.isPending,
+    this.isPrimaryBilling = false,
   });
 
   /// apartment_owners.id (UUID záznamu propojení)
@@ -26,13 +28,15 @@ class ApartmentOwnerRow {
   final String? email;
   /// true = čeká na registraci (invitation), false = aktivní profil
   final bool isPending;
+  /// U spoluvlastnictví: true = hlavní plátce za fakturaci (paušál a úkoly)
+  final bool isPrimaryBilling;
 }
 
 /// Provider načítající majitele přiřazené k danému apartmánu.
 ///
 /// Dotaz na apartment_owners s JOIN na profiles. Soft delete: pouze
-/// záznamy s deleted_at IS NULL. Multi-tenant: filtrováno přes RLS
-/// (apartment patří tenantovi admina).
+/// záznamy s deleted_at IS NULL. Tabulka apartment_owners nemá tenant_id –
+/// multi-tenant bezpečnost zajišťuje filtrace podle apartment_id (byt patří tenantovi).
 /// BUGFIX: Explicitní hint !apartment_owners_owner_id_fkey pro PostgREST –
 /// zajistí správný JOIN při více FK vazbách a po doplnění migrace 20260223.
 final apartmentOwnersForApartmentProvider =
@@ -43,7 +47,7 @@ final apartmentOwnersForApartmentProvider =
   final res = await SupabaseService.client
       .from('apartment_owners')
       .select(
-        'id, owner_id, profiles!apartment_owners_owner_id_fkey(id, name, first_name, last_name, email, status)',
+        'id, owner_id, is_primary_billing, profiles!apartment_owners_owner_id_fkey(id, name, first_name, last_name, email, status)',
       )
       .eq('apartment_id', apartmentId)
       .isFilter('deleted_at', null);
@@ -59,6 +63,7 @@ List<ApartmentOwnerRow> _parseOwnerRows(List<dynamic> raw) {
     final id = map['id']?.toString() ?? '';
     final ownerId = map['owner_id']?.toString() ?? '';
     if (id.isEmpty || ownerId.isEmpty) continue;
+    final isPrimaryBilling = map['is_primary_billing'] == true;
 
     final profilesData = map['profiles'];
     String name = '–';
@@ -84,6 +89,7 @@ List<ApartmentOwnerRow> _parseOwnerRows(List<dynamic> raw) {
       name: name,
       email: email,
       isPending: isPending,
+      isPrimaryBilling: isPrimaryBilling,
     ));
   }
   return result;
@@ -93,7 +99,7 @@ List<ApartmentOwnerRow> _parseOwnerRows(List<dynamic> raw) {
 ///
 /// Jeden dotaz na apartment_owners pro celý tenant. Slouží pro zobrazení
 /// "Počet apartmánů: X" na kartě majitele v modulu Klienti bez rizika N+1.
-/// Tenant izolace: JOIN s apartments!inner(tenant_id).
+/// Tenant izolace: inner join na apartments a filtr apartments.tenant_id (apartment_owners nemá tenant_id).
 final ownerApartmentCountsProvider = FutureProvider<Map<String, int>>((ref) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return {};
@@ -122,9 +128,10 @@ final ownerApartmentCountsProvider = FutureProvider<Map<String, int>>((ref) asyn
 final apartmentsForProfileProvider =
     FutureProvider.autoDispose.family<List<ApartmentRow>, String>((ref, profileId) async {
   if (profileId.trim().isEmpty) return [];
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return [];
 
-  final res = await SupabaseService.client
-      .from('apartments')
+  final res = await SupabaseService.safeFrom('apartments', tenantId)
       .select(
         'id, name, address, keybox, tenant_id, zone_id, status, '
         'check_in_time, check_out_time, standard_cleaning_duration, owner_notes, '
@@ -149,17 +156,13 @@ final propertyOwnersInTenantProvider = FutureProvider<List<PropertyOwnerOption>>
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];
 
-  final profilesRes = await SupabaseService.client
-      .from('profiles')
+  final profilesRes = await SupabaseService.safeFrom('profiles', tenantId)
       .select('id, name, first_name, last_name, email, status')
-      .eq('tenant_id', tenantId)
       .eq('role', 'property_owner')
       .isFilter('deleted_at', null);
 
-  final invitationsRes = await SupabaseService.client
-      .from('invitations')
+  final invitationsRes = await SupabaseService.safeFrom('invitations', tenantId)
       .select('id, profile_id, email, first_name, last_name')
-      .eq('tenant_id', tenantId)
       .eq('role', 'property_owner');
 
   final result = <PropertyOwnerOption>[];
@@ -230,9 +233,11 @@ class ApartmentOwnersRepository {
 
   /// Zajistí propojení majitel–byt: pokud existuje soft-deleted záznam, obnoví ho,
   /// jinak vloží nový řádek. Tím se vyhneme chybě duplicate key při znovupřidání majitele.
+  /// Tabulka apartment_owners nemá tenant_id – bezpečnost zajišťuje RLS a kontext (apartment patří tenantovi).
   static Future<void> _ensureOwnerLinked({
     required String apartmentId,
     required String ownerId,
+    required String tenantId,
   }) async {
     final existing = await SupabaseService.client
         .from('apartment_owners')
@@ -242,8 +247,8 @@ class ApartmentOwnersRepository {
         .maybeSingle();
 
     if (existing != null) {
-      final id = existing['id']?.toString();
-      final deletedAt = existing['deleted_at'];
+      final id = (existing as Map)['id']?.toString();
+      final deletedAt = (existing as Map)['deleted_at'];
       if (id != null && id.isNotEmpty && deletedAt != null) {
         await SupabaseService.client
             .from('apartment_owners')
@@ -328,13 +333,11 @@ class ApartmentOwnersRepository {
       'role': 'property_owner',
       'roles': [],
     };
-    await SupabaseService.client.from('invitations').insert(invPayload);
+    await SupabaseService.safeFrom('invitations', tenantId).insert(invPayload);
 
-    await SupabaseService.client
-        .from('clients')
+    await SupabaseService.safeFrom('clients', tenantId)
         .update({'profile_id': newProfileId})
-        .eq('id', client.id)
-        .eq('tenant_id', tenantId);
+        .eq('id', client.id);
 
     targetProfileId = newProfileId;
     inviteLink = origin.trim().isNotEmpty
@@ -345,6 +348,7 @@ class ApartmentOwnersRepository {
   await _ensureOwnerLinked(
     apartmentId: apartmentId,
     ownerId: targetProfileId,
+    tenantId: tenantId,
   );
 
   return inviteLink;
@@ -360,17 +364,40 @@ class ApartmentOwnersRepository {
     await _ensureOwnerLinked(
       apartmentId: apartmentId,
       ownerId: ownerId,
+      tenantId: tenantId,
     );
   }
 
   /// Odebere propojení – soft delete (nastavení deleted_at).
+  /// Tabulka apartment_owners nemá tenant_id – RLS a kontext (id z aktuálního tenanta) zajišťují bezpečnost.
   static Future<void> removeOwner({
     required String apartmentOwnersId,
+    required String tenantId,
   }) async {
     final deletedAt = DateTime.now().toUtc().toIso8601String();
     await SupabaseService.client
         .from('apartment_owners')
         .update({'deleted_at': deletedAt})
         .eq('id', apartmentOwnersId);
+  }
+
+  /// Nastaví jednoho majitele jako hlavního plátce (is_primary_billing) pro daný apartmán.
+  ///
+  /// PROČ "JEN JEDEN": U spoluvlastnictví smí být hlavní plátce pouze jeden – fakturace
+  /// (paušál i úkoly) jde jen jemu. Nejprve nastavíme is_primary_billing = false všem
+  /// záznamům daného bytu, pak true vybranému záznamu.
+  static Future<void> setPrimaryBillingOwner({
+    required String apartmentId,
+    required String apartmentOwnersRecordId,
+  }) async {
+    await SupabaseService.client
+        .from('apartment_owners')
+        .update({'is_primary_billing': false})
+        .eq('apartment_id', apartmentId)
+        .isFilter('deleted_at', null);
+    await SupabaseService.client
+        .from('apartment_owners')
+        .update({'is_primary_billing': true})
+        .eq('id', apartmentOwnersRecordId);
   }
 }

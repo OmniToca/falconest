@@ -474,7 +474,7 @@ class _PropertyCard extends ConsumerWidget {
         height: 22,
         child: Center(child: LinearProgressIndicator()),
       ),
-      error: (_, __) => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
     );
   }
 

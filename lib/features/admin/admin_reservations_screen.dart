@@ -2,7 +2,6 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 
 import 'package:falconest/core/audit/enterprise_audit_payload.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
@@ -322,11 +321,9 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
         return;
       }
       final deletedAt = DateTime.now().toUtc().toIso8601String();
-      await SupabaseService.client
-          .from('reservations')
+      await SupabaseService.safeFrom('reservations', tenantId)
           .update({'deleted_at': deletedAt})
-          .eq('id', id)
-          .eq('tenant_id', tenantId);
+          .eq('id', id);
       final userId = SupabaseService.client.auth.currentUser?.id;
       final previousState = Map<String, dynamic>.from(reservation.toMap())
         ..['id'] = reservation.id
@@ -350,22 +347,18 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
       // Nahrazeno hádání podle apartment_id + data – mažeme pouze úkoly s přímou vazbou.
       if (tenantId.isNotEmpty) {
         try {
-          final tasksRes = await SupabaseService.client
-              .from('tasks')
+          final tasksRes = await SupabaseService.safeFrom('tasks', tenantId)
               .select('id')
               .eq('reservation_id', id)
-              .eq('tenant_id', tenantId)
               .isFilter('deleted_at', null);
           final taskList = tasksRes as List<dynamic>?;
           if (taskList != null && taskList.isNotEmpty) {
             for (final t in taskList) {
               final taskId = (t is Map ? t['id'] : null)?.toString();
               if (taskId == null || taskId.isEmpty) continue;
-              await SupabaseService.client
-                  .from('tasks')
+              await SupabaseService.safeFrom('tasks', tenantId)
                   .update({'deleted_at': deletedAt})
-                  .eq('id', taskId)
-                  .eq('tenant_id', tenantId);
+                  .eq('id', taskId);
               await AuditLogService.logEnterprise(
                 tenantId: tenantId,
                 userId: userId,
@@ -1295,7 +1288,7 @@ class _ReservationTimelineBlock extends StatelessWidget {
             onTap: onTap,
             borderRadius: BorderRadius.circular(10),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(
                 color: blockColor,
                 borderRadius: BorderRadius.circular(10),
@@ -1307,57 +1300,79 @@ class _ReservationTimelineBlock extends StatelessWidget {
                   ),
                 ],
               ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
+              child: ClipRect(
+                child: SizedBox(
+                  height: rowHeight - 6 - 8,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(
-                        child: Text(
-                          guestName,
-                          overflow: TextOverflow.ellipsis,
-                          maxLines: 1,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.black87,
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              guestName,
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.black87,
+                              ),
+                            ),
                           ),
-                        ),
+                          if (reservation.referenceNumber != null && reservation.referenceNumber!.trim().isNotEmpty)
+                            Flexible(
+                              child: Text(
+                                '#${reservation.referenceNumber!.trim()}',
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                                style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
+                              ),
+                            ),
+                        ],
                       ),
-                      if (reservation.referenceNumber != null && reservation.referenceNumber!.trim().isNotEmpty)
-                        Text(
-                          '#${reservation.referenceNumber!.trim()}',
-                          style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
+                      // Responzivní druhý řádek: ikonky – Flexible aby při malé výšce řádku (menší monitor) nepřetekl.
+                      if (width > 120)
+                        Flexible(
+                          child: ClipRect(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const SizedBox(height: 2),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        '👥 $totalGuests',
+                                        overflow: TextOverflow.ellipsis,
+                                        maxLines: 1,
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.black54,
+                                        ),
+                                      ),
+                                    ),
+                                    if (reservation.needsTransfer == true) ...[
+                                      const SizedBox(width: 6),
+                                      Icon(Icons.flight_land, size: 14, color: Colors.black54),
+                                    ],
+                                    if (reservation.internalNote != null && reservation.internalNote!.trim().isNotEmpty) ...[
+                                      const SizedBox(width: 6),
+                                      Icon(Icons.notes, size: 14, color: Colors.black54),
+                                    ],
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                     ],
                   ),
-                  // Responzivní druhý řádek: ikonky hostů/transfer/poznámky jen pro širší bloky (1 noc ≈ 85 px → ořezává se text)
-                  if (width > 120) ...[
-                    const SizedBox(height: 4),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          '👥 $totalGuests',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.black54,
-                          ),
-                        ),
-                        if (reservation.needsTransfer == true) ...[
-                          const SizedBox(width: 6),
-                          Icon(Icons.flight_land, size: 14, color: Colors.black54),
-                        ],
-                        if (reservation.internalNote != null && reservation.internalNote!.trim().isNotEmpty) ...[
-                          const SizedBox(width: 6),
-                          Icon(Icons.notes, size: 14, color: Colors.black54),
-                        ],
-                      ],
-                    ),
-                  ],
-                ],
+                ),
               ),
             ),
           ),
@@ -1484,11 +1499,9 @@ class _ReservationsKanbanBoardState extends ConsumerState<_ReservationsKanbanBoa
     try {
       final tenantId = ref.read(authNotifierProvider).tenantIdForData;
       if (tenantId == null || tenantId.isEmpty) return;
-      await SupabaseService.client
-          .from('reservations')
+      await SupabaseService.safeFrom('reservations', tenantId)
           .update({'status': newStatus})
-          .eq('id', r.id)
-          .eq('tenant_id', tenantId);
+          .eq('id', r.id);
       if (!mounted) return;
       ref.invalidate(adminReservationsProvider);
     } catch (e) {

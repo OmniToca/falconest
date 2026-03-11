@@ -2,7 +2,8 @@
 ///
 /// Isar odstraněn – nestabilní na iOS. Provider vrací DriftMutationQueueService.
 /// MutationQueueService.instance deleguje na registrovanou instanci (nastavenou providerem).
-import 'package:flutter/foundation.dart' show kDebugMode;
+library;
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/database/drift/database_provider.dart';
@@ -20,8 +21,6 @@ void setMutationQueueInstance(MutationQueueServiceInterface? impl) {
 /// Třída pro zpětnou kompatibilitu – CashWalletRepository.instance.enqueueMutation atd.
 class MutationQueueService implements MutationQueueServiceInterface {
   MutationQueueService._();
-
-  static final MutationQueueService _singleton = MutationQueueService._();
 
   /// Vrací registrovanou Drift implementaci. Musí být již načten mutationQueueServiceProvider.
   static MutationQueueServiceInterface get instance {

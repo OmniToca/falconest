@@ -2,6 +2,7 @@
 ///
 /// Web je vždy online – data se čtou přímo ze Supabase.
 /// ŽÁDNÝ import isar ani .g.dart – tento soubor se kompiluje pro dart:html.
+library;
 import 'package:falconest/core/repositories/task/task_repository.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
@@ -14,12 +15,10 @@ class TaskRepositoryWeb implements ITaskRepository {
 
     // PROČ: Archivace. Vyfakturované úkoly (invoiced_at != null) schováváme z aktivních pohledů.
     // Worker vidí úkol, pokud je v assigned_to NEBO v assigned_user_ids.
-    final tasksData = await SupabaseService.client
-        .from('tasks')
+    final tasksData = await SupabaseService.safeFrom('tasks', tenantId)
         .select(
           'id, tenant_id, apartment_id, assigned_to, assigned_user_ids, title, description, task_type, scheduled_start, status, photo_url, reference_number',
         )
-        .eq('tenant_id', tenantId)
         .or('assigned_to.eq.$workerId,assigned_user_ids.cs.{$workerId}')
         .isFilter('deleted_at', null)
         .isFilter('invoiced_at', null)
@@ -38,8 +37,7 @@ class TaskRepositoryWeb implements ITaskRepository {
 
     Map<String, ({String? name, String? address})> apartmentById = {};
     if (apartmentIds.isNotEmpty) {
-      final aptData = await SupabaseService.client
-          .from('apartments')
+      final aptData = await SupabaseService.safeFrom('apartments', tenantId)
           .select('id, name, address')
           .inFilter('id', apartmentIds.toList())
           .isFilter('deleted_at', null);
@@ -99,10 +97,8 @@ class TaskRepositoryWeb implements ITaskRepository {
   @override
   Future<WorkerTaskDetail?> getWorkerTaskDetail(String tenantId, String taskId) async {
     try {
-      final res = await SupabaseService.client
-          .from('tasks')
+      final res = await SupabaseService.safeFrom('tasks', tenantId)
           .select('id, title, description, task_type, scheduled_start, status, apartment_id, client_id, custom_location, custom_title, reservation_id, photo_url, metadata, media_urls, started_at, completed_at, reference_number')
-          .eq('tenant_id', tenantId)
           .eq('id', taskId)
           .maybeSingle();
       if (res == null) return null;
@@ -114,8 +110,7 @@ class TaskRepositoryWeb implements ITaskRepository {
       String? keybox;
       String? ownerNotes;
       if (aptId != null && aptId.isNotEmpty) {
-        final aptRes = await SupabaseService.client
-            .from('apartments')
+        final aptRes = await SupabaseService.safeFrom('apartments', tenantId)
             .select('name, address, keybox, owner_notes')
             .eq('id', aptId)
             .maybeSingle();
@@ -131,33 +126,32 @@ class TaskRepositoryWeb implements ITaskRepository {
       String? clientPhone;
       final clientId = map['client_id']?.toString().trim();
       if (clientId != null && clientId.isNotEmpty) {
-        final clientRes = await SupabaseService.client
-            .from('clients')
+        final clientRes = await SupabaseService.safeFrom('clients', tenantId)
             .select('name, phone')
             .eq('id', clientId)
             .isFilter('deleted_at', null)
             .maybeSingle();
-        if (clientRes != null && clientRes is Map) {
-          final n = (clientRes['name'] as String?)?.trim();
+        if (clientRes != null) {
+          final cMap = Map<String, dynamic>.from(clientRes as Map);
+          final n = (cMap['name'] as String?)?.trim();
           if (n != null && n.isNotEmpty) clientName = n;
-          final p = (clientRes['phone'] as String?)?.trim();
+          final p = (cMap['phone'] as String?)?.trim();
           if (p != null && p.isNotEmpty) clientPhone = p;
         }
       }
       String? guestName;
       String? guestPhone;
       if (resId != null && resId.isNotEmpty) {
-        final resRes = await SupabaseService.client
-            .from('reservations')
+        final resRes = await SupabaseService.safeFrom('reservations', tenantId)
             .select('guest_name, guest_phone')
             .eq('id', resId)
             .maybeSingle();
-        if (resRes != null && resRes is Map) {
-          final r = Map<String, dynamic>.from(resRes);
+        if (resRes != null) {
+          final r = Map<String, dynamic>.from(resRes as Map);
           guestName = (r['guest_name'] as String?)?.trim();
           guestPhone = (r['guest_phone'] as String?)?.trim();
-          if (guestName != null && guestName!.isEmpty) guestName = null;
-          if (guestPhone != null && guestPhone!.isEmpty) guestPhone = null;
+          if (guestName != null && guestName.isEmpty) guestName = null;
+          if (guestPhone != null && guestPhone.isEmpty) guestPhone = null;
         }
       }
       final rawStart = map['scheduled_start'];
@@ -171,8 +165,8 @@ class TaskRepositoryWeb implements ITaskRepository {
       }
       final rawMeta = map['metadata'];
       Map<String, dynamic>? metadata;
-      if (rawMeta != null && rawMeta is Map) {
-        metadata = Map<String, dynamic>.from(rawMeta);
+      if (rawMeta != null) {
+        metadata = Map<String, dynamic>.from(rawMeta as Map);
       }
       final mediaUrls = _parseMediaUrls(map['media_urls']);
 
@@ -228,24 +222,20 @@ class TaskRepositoryWeb implements ITaskRepository {
     if (mediaUrls != null) updates['media_urls'] = mediaUrls;
 
     if (metadataOverlay != null && metadataOverlay.isNotEmpty) {
-      final res = await SupabaseService.client
-          .from('tasks')
+      final res = await SupabaseService.safeFrom('tasks', tenantId)
           .select('metadata')
           .eq('id', taskId)
-          .eq('tenant_id', tenantId)
           .maybeSingle();
-      final existing = res != null && res is Map
-          ? (res['metadata'] is Map ? Map<String, dynamic>.from(res['metadata'] as Map) : <String, dynamic>{})
+      final existing = res != null
+          ? Map<String, dynamic>.from(res['metadata'] as Map)
           : <String, dynamic>{};
       final merged = Map<String, dynamic>.from(existing)..addAll(metadataOverlay);
       updates['metadata'] = merged;
     }
 
-    await SupabaseService.client
-        .from('tasks')
+    await SupabaseService.safeFrom('tasks', tenantId)
         .update(updates)
-        .eq('id', taskId)
-        .eq('tenant_id', tenantId);
+        .eq('id', taskId);
   }
 
   static DateTime? _parseOptDateTime(dynamic raw) {
@@ -260,7 +250,7 @@ class TaskRepositoryWeb implements ITaskRepository {
     if (raw is List) {
       return raw
           .map((e) => e?.toString().trim())
-          .where((s) => s != null && s!.isNotEmpty)
+          .where((s) => s != null && s.isNotEmpty)
           .cast<String>()
           .toList();
     }

@@ -1,4 +1,5 @@
 /// Mobilní implementace – šablony z Drift (SQLite). Isar odstraněn.
+library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/database/models/message_template_local.dart';

@@ -634,6 +634,11 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
         tenantId: tenantId,
         states: _servicesState,
       );
+      await ensureMandatoryServicesForReservation(
+        reservationId: reservationId,
+        tenantId: tenantId,
+        apartmentId: _selectedApartmentId!,
+      );
 
       // BUGFIX: Odstraněno automatické generování prázdného úkolu.
       // Majitelská rezervace ukládá pouze záznam do reservations a reservation_services.
@@ -1034,7 +1039,7 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
                                   children: [
                                     // FEATURE: Výběr plátce služby (owner/guest) napojený na stávající logiku.
                                     DropdownButtonFormField<String>(
-                                      value: (state.payerType == 'owner' || state.payerType == 'guest')
+                                      initialValue: (state.payerType == 'owner' || state.payerType == 'guest')
                                           ? state.payerType
                                           : 'owner',
                                       decoration: InputDecoration(
@@ -1086,7 +1091,7 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
                     );
                   },
                   loading: () => const SizedBox(height: 24, child: Center(child: CircularProgressIndicator(strokeWidth: 2))),
-                  error: (_, __) => const SizedBox.shrink(),
+                  error: (_, _) => const SizedBox.shrink(),
                 ),
                 const SizedBox(height: 16),
                 TextFormField(

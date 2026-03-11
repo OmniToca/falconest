@@ -30,13 +30,12 @@ class ApartmentRepository {
     if (tenantId.isEmpty) return [];
 
     final q = searchQuery?.trim() ?? '';
-    dynamic query = SupabaseService.client
-        .from('apartments')
+    dynamic query = SupabaseService.safeFrom('apartments', tenantId)
         .select(
           'id, name, address, keybox, code, tenant_id, zone_id, status, '
-          'check_in_time, check_out_time, standard_cleaning_duration, owner_notes',
+          'check_in_time, check_out_time, standard_cleaning_duration, owner_notes, '
+          'monthly_management_fee, managed_from',
         )
-        .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null);
 
     if (q.isNotEmpty) {

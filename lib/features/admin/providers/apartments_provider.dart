@@ -21,6 +21,8 @@ class ApartmentRow {
     this.checkOutTime,
     this.standardCleaningDuration,
     this.ownerNotes,
+    this.monthlyManagementFee = 0.0,
+    this.managedFrom,
     this.deletedAt,
   });
 
@@ -43,6 +45,10 @@ class ApartmentRow {
   final int? standardCleaningDuration;
   /// Preference a instrukce majitele
   final String? ownerNotes;
+  /// Měsíční paušál za správu apartmánu v EUR (0 = neúčtuje se).
+  final double monthlyManagementFee;
+  /// První den měsíce, od kterého se paušál účtuje. Null = započítat vždy (zpětná kompatibilita).
+  final DateTime? managedFrom;
   /// Soft delete: když není null, záznam je považován za smazaný (v UI se neukazuje).
   final DateTime? deletedAt;
 
@@ -66,6 +72,15 @@ class ApartmentRow {
     final zoneRaw = json['zone_id'];
     final zoneId = (zoneRaw != null && zoneRaw.toString().trim().isNotEmpty) ? zoneRaw.toString().trim() : null;
     final codeRaw = (json['code'] as String?)?.trim();
+    final feeRaw = json['monthly_management_fee'];
+    double fee = 0.0;
+    if (feeRaw != null) {
+      if (feeRaw is num) {
+        fee = feeRaw.toDouble();
+      } else {
+        fee = double.tryParse(feeRaw.toString()) ?? 0.0;
+      }
+    }
     return ApartmentRow(
       id: json['id'] as String,
       name: (json['name'] as String?)?.trim() ?? '',
@@ -79,6 +94,8 @@ class ApartmentRow {
       checkOutTime: (checkOut == null || checkOut.isEmpty) ? '10:00' : checkOut,
       standardCleaningDuration: duration ?? 120,
       ownerNotes: (notes == null || notes.isEmpty) ? null : notes,
+      monthlyManagementFee: fee,
+      managedFrom: _parseOptionalDateTime(json['managed_from']),
       deletedAt: _parseOptionalDateTime(json['deleted_at']),
     );
   }
@@ -112,6 +129,10 @@ class ApartmentRow {
       'check_out_time': checkOutTime ?? '10:00',
       'standard_cleaning_duration': standardCleaningDuration ?? 120,
       'owner_notes': ownerNotes,
+      'monthly_management_fee': monthlyManagementFee,
+      'managed_from': managedFrom != null
+          ? '${managedFrom!.year}-${managedFrom!.month.toString().padLeft(2, '0')}-01'
+          : null,
     };
     if (forInsert) {
       map['tenant_id'] = tenantId;
@@ -132,6 +153,8 @@ class ApartmentRow {
     String? checkOutTime,
     int? standardCleaningDuration,
     String? ownerNotes,
+    double? monthlyManagementFee,
+    DateTime? managedFrom,
     DateTime? deletedAt,
   }) =>
       ApartmentRow(
@@ -147,6 +170,8 @@ class ApartmentRow {
         checkOutTime: checkOutTime ?? this.checkOutTime,
         standardCleaningDuration: standardCleaningDuration ?? this.standardCleaningDuration,
         ownerNotes: ownerNotes ?? this.ownerNotes,
+        monthlyManagementFee: monthlyManagementFee ?? this.monthlyManagementFee,
+        managedFrom: managedFrom ?? this.managedFrom,
         deletedAt: deletedAt ?? this.deletedAt,
       );
 }

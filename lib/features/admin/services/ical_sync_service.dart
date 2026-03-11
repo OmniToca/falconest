@@ -75,8 +75,7 @@ class IcalSyncService {
     required String url,
     required String label,
   }) async {
-    final res = await _client.from('apartment_ical_sources').insert({
-      'tenant_id': tenantId,
+    final res = await SupabaseService.safeFrom('apartment_ical_sources', tenantId).insert({
       'apartment_id': apartmentId,
       'ical_url': url.trim(),
       'source_label': label.trim().isEmpty ? 'iCal' : label.trim(),
@@ -163,10 +162,8 @@ class IcalSyncService {
       }
 
       // 2) Najdi existující external_uid v DB pro tohoto tenanta
-      final existingRes = await _client
-          .from('reservations')
+      final existingRes = await SupabaseService.safeFrom('reservations', tenantId)
           .select('external_uid')
-          .eq('tenant_id', tenantId)
           .inFilter('external_uid', uids)
           .not('external_uid', 'is', null);
       final existingUids = (existingRes as List)
@@ -247,7 +244,7 @@ class IcalSyncService {
         );
       }
 
-      await _client.from('reservations').insert(toInsert);
+      await SupabaseService.safeFrom('reservations', tenantId).insert(toInsert);
       return IcalSyncResult(
         insertedCount: toInsert.length,
         skippedDuplicates: skippedDuplicates,

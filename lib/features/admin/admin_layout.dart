@@ -447,10 +447,16 @@ class _NotificationsDropdownContent extends ConsumerWidget {
                         if (n.type == 'finance') {
                           iconType = Icons.account_balance_wallet_outlined;
                           iconColor = Colors.green.shade700;
+                        } else if (n.type == 'finance_shortfall') {
+                          iconType = Icons.warning_amber_rounded;
+                          iconColor = Colors.red.shade700;
                         } else if (n.type == 'system') {
                           iconType = Icons.info_outline;
                         } else if (n.type == 'task') {
                           iconType = Icons.task_alt_outlined;
+                        } else if (n.type == 'absence') {
+                          iconType = Icons.event_busy;
+                          iconColor = Colors.orange.shade700;
                         }
 
                         return Material(
@@ -458,7 +464,14 @@ class _NotificationsDropdownContent extends ConsumerWidget {
                           child: InkWell(
                             onTap: () async {
                               await repository.markAsRead(n.id);
-                              if (context.mounted) onClose();
+                              if (context.mounted) {
+                                if (n.type == 'absence') {
+                                  AdminTabScope.of(context)?.call(adminTabIndexTeam);
+                                } else if (n.type == 'finance_shortfall') {
+                                  AdminTabScope.of(context)?.call(adminTabIndexFinance);
+                                }
+                                onClose();
+                              }
                             },
                             child: Padding(
                               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -468,38 +481,54 @@ class _NotificationsDropdownContent extends ConsumerWidget {
                                   Icon(iconType, color: iconColor, size: 24),
                                   const SizedBox(width: 12),
                                   Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          n.title,
-                                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                                                fontWeight: n.isRead ? FontWeight.w500 : FontWeight.bold,
+                                    child: Builder(
+                                      builder: (context) {
+                                        // Nedoplatek: title/message jsou i18n klíč a "amount|reason".
+                                        String displayTitle = n.title;
+                                        String displayMessage = n.message;
+                                        if (n.type == 'finance_shortfall') {
+                                          displayTitle = n.title.tr();
+                                          final parts = n.message.split('|');
+                                          final amount = parts.isNotEmpty ? parts[0].trim() : '—';
+                                          final reason = parts.length > 1 ? parts[1].trim() : '—';
+                                          displayMessage = 'admin.notification_cash_shortfall_message'.tr(
+                                            namedArgs: {'amount': amount, 'reason': reason},
+                                          );
+                                        }
+                                        return Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              displayTitle,
+                                              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                                    fontWeight: n.isRead ? FontWeight.w500 : FontWeight.bold,
+                                                  ),
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                            if (displayMessage.isNotEmpty) ...[
+                                              const SizedBox(height: 4),
+                                              Text(
+                                                displayMessage,
+                                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                                      color: Colors.grey.shade600,
+                                                      fontSize: 12,
+                                                    ),
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
                                               ),
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                        if (n.message.isNotEmpty) ...[
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            n.message,
-                                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                                  color: Colors.grey.shade600,
-                                                  fontSize: 12,
-                                                ),
-                                            maxLines: 2,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ],
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          timeStr,
-                                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                                color: Colors.grey.shade500,
-                                                fontSize: 11,
-                                              ),
-                                        ),
-                                      ],
+                                            ],
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              timeStr,
+                                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                                    color: Colors.grey.shade500,
+                                                    fontSize: 11,
+                                                  ),
+                                            ),
+                                          ],
+                                        );
+                                      },
                                     ),
                                   ),
                                 ],

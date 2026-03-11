@@ -99,7 +99,7 @@ class HqStaffContractRepository {
       if (fixedSalaryMonthly != null && fixedSalaryMonthly >= 0) 'fixed_salary_monthly': fixedSalaryMonthly.toDouble(),
       if (bonusPerAcquiredAgency != null && bonusPerAcquiredAgency >= 0) 'bonus_per_acquired_agency': bonusPerAcquiredAgency.toDouble(),
       if (commissionPercentManaged != null && commissionPercentManaged >= 0 && commissionPercentManaged <= 100) 'commission_percent_managed': commissionPercentManaged.toDouble(),
-      if (toStr != null) 'valid_to': toStr,
+      'valid_to': ?toStr,
     };
     final res = await SupabaseService.client
         .from('hq_staff_contracts')

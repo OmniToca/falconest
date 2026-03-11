@@ -79,7 +79,9 @@ final monthlyAgencySettlementsProvider =
   final cards = <TenantSettlementCard>[];
   for (final t in tenants) {
     if ((t.acquiredBy == null || t.acquiredBy!.isEmpty) &&
-        (t.managedBy == null || t.managedBy!.isEmpty)) continue;
+        (t.managedBy == null || t.managedBy!.isEmpty)) {
+      continue;
+    }
 
     RoleSettlementInfo? hunter;
     if (t.acquiredBy != null && t.acquiredBy!.trim().isNotEmpty) {
@@ -88,7 +90,9 @@ final monthlyAgencySettlementsProvider =
       final count = forTenant.length;
       final now = DateTime.now().toUtc();
       var minutes = 0;
-      for (final i in forTenant) minutes += i.durationMinutes(now);
+      for (final i in forTenant) {
+        minutes += i.durationMinutes(now);
+      }
       final hunterSett = settlements
           .where((s) => s.profileId == pid && s.tenantId == t.id && s.roleType == 'hunter')
           .toList();
@@ -111,7 +115,9 @@ final monthlyAgencySettlementsProvider =
       final count = forTenant.length;
       final now = DateTime.now().toUtc();
       var minutes = 0;
-      for (final i in forTenant) minutes += i.durationMinutes(now);
+      for (final i in forTenant) {
+        minutes += i.durationMinutes(now);
+      }
       final farmerSett = settlements
           .where((s) => s.profileId == pid && s.tenantId == t.id && s.roleType == 'farmer')
           .toList();

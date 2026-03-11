@@ -2,6 +2,7 @@
 ///
 /// Isar odstraněn. Task_detail_screen je deprecated – vracíme prázdný seznam.
 /// Worker dashboard používá workerTasksProvider.
+library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/repositories/task/task_repository.dart';

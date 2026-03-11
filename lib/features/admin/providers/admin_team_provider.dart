@@ -1,6 +1,5 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/repositories/settlements/settlement_repository.dart';
@@ -96,10 +95,8 @@ final staffAbsencesProvider = FutureProvider<List<StaffAbsence>>((ref) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];
   try {
-    final res = await SupabaseService.client
-        .from('staff_absences')
-        .select('id, profile_id, invitation_id, start_date, end_date, reason, status')
-        .eq('tenant_id', tenantId);
+    final res = await SupabaseService.safeFrom('staff_absences', tenantId)
+        .select('id, profile_id, invitation_id, start_date, end_date, reason, status');
     final list = res as List;
     return list
         .map((e) => StaffAbsence.fromJson(Map<String, dynamic>.from(e as Map)))
@@ -449,6 +446,61 @@ final teamFullListProvider = FutureProvider<List<TeamMember>>((ref) async {
   }
 });
 
+/// Pravidlo B (Smlouva): true, pokud je člen v daný den v rámci platnosti smlouvy (start_date / end_date).
+/// Sdílená logika s automatickým generátorem – pro ruční dropdown dostupnosti.
+bool _isWithinContractForTask(TeamMember member, DateTime taskDate) {
+  final taskDay = DateTime(taskDate.year, taskDate.month, taskDate.day);
+  if (member.startDate != null) {
+    final startDay = DateTime(
+        member.startDate!.year, member.startDate!.month, member.startDate!.day);
+    if (taskDay.isBefore(startDay)) return false;
+  }
+  if (member.endDate != null) {
+    final endDay = DateTime(
+        member.endDate!.year, member.endDate!.month, member.endDate!.day);
+    if (taskDay.isAfter(endDay)) return false;
+  }
+  return true;
+}
+
+/// Pravidlo C (Nepřítomnost): true, pokud má daný personál v datum T schválenou absenci.
+/// [absences] by měly být již vyfiltrované na isApproved (rejected ignorujeme).
+bool _isAbsentOnDateForTask(
+    TeamMember member, DateTime date, List<StaffAbsence> absences) {
+  final tDay = DateTime(date.year, date.month, date.day);
+  return absences.any((a) {
+    if (!a.belongsTo(member)) return false;
+    if (a.startDate == null || a.endDate == null) return false;
+    final aStart =
+        DateTime(a.startDate!.year, a.startDate!.month, a.startDate!.day);
+    final aEnd =
+        DateTime(a.endDate!.year, a.endDate!.month, a.endDate!.day);
+    return !tDay.isBefore(aStart) && !tDay.isAfter(aEnd);
+  });
+}
+
+/// Personál dostupný v daný den pro ruční přiřazení úkolu (dropdown v detailu úkolu).
+///
+/// Stejná logika jako automatický generátor: smlouva (start_date/end_date) + pouze schválené
+/// absence (isApproved nebo status == null; rejected se ignoruje). Majitelé apartmánů jsou vyřazeni.
+/// [teamFullListProvider] zůstává pro záložku Personál; tento provider používej pro dropdowny přiřazení.
+final availableTeamForTaskProvider =
+    FutureProvider.autoDispose.family<List<TeamMember>, DateTime>((ref, taskDate) async {
+  final team = await ref.watch(teamFullListProvider.future);
+  final absences = await ref.watch(staffAbsencesProvider.future);
+  final approvedOnly =
+      absences.where((a) => a.isApproved).toList();
+  final staff =
+      team.where((m) => m.role != 'property_owner').toList();
+  final available = staff
+      .where((m) =>
+          _isWithinContractForTask(m, taskDate) &&
+          !_isAbsentOnDateForTask(m, taskDate, approvedOnly))
+      .toList();
+  available.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  return available;
+});
+
 /// Provider: výplaty a provize pro daného člena (profile_id) – pro záložku Finance v detailu člena.
 ///
 /// Sloučí getMyPayouts a getMyCommissions, seřadí podle created_at sestupně.
@@ -477,10 +529,12 @@ final memberFinancesProvider =
     final bRaw = b['created_at'];
     DateTime? aDate;
     DateTime? bDate;
-    if (aRaw is DateTime) aDate = aRaw;
-    else if (aRaw != null) aDate = DateTime.tryParse(aRaw.toString());
-    if (bRaw is DateTime) bDate = bRaw;
-    else if (bRaw != null) bDate = DateTime.tryParse(bRaw.toString());
+    if (aRaw is DateTime) {
+      aDate = aRaw;
+    } else if (aRaw != null) aDate = DateTime.tryParse(aRaw.toString());
+    if (bRaw is DateTime) {
+      bDate = bRaw;
+    } else if (bRaw != null) bDate = DateTime.tryParse(bRaw.toString());
     if (aDate == null && bDate == null) return 0;
     if (aDate == null) return 1;
     if (bDate == null) return -1;
