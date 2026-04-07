@@ -1,25 +1,87 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:falconest/core/presentation/widgets/app_card.dart';
+import 'package:falconest/core/theme/app_spacing.dart';
+import 'package:falconest/core/theme/premium_card_decoration.dart';
+import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/features/admin/admin_layout.dart';
 import 'package:falconest/features/admin/admin_tasks_screen.dart';
 import 'package:falconest/features/admin/premium_upsell_dialog.dart';
-import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
+import 'package:falconest/features/admin/providers/apartment_live_context_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
+import 'package:falconest/features/admin/providers/admin_automation_tab_index_provider.dart';
+import 'package:falconest/features/admin/providers/admin_automation_filter_provider.dart';
 import 'package:falconest/features/admin/providers/apartment_status_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/dashboard_provider.dart';
+import 'package:falconest/features/admin/providers/automation_summary_provider.dart';
 import 'package:falconest/features/admin/providers/finance_cash_provider.dart';
 import 'package:falconest/features/admin/providers/finance_tab_provider.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
+import 'package:falconest/features/admin/providers/new_clients_this_month_provider.dart';
+import 'package:falconest/features/admin/providers/messaging_health_provider.dart';
+import 'package:falconest/features/admin/providers/messaging_failures_provider.dart';
 import 'package:falconest/features/admin/providers/settlements_provider.dart';
 import 'package:falconest/features/settings/providers/profile_provider.dart';
 import 'package:falconest/utils/task_visuals.dart';
+import 'package:falconest/features/admin/providers/upcoming_absences_provider.dart';
+
+/// Mezera mezi hlavními bloky nástěnky (Phase 1 – jednotný rhythm).
+const double _kDashboardBlockGap = AppSpacing.sm;
+
+/// Mezera mezi nadpisem sekce a kartami (vizuální hierarchie bez „prázdné díry“).
+const double _kDashboardTitleToContentGap = 10;
+
+/// Sjednocená výška oblasti výkresu u grafů na nástěnce (čárový trend + donut řádek).
+///
+/// PROČ: Nižší vizuální dominance než dřívější ~200–224 px; stejná hodnota u obou karet,
+/// aby vedle sebe v řádku lícně seděly a odpovídaly nízké datové hustotě (14 bodů / pár segmentů).
+const double _kDashboardChartPlotHeight = 180;
+
+/// Kompaktní prázdný stav pro nástěnku – jeden řádek, žádná fixní výška ani velká ilustrace.
+///
+/// PROČ: [AppEmptyState] používá velkou ikonu a sloupcový layout; v dashboardu
+/// zbytečně roztahoval karty. Tato varianta šetří vertikální místo při zachování i18n textu.
+class _DashboardCompactEmptyState extends StatelessWidget {
+  const _DashboardCompactEmptyState({
+    required this.icon,
+    required this.title,
+  });
+
+  final IconData icon;
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            icon,
+            size: 20,
+            color: context.colors.onSurfaceVariant.withValues(alpha: 0.88),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              title,
+              style: context.textTheme.bodyMedium?.copyWith(
+                color: context.colors.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 /// Administrativní nástěnka – operativní Dashboard s daty pro Action Strip.
 ///
@@ -31,45 +93,59 @@ class AdminDashboardScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final tasksAsync = ref.watch(adminDashboardTasksProvider);
-    final reservationsAsync = ref.watch(adminReservationsProvider);
+    final apartmentStatusResAsync = ref.watch(apartmentStatusContextReservationsProvider);
+    final apartmentStatusTasksAsync = ref.watch(todayApartmentTasksProvider);
     final apartmentsAsync = ref.watch(apartmentsFullListProvider);
     final teamAsync = ref.watch(teamFullListProvider);
     if (tasksAsync.isLoading ||
-        reservationsAsync.isLoading ||
+        apartmentStatusResAsync.isLoading ||
+        apartmentStatusTasksAsync.isLoading ||
         apartmentsAsync.isLoading ||
         teamAsync.isLoading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     if (tasksAsync.hasError ||
-        reservationsAsync.hasError ||
+        apartmentStatusResAsync.hasError ||
+        apartmentStatusTasksAsync.hasError ||
         apartmentsAsync.hasError ||
         teamAsync.hasError) {
-      final msg = tasksAsync.hasError
-          ? tasksAsync.error.toString()
-          : reservationsAsync.hasError
-              ? reservationsAsync.error.toString()
-              : apartmentsAsync.hasError
-                  ? apartmentsAsync.error.toString()
-                  : teamAsync.error.toString();
+      if (kDebugMode) {
+        final err = tasksAsync.hasError
+            ? tasksAsync.error
+            : apartmentStatusResAsync.hasError
+                ? apartmentStatusResAsync.error
+                : apartmentStatusTasksAsync.hasError
+                    ? apartmentStatusTasksAsync.error
+                    : apartmentsAsync.hasError
+                        ? apartmentsAsync.error
+                        : teamAsync.error;
+        debugPrint('AdminDashboardScreen provider error: $err');
+      }
       return Scaffold(
         body: Center(
           child: Padding(
-            padding: const EdgeInsets.all(24),
+            padding: const EdgeInsets.all(AppSpacing.lg),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
-                const SizedBox(height: 16),
+                Icon(
+                  Icons.error_outline,
+                  size: AppSpacing.xxl,
+                  color: context.colors.error,
+                ),
+                const SizedBox(height: AppSpacing.md),
                 Text(
                   'admin.dashboard_loading_error'.tr(),
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodyLarge,
                 ),
-                const SizedBox(height: 8),
-                Text(msg, textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodySmall),
+                const SizedBox(height: AppSpacing.sm),
+                Text(
+                  'common.generic_error_user_friendly'.tr(),
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
               ],
             ),
           ),
@@ -78,12 +154,12 @@ class AdminDashboardScreen extends ConsumerWidget {
     }
 
     final tasks = tasksAsync.valueOrNull ?? [];
-    final reservations = reservationsAsync.valueOrNull ?? [];
+    final fleetReservations = apartmentStatusResAsync.valueOrNull ?? [];
+    final fleetTasks = apartmentStatusTasksAsync.valueOrNull ?? [];
     final apartments = apartmentsAsync.valueOrNull ?? [];
     final teamMembers = teamAsync.valueOrNull ?? [];
     final summary = ref.watch(dashboardSummaryProvider);
     final profileAsync = ref.watch(currentUserProfileProvider);
-
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     final todayEnd = today.add(const Duration(days: 1));
@@ -107,8 +183,12 @@ class AdminDashboardScreen extends ConsumerWidget {
     final displayPlanTasks = useUpcomingFallback ? upcomingTasks : todayTasks;
 
     // Externí úkoly = bez apartment_id (transfery, služby u klienta).
-    final externalTasks = todayTasks.where((t) => t.apartmentId.trim().isEmpty).toList();
-    final upcomingExternalTasks = upcomingTasks.where((t) => t.apartmentId.trim().isEmpty).toList();
+    final externalTasks = todayTasks
+        .where((t) => t.apartmentId.trim().isEmpty)
+        .toList();
+    final upcomingExternalTasks = upcomingTasks
+        .where((t) => t.apartmentId.trim().isEmpty)
+        .toList();
     final displayExternalTasks = externalTasks.isNotEmpty
         ? externalTasks
         : (useUpcomingFallback ? upcomingExternalTasks : externalTasks);
@@ -126,23 +206,30 @@ class AdminDashboardScreen extends ConsumerWidget {
         .toSet()
         .toList();
     final teamMembersToday = teamMembers
-        .where((m) =>
-            (m.profileId != null && todayAssignedIds.contains(m.profileId)) ||
-            todayAssignedIds.contains(m.id))
+        .where(
+          (m) =>
+              (m.profileId != null && todayAssignedIds.contains(m.profileId)) ||
+              todayAssignedIds.contains(m.id),
+        )
         .toList();
     final teamMembersUpcoming = teamMembers
-        .where((m) =>
-            (m.profileId != null && upcomingAssignedIds.contains(m.profileId)) ||
-            upcomingAssignedIds.contains(m.id))
+        .where(
+          (m) =>
+              (m.profileId != null &&
+                  upcomingAssignedIds.contains(m.profileId)) ||
+              upcomingAssignedIds.contains(m.id),
+        )
         .toList();
-    final displayTeamMembers = useUpcomingFallback ? teamMembersUpcoming : teamMembersToday;
+    final displayTeamMembers = useUpcomingFallback
+        ? teamMembersUpcoming
+        : teamMembersToday;
 
     // Smart Fallback pro graf skladby: pokud dnes nic není, použij data z dalších 7 dní.
     final displayTasksComposition = _buildTasksCompositionMap(displayPlanTasks);
 
     int countOccupied = 0, countToClean = 0, countClean = 0;
     for (final apt in apartments) {
-      final status = getApartmentStatusForToday(reservations, tasks, apt.id);
+      final status = getApartmentStatusForToday(fleetReservations, fleetTasks, apt.id);
       if (status == apartmentStatusOccupied) {
         countOccupied++;
       } else if (status == apartmentStatusNeedsCleaning) {
@@ -159,7 +246,12 @@ class AdminDashboardScreen extends ConsumerWidget {
           final bool isWide = constraints.maxWidth > 900;
 
           return SingleChildScrollView(
-            padding: EdgeInsets.fromLTRB(horizontalPadding, 24, horizontalPadding, 24),
+            padding: EdgeInsets.fromLTRB(
+              horizontalPadding,
+              AppSpacing.md,
+              horizontalPadding,
+              AppSpacing.md,
+            ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -172,11 +264,12 @@ class AdminDashboardScreen extends ConsumerWidget {
                       return Row(
                         crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
-                          _DashboardHeader(profileAsync: profileAsync, now: now),
-                          const SizedBox(width: 24),
-                          Expanded(
-                            child: _ActionStripWidget(summary: summary),
+                          _DashboardHeader(
+                            profileAsync: profileAsync,
+                            now: now,
                           ),
+                          const SizedBox(width: _kDashboardBlockGap),
+                          Expanded(child: _ActionStripWidget(summary: summary)),
                         ],
                       );
                     }
@@ -185,14 +278,17 @@ class AdminDashboardScreen extends ConsumerWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         _DashboardHeader(profileAsync: profileAsync, now: now),
-                        const SizedBox(height: 20),
+                        const SizedBox(height: _kDashboardBlockGap),
                         _ActionStripWidget(summary: summary),
                       ],
                     );
                   },
                 ),
-                const SizedBox(height: 16),
-                // Operativa – tři sloupce (Dnešní plán, Stav apartmánů, Kdo je v akci)
+                const SizedBox(height: _kDashboardBlockGap),
+                // --- Operativa: plán | tým | flotila ---
+                _DashboardSectionTitle(
+                  titleKey: 'admin.dashboard_section_quick_overview',
+                ),
                 isWide
                     ? IntrinsicHeight(
                         child: Row(
@@ -205,21 +301,22 @@ class AdminDashboardScreen extends ConsumerWidget {
                                 today: today,
                               ),
                             ),
-                            const SizedBox(width: 16),
-                            Expanded(
-                              child: _ApartmentFleetSection(
-                                countClean: countClean,
-                                countToClean: countToClean,
-                                countOccupied: countOccupied,
-                              ),
-                            ),
-                            const SizedBox(width: 16),
+                            const SizedBox(width: _kDashboardBlockGap),
                             Expanded(
                               child: _TodaysTeamSection(
                                 members: displayTeamMembers,
                                 displayTasks: displayPlanTasks,
                                 profileIdsWithCash: summary.profileIdsWithCash,
                                 isUpcoming: useUpcomingFallback,
+                              ),
+                            ),
+                            const SizedBox(width: _kDashboardBlockGap),
+                            Expanded(
+                              child: _ApartmentFleetSection(
+                                totalApartments: apartments.length,
+                                countClean: countClean,
+                                countToClean: countToClean,
+                                countOccupied: countOccupied,
                               ),
                             ),
                           ],
@@ -233,39 +330,31 @@ class AdminDashboardScreen extends ConsumerWidget {
                             isUpcoming: useUpcomingFallback,
                             today: today,
                           ),
-                          const SizedBox(height: 16),
-                          _ApartmentFleetSection(
-                            countClean: countClean,
-                            countToClean: countToClean,
-                            countOccupied: countOccupied,
-                          ),
-                          const SizedBox(height: 16),
+                          const SizedBox(height: _kDashboardBlockGap),
                           _TodaysTeamSection(
                             members: displayTeamMembers,
                             displayTasks: displayPlanTasks,
                             profileIdsWithCash: summary.profileIdsWithCash,
                             isUpcoming: useUpcomingFallback,
                           ),
+                          const SizedBox(height: _kDashboardBlockGap),
+                          _ApartmentFleetSection(
+                            totalApartments: apartments.length,
+                            countClean: countClean,
+                            countToClean: countToClean,
+                            countOccupied: countOccupied,
+                          ),
                         ],
                       ),
-                const SizedBox(height: 16),
-                // Operativa & Rychlé akce – nadpis sekce (stejný styl jako Finance & Pozornost).
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 16),
-                  child: Text(
-                    'admin.dashboard_section_operations'.tr(),
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87,
-                          letterSpacing: -0.3,
-                        ),
-                  ),
+                const SizedBox(height: _kDashboardBlockGap),
+                // --- Operativní akce: externí služby | rychlé akce ---
+                _DashboardSectionTitle(
+                  titleKey: 'admin.dashboard_section_operations',
                 ),
-                // Externí služby (vlevo) a Rychlé akce (vpravo) – na desktopu vedle sebe se stejnou výškou, na úzkém displeji pod sebou.
                 LayoutBuilder(
                   builder: (context, constraints) {
-                    final isWide = constraints.maxWidth > 900;
-                    if (isWide) {
+                    final wideOps = constraints.maxWidth > 900;
+                    if (wideOps) {
                       return IntrinsicHeight(
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -277,10 +366,8 @@ class AdminDashboardScreen extends ConsumerWidget {
                                 today: today,
                               ),
                             ),
-                            const SizedBox(width: 24),
-                            Expanded(
-                              child: _QuickActionsSection(ref: ref),
-                            ),
+                            const SizedBox(width: _kDashboardBlockGap),
+                            Expanded(child: _QuickActionsSection(ref: ref)),
                           ],
                         ),
                       );
@@ -293,15 +380,27 @@ class AdminDashboardScreen extends ConsumerWidget {
                           isUpcoming: useUpcomingFallback,
                           today: today,
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: _kDashboardBlockGap),
                         _QuickActionsSection(ref: ref),
                       ],
                     );
                   },
                 ),
-                const SizedBox(height: 16),
-                _FinanceAttentionSection(tasks: tasks, apartments: apartments),
-                const SizedBox(height: 16),
+                const SizedBox(height: _kDashboardBlockGap),
+                // --- KPI a rizika ---
+                _DashboardSectionTitle(
+                  titleKey: 'admin.dashboard_kpi_overview_title',
+                ),
+                _KpiRisksRowSection(tasks: tasks),
+                const SizedBox(height: _kDashboardBlockGap),
+                _FinanceTwoCardsSection(
+                  tasks: tasks,
+                  apartments: apartments,
+                ),
+                const SizedBox(height: _kDashboardBlockGap),
+                _DashboardSectionTitle(
+                  titleKey: 'admin.dashboard_manager_overview',
+                ),
                 _BusinessOverviewSection(
                   summary: summary,
                   tasksComposition: displayTasksComposition,
@@ -328,25 +427,229 @@ class AdminDashboardScreen extends ConsumerWidget {
   }
 }
 
-/// Společný stín pro prémiové karty – měkký, výrazný.
-BoxDecoration get _premiumCardDecoration => BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(16),
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black.withValues(alpha: 0.05),
-          blurRadius: 15,
-          offset: const Offset(0, 5),
+/// Panel na nástěnce se [premiumCardDecoration] – náhrada [AppCard] bez vlastních stínů/rádiusů.
+///
+/// PROČ: KPI a Finance karty mají vizuál sjednotit s „Dnešní plán“ a flotilou bytů.
+Widget _dashboardPanel(
+  BuildContext context, {
+  required Widget child,
+  EdgeInsetsGeometry padding = const EdgeInsets.all(16),
+  VoidCallback? onTap,
+}) {
+  final radius = BorderRadius.circular(AppSpacing.md);
+  final decorated = Container(
+    decoration: premiumCardDecoration(context),
+    child: Padding(padding: padding, child: child),
+  );
+  if (onTap == null) return decorated;
+  return Material(
+    color: Colors.transparent,
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: radius,
+      child: decorated,
+    ),
+  );
+}
+
+/// Jednotný nadpis sekce nástěnky – mezera k obsahu dle Phase 1 (foundation).
+class _DashboardSectionTitle extends StatelessWidget {
+  const _DashboardSectionTitle({required this.titleKey});
+
+  final String titleKey;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: _kDashboardTitleToContentGap),
+      child: Text(
+        titleKey.tr(),
+        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+              color: context.colors.onSurface,
+              letterSpacing: -0.3,
+            ),
+      ),
+    );
+  }
+}
+
+/// Řádek KPI: pozornost | komunikace + automatizace | noví klienti + absence radar.
+///
+/// PROČ: Oddělení od finančního řádku – stejná data a providery jako dříve, jen nové rozložení.
+class _KpiRisksRowSection extends ConsumerWidget {
+  const _KpiRisksRowSection({required this.tasks});
+
+  final List<TaskRow> tasks;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final shortfallsAsync = ref.watch(cashShortfallsCountProvider);
+    final shortfallCount = shortfallsAsync.valueOrNull ?? 0;
+    final switchToTab = AdminTabScope.of(context);
+
+    void onTapShortfalls() {
+      ref.read(financeRequestedSubTabProvider.notifier).state =
+          financeSubTabIndexBilling;
+      switchToTab?.call(adminTabIndexFinance);
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final wideKpi = constraints.maxWidth > 900;
+        if (wideKpi) {
+          return IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: _NeedsAttentionCard(
+                    tasks: tasks,
+                    shortfallCount: shortfallCount,
+                    onTapTasks: () => switchToTab?.call(adminTabIndexTasks),
+                    onTapShortfalls: onTapShortfalls,
+                  ),
+                ),
+                const SizedBox(width: _kDashboardBlockGap),
+                Expanded(
+                  child: _CommunicationAndAutomationStatusCard(),
+                ),
+                const SizedBox(width: _kDashboardBlockGap),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _NewClientsThisMonthCard(),
+                      const SizedBox(height: _kDashboardBlockGap),
+                      const _AbsenceRadarCard(),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _NeedsAttentionCard(
+              tasks: tasks,
+              shortfallCount: shortfallCount,
+              onTapTasks: () => switchToTab?.call(adminTabIndexTasks),
+              onTapShortfalls: onTapShortfalls,
+            ),
+            const SizedBox(height: _kDashboardBlockGap),
+            const _CommunicationAndAutomationStatusCard(),
+            const SizedBox(height: _kDashboardBlockGap),
+            _NewClientsThisMonthCard(),
+            const SizedBox(height: _kDashboardBlockGap),
+            const _AbsenceRadarCard(),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// Finance: pouze vyplacení + očekávaný příjem (Needs Attention je v [_KpiRisksRowSection]).
+class _FinanceTwoCardsSection extends ConsumerWidget {
+  const _FinanceTwoCardsSection({
+    required this.tasks,
+    required this.apartments,
+  });
+
+  final List<TaskRow> tasks;
+  final List<ApartmentRow> apartments;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final payoutsAsync = ref.watch(groupedPendingPayoutsProvider);
+    final settlementsActive = isModuleActive(ref, 'settlements');
+    final financeExportActive = isModuleActive(ref, 'finance_export');
+    final switchToTab = AdminTabScope.of(context);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _DashboardSectionTitle(
+          titleKey: 'admin.dashboard_section_finance_attention',
+        ),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final wideFin = constraints.maxWidth > 600;
+            if (wideFin) {
+              return IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(
+                      child: _FinanceAttentionCard(
+                        titleKey: 'admin.dashboard_card_pending_payouts',
+                        icon: Icons.payments_outlined,
+                        isLocked: !settlementsActive,
+                        lockedMessageKey:
+                            'admin.dashboard_card_pending_payouts_locked',
+                        moduleKey: 'settlements',
+                        payoutsAsync: payoutsAsync,
+                        formatAmount: (v) =>
+                            formatWalletAmount(context, ref, v),
+                        onTapUnlocked: () =>
+                            switchToTab?.call(adminTabIndexFinance),
+                      ),
+                    ),
+                    const SizedBox(width: _kDashboardBlockGap),
+                    Expanded(
+                      child: _ExpectedIncomeCard(
+                        tasks: tasks,
+                        apartments: apartments,
+                        isLocked: !financeExportActive,
+                        formatAmount: (v) =>
+                            formatWalletAmount(context, ref, v),
+                        onTapUnlocked: () =>
+                            switchToTab?.call(adminTabIndexFinance),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _FinanceAttentionCard(
+                  titleKey: 'admin.dashboard_card_pending_payouts',
+                  icon: Icons.payments_outlined,
+                  isLocked: !settlementsActive,
+                  lockedMessageKey:
+                      'admin.dashboard_card_pending_payouts_locked',
+                  moduleKey: 'settlements',
+                  payoutsAsync: payoutsAsync,
+                  formatAmount: (v) => formatWalletAmount(context, ref, v),
+                  onTapUnlocked: () =>
+                      switchToTab?.call(adminTabIndexFinance),
+                ),
+                const SizedBox(height: _kDashboardBlockGap),
+                _ExpectedIncomeCard(
+                  tasks: tasks,
+                  apartments: apartments,
+                  isLocked: !financeExportActive,
+                  formatAmount: (v) => formatWalletAmount(context, ref, v),
+                  onTapUnlocked: () =>
+                      switchToTab?.call(adminTabIndexFinance),
+                ),
+              ],
+            );
+          },
         ),
       ],
     );
+  }
+}
 
 /// Osobní uvítací hlavička – Dobré ráno/odpoledne, [Jméno] a dnešní datum.
 class _DashboardHeader extends StatelessWidget {
-  const _DashboardHeader({
-    required this.profileAsync,
-    required this.now,
-  });
+  const _DashboardHeader({required this.profileAsync, required this.now});
 
   final AsyncValue<CurrentUserProfile> profileAsync;
   final DateTime now;
@@ -356,75 +659,42 @@ class _DashboardHeader extends StatelessWidget {
     final locale = context.locale.toString();
     final dateStr = DateFormat('EEEE, d. MMMM', locale).format(now);
     final hour = now.hour;
-    final greetingKey = hour < 12
-        ? 'admin.dashboard_greeting_morning'
-        : hour < 18
-            ? 'admin.dashboard_greeting_afternoon'
-            : 'admin.dashboard_greeting_evening';
-    final greeting = greetingKey.tr();
     final name = profileAsync.valueOrNull?.name.trim();
     final displayName = (name != null && name.isNotEmpty)
         ? name.split(RegExp(r'\s+')).first
         : 'admin.dashboard_welcome_fallback'.tr();
 
+    // PROČ: Celá fráze (interpunkce + emoji) musí být v jednom i18n klíči,
+    // protože pořadí slov/interpunkce se v různých jazycích liší.
+    final greetingPhraseKey = hour < 12
+        ? 'admin.dashboard_greeting_morning_with_name'
+        : hour < 18
+            ? 'admin.dashboard_greeting_afternoon_with_name'
+            : 'admin.dashboard_greeting_evening_with_name';
+    final greetingPhrase = greetingPhraseKey.tr(
+      namedArgs: {'displayName': displayName},
+    );
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          '$greeting, $displayName 👋',
+          greetingPhrase,
           style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.bold,
-                color: Colors.black87,
-                letterSpacing: -0.5,
-              ),
+            fontWeight: FontWeight.bold,
+            color: context.colors.onSurface,
+            letterSpacing: -0.5,
+          ),
         ),
         const SizedBox(height: 4),
         Text(
           'admin.dashboard_today_is'.tr(namedArgs: {'date': dateStr}),
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: Colors.grey.shade600,
-                fontSize: 14,
-              ),
+            color: context.colors.onSurfaceVariant,
+            fontSize: 14,
+          ),
         ),
       ],
-    );
-  }
-}
-
-/// Krásný prázdný stav – velká poloprůhledná ikona a stylovaný text.
-class _EmptyStateWidget extends StatelessWidget {
-  const _EmptyStateWidget({required this.icon, required this.message});
-
-  final IconData icon;
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    final primaryColor = Theme.of(context).colorScheme.primary;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              size: 48,
-              color: primaryColor.withValues(alpha: 0.3),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 14,
-                color: Colors.grey.shade600,
-                height: 1.4,
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
@@ -443,179 +713,43 @@ class _BusinessOverviewSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(bottom: 16),
-          child: Text(
-            'admin.dashboard_manager_overview'.tr(),
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                  letterSpacing: -0.3,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isWide = constraints.maxWidth > 700;
+        if (isWide) {
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                flex: 60,
+                child: _ReservationsTrendChart(
+                  reservationsTrend: summary.reservationsTrend,
                 ),
-          ),
-        ),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final isWide = constraints.maxWidth > 700;
-            if (isWide) {
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    flex: 60,
-                    child: _ReservationsTrendChart(reservationsTrend: summary.reservationsTrend),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    flex: 40,
-                    child: _TasksCompositionChart(
-                      tasksComposition: tasksComposition,
-                      isUpcoming: compositionIsUpcoming,
-                    ),
-                  ),
-                ],
-              );
-            }
-            return Column(
-              children: [
-                _ReservationsTrendChart(reservationsTrend: summary.reservationsTrend),
-                const SizedBox(height: 16),
-                _TasksCompositionChart(
+              ),
+              const SizedBox(width: _kDashboardBlockGap),
+              Expanded(
+                flex: 40,
+                child: _TasksCompositionChart(
                   tasksComposition: tasksComposition,
                   isUpcoming: compositionIsUpcoming,
                 ),
-              ],
-            );
-          },
-        ),
-      ],
-    );
-  }
-}
-
-/// Sekce „Finance & Pozornost“ – tři informační karty s prémiovou zamykací logikou.
-///
-/// Karty: Čeká na vyplacení (settlements), Očekávaný příjem (finance_export), Kritické/Zpožděné úkoly.
-/// První dvě jsou uzamčeny při neaktivním modulu a po kliknutí otevřou PremiumUpsellDialog.
-class _FinanceAttentionSection extends ConsumerWidget {
-  const _FinanceAttentionSection({
-    required this.tasks,
-    required this.apartments,
-  });
-
-  final List<TaskRow> tasks;
-  final List<ApartmentRow> apartments;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final payoutsAsync = ref.watch(groupedPendingPayoutsProvider);
-    final shortfallsAsync = ref.watch(cashShortfallsCountProvider);
-    final settlementsActive = isModuleActive(ref, 'settlements');
-    final financeExportActive = isModuleActive(ref, 'finance_export');
-    final switchToTab = AdminTabScope.of(context);
-    final shortfallCount = shortfallsAsync.valueOrNull ?? 0;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(bottom: 16),
-          child: Text(
-            'admin.dashboard_section_finance_attention'.tr(),
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                  letterSpacing: -0.3,
-                ),
-          ),
-        ),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final isWide = constraints.maxWidth > 600;
-            if (isWide) {
-              return IntrinsicHeight(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Expanded(
-                      child: _FinanceAttentionCard(
-                        titleKey: 'admin.dashboard_card_pending_payouts',
-                        icon: Icons.payments_outlined,
-                        isLocked: !settlementsActive,
-                        lockedMessageKey: 'admin.dashboard_card_pending_payouts_locked',
-                        moduleKey: 'settlements',
-                        payoutsAsync: payoutsAsync,
-                        formatAmount: (v) => formatWalletAmount(context, ref, v),
-                        onTapUnlocked: () => switchToTab?.call(adminTabIndexFinance),
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: _ExpectedIncomeCard(
-                        tasks: tasks,
-                        apartments: apartments,
-                        isLocked: !financeExportActive,
-                        formatAmount: (v) => formatWalletAmount(context, ref, v),
-                        onTapUnlocked: () => switchToTab?.call(adminTabIndexFinance),
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: _NeedsAttentionCard(
-                        tasks: tasks,
-                        shortfallCount: shortfallCount,
-                        onTapTasks: () => switchToTab?.call(adminTabIndexTasks),
-                        onTapShortfalls: () {
-                          ref.read(financeRequestedSubTabProvider.notifier).state =
-                              financeSubTabIndexBilling;
-                          switchToTab?.call(adminTabIndexFinance);
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            }
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _FinanceAttentionCard(
-                  titleKey: 'admin.dashboard_card_pending_payouts',
-                  icon: Icons.payments_outlined,
-                  isLocked: !settlementsActive,
-                  lockedMessageKey: 'admin.dashboard_card_pending_payouts_locked',
-                  moduleKey: 'settlements',
-                  payoutsAsync: payoutsAsync,
-                  formatAmount: (v) => formatWalletAmount(context, ref, v),
-                  onTapUnlocked: () => switchToTab?.call(adminTabIndexFinance),
-                ),
-                const SizedBox(height: 12),
-                _ExpectedIncomeCard(
-                  tasks: tasks,
-                  apartments: apartments,
-                  isLocked: !financeExportActive,
-                  formatAmount: (v) => formatWalletAmount(context, ref, v),
-                  onTapUnlocked: () => switchToTab?.call(adminTabIndexFinance),
-                ),
-                const SizedBox(height: 12),
-                _NeedsAttentionCard(
-                  tasks: tasks,
-                  shortfallCount: shortfallCount,
-                  onTapTasks: () => switchToTab?.call(adminTabIndexTasks),
-                  onTapShortfalls: () {
-                    ref.read(financeRequestedSubTabProvider.notifier).state =
-                        financeSubTabIndexBilling;
-                    switchToTab?.call(adminTabIndexFinance);
-                  },
-                ),
-              ],
-            );
-          },
-        ),
-      ],
+              ),
+            ],
+          );
+        }
+        return Column(
+          children: [
+            _ReservationsTrendChart(
+              reservationsTrend: summary.reservationsTrend,
+            ),
+            const SizedBox(height: _kDashboardBlockGap),
+            _TasksCompositionChart(
+              tasksComposition: tasksComposition,
+              isUpcoming: compositionIsUpcoming,
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -651,14 +785,18 @@ class _FinanceAttentionCard extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Icon(Icons.lock, size: 20, color: Colors.grey.shade600),
+                  Icon(
+                    Icons.lock,
+                    size: 20,
+                    color: context.colors.onSurfaceVariant,
+                  ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
                       lockedMessageKey.tr(),
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Colors.grey.shade600,
-                          ),
+                        color: context.colors.onSurfaceVariant,
+                      ),
                     ),
                   ),
                 ],
@@ -677,13 +815,32 @@ class _FinanceAttentionCard extends StatelessWidget {
               ),
             ),
             error: (_, _) => Text(
-              '—',
+              'common.placeholder_dash'.tr(),
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: Colors.grey.shade600,
-                  ),
+                color: context.colors.onSurfaceVariant,
+              ),
             ),
             data: (data) {
-              final total = data.groups.fold<double>(0, (s, g) => s + g.totalAmount);
+              // PROČ: Když nejsou žádné pending payouty, „0“ by působilo jako
+              // výpočetní chyba. Ukážeme uživatelsky srozumitelný stav bez dat.
+              if (data.groups.isEmpty) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'admin.dashboard_no_pending_payouts'.tr(),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: context.colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                );
+              }
+              final total = data.groups.fold<double>(
+                0,
+                (s, g) => s + g.totalAmount,
+              );
               return Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -691,23 +848,23 @@ class _FinanceAttentionCard extends StatelessWidget {
                   Text(
                     formatAmount(total),
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                          color: Colors.green.shade700,
-                        ),
+                      fontWeight: FontWeight.bold,
+                      color: context.customColors.success,
+                    ),
                   ),
                   const SizedBox(height: 6),
                   Text(
                     'admin.dashboard_pending_payouts_subtitle'.tr(),
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Colors.grey.shade600,
-                        ),
+                      color: context.colors.onSurfaceVariant,
+                    ),
                   ),
                 ],
               );
             },
           );
 
-    return AppCard(
+    return _dashboardPanel(context,
       onTap: () {
         if (isLocked) {
           PremiumUpsellDialog.show(
@@ -733,16 +890,20 @@ class _FinanceAttentionCard extends StatelessWidget {
                 Icon(
                   icon,
                   size: 22,
-                  color: isLocked ? Colors.grey.shade600 : Colors.teal.shade700,
+                  color: isLocked
+                      ? context.colors.onSurfaceVariant
+                      : context.colors.tertiary,
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     titleKey.tr(),
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: isLocked ? Colors.grey.shade700 : Colors.black87,
-                        ),
+                      fontWeight: FontWeight.w600,
+                      color: isLocked
+                          ? context.colors.onSurfaceVariant
+                          : context.colors.onSurface,
+                    ),
                   ),
                 ),
               ],
@@ -822,72 +983,97 @@ class _ExpectedIncomeCard extends StatelessWidget {
     }).toList();
 
     final monthlyFeeSum = apartments.fold<double>(
-        0, (sum, apt) => sum + (apt.monthlyManagementFee));
+      0,
+      (sum, apt) => sum + (apt.monthlyManagementFee),
+    );
 
     final currentMonthCompleted = currentMonthTasks
         .where((t) => _isTaskCompleted(t.status))
         .fold<double>(0, (s, t) => s + _taskExpectedAmount(t));
-    final currentMonthTotal =
-        currentMonthTasks.fold<double>(0, (s, t) => s + _taskExpectedAmount(t));
-    final nextMonthTotal =
-        nextMonthTasks.fold<double>(0, (s, t) => s + _taskExpectedAmount(t));
+    final currentMonthTotal = currentMonthTasks.fold<double>(
+      0,
+      (s, t) => s + _taskExpectedAmount(t),
+    );
+    final nextMonthTotal = nextMonthTasks.fold<double>(
+      0,
+      (s, t) => s + _taskExpectedAmount(t),
+    );
 
     // Měsíční paušály za správu – jistý příjem, přičteme k hotovým i k výhledu.
     final currentMonthCompletedWithFees = currentMonthCompleted + monthlyFeeSum;
     final currentMonthTotalWithFees = currentMonthTotal + monthlyFeeSum;
     final nextMonthTotalWithFees = nextMonthTotal + monthlyFeeSum;
 
+    // PROČ: Empty state pro očekávaný příjem, když nemáme žádné úkoly ani apartmány
+    // (tedy ani zdroj pro měsíční paušály). Bez toho by UI ukazovalo zavádějící „0“.
     final content = isLocked
         ? Row(
             children: [
-              Icon(Icons.lock, size: 20, color: Colors.grey.shade600),
+              Icon(
+                Icons.lock,
+                size: 20,
+                color: context.colors.onSurfaceVariant,
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   'admin.dashboard_card_expected_income_locked'.tr(),
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Colors.grey.shade600,
-                      ),
+                    color: context.colors.onSurfaceVariant,
+                  ),
                 ),
               ),
             ],
           )
-        : Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'admin.dashboard_expected_income_done_this_month'.tr(),
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.grey.shade700,
+        : (tasks.isEmpty && apartments.isEmpty)
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'admin.dashboard_no_expected_income'.tr(),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: context.colors.onSurfaceVariant,
                     ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                formatAmount(currentMonthCompletedWithFees),
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  ),
+                ],
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'admin.dashboard_expected_income_done_this_month'.tr(),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: context.colors.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    formatAmount(currentMonthCompletedWithFees),
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.bold,
-                      color: Colors.green.shade700,
+                      color: context.customColors.success,
                     ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                '${'admin.dashboard_expected_income_outlook_month'.tr()}: ${formatAmount(currentMonthTotalWithFees)}',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.grey.shade600,
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    '${'admin.dashboard_expected_income_outlook_month'.tr()}: ${formatAmount(currentMonthTotalWithFees)}',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: context.colors.onSurfaceVariant,
                     ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                '${'admin.dashboard_expected_income_outlook_next'.tr()}: ${formatAmount(nextMonthTotalWithFees)}',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.grey.shade600,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${'admin.dashboard_expected_income_outlook_next'.tr()}: ${formatAmount(nextMonthTotalWithFees)}',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: context.colors.onSurfaceVariant,
                     ),
-              ),
-            ],
-          );
+                  ),
+                ],
+              );
 
-    return AppCard(
+    return _dashboardPanel(context,
       onTap: () {
         if (isLocked) {
           PremiumUpsellDialog.show(
@@ -913,16 +1099,20 @@ class _ExpectedIncomeCard extends StatelessWidget {
                 Icon(
                   Icons.receipt_long_outlined,
                   size: 22,
-                  color: isLocked ? Colors.grey.shade600 : Colors.blue.shade700,
+                  color: isLocked
+                      ? context.colors.onSurfaceVariant
+                      : context.colors.primary,
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     'admin.dashboard_card_expected_income'.tr(),
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: isLocked ? Colors.grey.shade700 : Colors.black87,
-                        ),
+                      fontWeight: FontWeight.w600,
+                      color: isLocked
+                          ? context.colors.onSurfaceVariant
+                          : context.colors.onSurface,
+                    ),
                   ),
                 ),
               ],
@@ -943,7 +1133,8 @@ int _countCriticalOrOverdue(List<TaskRow> tasks) {
 
   return tasks.where((t) {
     final status = (t.status.trim().toLowerCase());
-    final isProblem = status == 'problem' || status == 'problém' || status == 'issue';
+    final isProblem =
+        status == 'problem' || status == 'problém' || status == 'issue';
     final local = t.dueDate.isUtc ? t.dueDate.toLocal() : t.dueDate;
     final taskDay = DateTime(local.year, local.month, local.day);
     final isOverdue = taskDay.isBefore(today) && !_isTaskCompleted(t.status);
@@ -955,27 +1146,55 @@ int _countCriticalOrOverdue(List<TaskRow> tasks) {
 Map<String, int> _buildTasksCompositionMap(List<TaskRow> taskList) {
   final result = <String, int>{};
   for (final t in taskList) {
-    final cat = _taskTypeToCategoryForChart(t.taskType);
+    final cat = _taskTypeToCategoryKey(t.taskType);
     result[cat] = (result[cat] ?? 0) + 1;
   }
   return result;
 }
 
-String _taskTypeToCategoryForChart(String taskType) {
+/// Klíč kategorie pro donut graf (`admin.dashboard_chart_category_*` v JSON).
+///
+/// PROČ i18n: legendy nesmí být natvrdo v češtině – tenant může mít jiný jazyk UI.
+/// POZOR: v cs/en musí být klíče pod `admin` jako `dashboard_chart_category_*` (jedna tečka
+/// po `admin`), ne `admin.dashboard.chart_*` – jinak `.tr()` zobrazí surový řetězec.
+String _taskTypeToCategoryKey(String taskType) {
   final t = taskType.trim().toLowerCase();
-  if (t.contains('cleaning') || t.contains('úklid')) return 'Úklidy';
-  if (t.contains('transfer_in') || (t.contains('transfer') && t.contains('in'))) return 'Transfery';
-  if (t.contains('transfer_out') || (t.contains('transfer') && t.contains('out'))) return 'Transfery';
-  if (t.contains('transfer')) return 'Transfery';
-  if (t.contains('check_in')) return 'Příjezdy';
-  if (t.contains('check_out')) return 'Odjezdy';
-  if (t.contains('issue') || t.contains('material') || t.contains('údržba') || t.contains('závada')) return 'Údržba';
-  return 'Jiné';
+  if (t.contains('cleaning') || t.contains('úklid')) {
+    return 'admin.dashboard_chart_category_cleaning';
+  }
+  if (t.contains('transfer_in') ||
+      (t.contains('transfer') && t.contains('in'))) {
+    return 'admin.dashboard_chart_category_transfers';
+  }
+  if (t.contains('transfer_out') ||
+      (t.contains('transfer') && t.contains('out'))) {
+    return 'admin.dashboard_chart_category_transfers';
+  }
+  if (t.contains('transfer')) {
+    return 'admin.dashboard_chart_category_transfers';
+  }
+  if (t.contains('check_in')) {
+    return 'admin.dashboard_chart_category_arrivals';
+  }
+  if (t.contains('check_out')) {
+    return 'admin.dashboard_chart_category_departures';
+  }
+  if (t.contains('issue') ||
+      t.contains('material') ||
+      t.contains('údržba') ||
+      t.contains('závada')) {
+    return 'admin.dashboard_chart_category_maintenance';
+  }
+  return 'admin.dashboard_chart_category_other';
 }
 
 /// Formátuje datum a čas úkolu pro zobrazení v režimu „Nejbližší plán“ (Smart Fallback).
 /// Zítra → „Zítra 10:00“, jinak → „Čt 12.3. 10:00“. PROČ: Dispečer musí na první pohled vidět, že jde o budoucí den.
-String formatTaskDueForUpcoming(BuildContext context, DateTime localDue, DateTime today) {
+String formatTaskDueForUpcoming(
+  BuildContext context,
+  DateTime localDue,
+  DateTime today,
+) {
   final taskDay = DateTime(localDue.year, localDue.month, localDue.day);
   final tomorrow = today.add(const Duration(days: 1));
   final hour = localDue.hour.toString().padLeft(2, '0');
@@ -1008,7 +1227,7 @@ class _NeedsAttentionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final overdueCount = _countCriticalOrOverdue(tasks);
 
-    return AppCard(
+    return _dashboardPanel(context,
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1018,15 +1237,19 @@ class _NeedsAttentionCard extends StatelessWidget {
             padding: const EdgeInsets.only(bottom: 12),
             child: Row(
               children: [
-                Icon(Icons.warning_amber_rounded, size: 22, color: Colors.orange.shade700),
+                Icon(
+                  Icons.warning_amber_rounded,
+                  size: 22,
+                  color: context.customColors.warning,
+                ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     'admin.dashboard_card_needs_attention'.tr(),
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: Colors.black87,
-                        ),
+                      fontWeight: FontWeight.w600,
+                      color: context.colors.onSurface,
+                    ),
                   ),
                 ),
               ],
@@ -1034,19 +1257,23 @@ class _NeedsAttentionCard extends StatelessWidget {
           ),
           _NeedsAttentionRow(
             icon: Icons.schedule,
-            iconColor: Colors.orange.shade700,
+            iconColor: context.customColors.warning,
             label: 'admin.dashboard_needs_attention_overdue'.tr(),
             value: overdueCount,
-            valueColor: overdueCount > 0 ? Colors.orange.shade700 : Colors.grey.shade600,
+            valueColor: overdueCount > 0
+                ? context.customColors.warning
+                : context.colors.onSurfaceVariant,
             onTap: onTapTasks,
           ),
           const SizedBox(height: 8),
           _NeedsAttentionRow(
             icon: Icons.account_balance_wallet_outlined,
-            iconColor: Colors.red.shade700,
+            iconColor: context.colors.error,
             label: 'admin.dashboard_needs_attention_shortfalls'.tr(),
             value: shortfallCount,
-            valueColor: shortfallCount > 0 ? Colors.red.shade700 : Colors.grey.shade600,
+            valueColor: shortfallCount > 0
+                ? context.colors.error
+                : context.colors.onSurfaceVariant,
             onTap: onTapShortfalls,
           ),
         ],
@@ -1082,17 +1309,17 @@ class _NeedsAttentionRow extends StatelessWidget {
         Expanded(
           child: Text(
             label,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Colors.black87,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(color: context.colors.onSurface),
           ),
         ),
         Text(
           '$value',
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-                color: valueColor,
-              ),
+            fontWeight: FontWeight.w600,
+            color: valueColor,
+          ),
         ),
       ],
     );
@@ -1116,6 +1343,204 @@ class _NeedsAttentionRow extends StatelessWidget {
   }
 }
 
+/// Karta „Noví klienti v tomto měsíci“ – KPI z CRM.
+///
+/// PROČ: U manažera je důležité vidět trend leadů/klientů v čase.
+/// Kliknutí přepíná na modul „Klienti“, kde může data rozkliknout detailně.
+class _NewClientsThisMonthCard extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final switchToTab = AdminTabScope.of(context);
+    final clientsAsync = ref.watch(newClientsThisMonthProvider);
+
+    return _dashboardPanel(context,
+      onTap: () => switchToTab?.call(adminTabIndexClients),
+      padding: const EdgeInsets.all(AppSpacing.md),
+      child: clientsAsync.when(
+        loading: () => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.person_add_outlined,
+                    size: 22, color: context.colors.tertiary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'admin.dashboard_new_clients_card_title'.tr(),
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: context.colors.onSurface,
+                        ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            const Center(
+              child: SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          ],
+        ),
+        error: (e, st) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.person_add_outlined,
+                    size: 22, color: context.colors.tertiary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'admin.dashboard_new_clients_card_title'.tr(),
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: context.colors.onSurface,
+                        ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'common.generic_error_user_friendly'.tr(),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: context.colors.error,
+                  ),
+            ),
+          ],
+        ),
+        data: (s) {
+          // PROČ: Když je v období 0 nových klientů, v UI nechceme
+          // „rozpad“ breakdownu na několik řádků s nulami – ukážeme
+          // uživatelsky srozumitelný empty state.
+          final totalIsZero = s.totalNewClients == 0;
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.person_add_outlined,
+                      size: 22, color: context.colors.tertiary),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'admin.dashboard_new_clients_card_title'.tr(),
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: context.colors.onSurface,
+                          ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (totalIsZero)
+                Text(
+                  'admin.dashboard_new_clients_empty'.tr(),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: context.colors.onSurfaceVariant,
+                      ),
+                )
+              else ...[
+                Text(
+                  '${s.totalNewClients}',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: context.colors.onSurface,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    if (s.ownerNewClients > 0)
+                      _NewClientTypeBadge(
+                        text:
+                            'admin.dashboard_new_clients_type_owner'.tr(
+                          namedArgs: {'count': '${s.ownerNewClients}'},
+                        ),
+                        backgroundColor: context.colors.primaryContainer,
+                        foregroundColor: context.colors.onPrimaryContainer,
+                      ),
+                    if (s.externalNewClients > 0)
+                      _NewClientTypeBadge(
+                        text:
+                            'admin.dashboard_new_clients_type_external'.tr(
+                          namedArgs: {'count': '${s.externalNewClients}'},
+                        ),
+                        backgroundColor: context.colors.secondaryContainer,
+                        foregroundColor: context.colors.onSecondaryContainer,
+                      ),
+                    if (s.agencyNewClients > 0)
+                      _NewClientTypeBadge(
+                        text:
+                            'admin.dashboard_new_clients_type_agency'.tr(
+                          namedArgs: {'count': '${s.agencyNewClients}'},
+                        ),
+                        backgroundColor: context.colors.tertiaryContainer,
+                        foregroundColor: context.colors.onTertiaryContainer,
+                      ),
+                    if (s.unknownNewClients > 0)
+                      _NewClientTypeBadge(
+                        text:
+                            'admin.dashboard_new_clients_type_unknown'.tr(
+                          namedArgs: {'count': '${s.unknownNewClients}'},
+                        ),
+                        backgroundColor: context.colors.surfaceContainerHighest,
+                        foregroundColor: context.colors.onSurfaceVariant,
+                      ),
+                  ],
+                ),
+              ],
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// Kompaktní odznak typu klienta (breakdown) – vizuálně oddělený od dominantního součtu.
+class _NewClientTypeBadge extends StatelessWidget {
+  const _NewClientTypeBadge({
+    required this.text,
+    required this.backgroundColor,
+    required this.foregroundColor,
+  });
+
+  final String text;
+  final Color backgroundColor;
+  final Color foregroundColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: backgroundColor,
+      borderRadius: BorderRadius.circular(20),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        child: Text(
+          text,
+          style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                color: foregroundColor,
+                fontWeight: FontWeight.w600,
+              ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Čárový graf s gradientem – vývoj rezervací 14 dní.
 class _ReservationsTrendChart extends StatelessWidget {
   const _ReservationsTrendChart({required this.reservationsTrend});
@@ -1125,39 +1550,26 @@ class _ReservationsTrendChart extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Detekce prázdných dat – fl_chart nezvládá vykreslit křivku při samých nulách
-    final isEmptyOrAllZeros = reservationsTrend.isEmpty ||
-        reservationsTrend.every((v) => v == 0);
+    final isEmptyOrAllZeros =
+        reservationsTrend.isEmpty || reservationsTrend.every((v) => v == 0);
     if (isEmptyOrAllZeros) {
       return Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.05),
-              blurRadius: 15,
-              offset: const Offset(0, 5),
-            ),
-          ],
-        ),
+        padding: const EdgeInsets.all(AppSpacing.md),
+        decoration: premiumCardDecoration(context),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               'admin.dashboard_chart_reservations_14'.tr(),
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
-                  ),
-            ),
-            const SizedBox(height: 20),
-            SizedBox(
-              height: 200,
-              child: _EmptyStateWidget(
-                icon: Icons.show_chart,
-                message: 'admin.dashboard_chart_trend_no_data'.tr(),
+                fontWeight: FontWeight.bold,
+                color: context.colors.onSurface,
               ),
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            _DashboardCompactEmptyState(
+              icon: Icons.show_chart,
+              title: 'admin.dashboard_chart_trend_no_data'.tr(),
             ),
           ],
         ),
@@ -1167,38 +1579,35 @@ class _ReservationsTrendChart extends StatelessWidget {
     // Spread operátor – bezpečné doplnění nul k seznamům s pevnou délkou (fixed-length list).
     final trend = reservationsTrend.length >= 14
         ? reservationsTrend
-        : [...reservationsTrend, ...List.filled(14 - reservationsTrend.length, 0)];
-    final spots = trend.asMap().entries.map((e) => FlSpot(e.key.toDouble(), e.value.toDouble())).toList();
+        : [
+            ...reservationsTrend,
+            ...List.filled(14 - reservationsTrend.length, 0),
+          ];
+    final spots = trend
+        .asMap()
+        .entries
+        .map((e) => FlSpot(e.key.toDouble(), e.value.toDouble()))
+        .toList();
     final maxVal = trend.reduce((a, b) => a > b ? a : b).toDouble();
     // Bezpečné meze: maxY musí být > minY, jinak fl_chart vyhodí render error
     final maxY = maxVal > 0 ? maxVal + 1 : 5.0;
 
     return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 15,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: premiumCardDecoration(context),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             'admin.dashboard_chart_reservations_14'.tr(),
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
+              fontWeight: FontWeight.bold,
+              color: context.colors.onSurface,
+            ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: AppSpacing.sm),
           SizedBox(
-            height: 200,
+            height: _kDashboardChartPlotHeight,
             child: LineChart(
               LineChartData(
                 minX: 0,
@@ -1210,7 +1619,7 @@ class _ReservationsTrendChart extends StatelessWidget {
                     spots: spots,
                     isCurved: true,
                     curveSmoothness: 0.35,
-                    color: Colors.blue.shade600,
+                    color: context.colors.primary,
                     barWidth: 2.5,
                     isStrokeCapRound: true,
                     isStrokeJoinRound: true,
@@ -1218,8 +1627,8 @@ class _ReservationsTrendChart extends StatelessWidget {
                       show: true,
                       gradient: LinearGradient(
                         colors: [
-                          Colors.blue.shade400.withValues(alpha: 0.35),
-                          Colors.blue.shade400.withValues(alpha: 0.0),
+                          context.colors.primary.withValues(alpha: 0.35),
+                          context.colors.primary.withValues(alpha: 0.0),
                         ],
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
@@ -1230,26 +1639,43 @@ class _ReservationsTrendChart extends StatelessWidget {
                 ],
                 gridData: const FlGridData(show: false),
                 titlesData: FlTitlesData(
-                  leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  leftTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                  topTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                  rightTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
                   bottomTitles: AxisTitles(
                     sideTitles: SideTitles(
                       showTitles: true,
-                      reservedSize: 24,
+                      reservedSize: 20,
                       interval: 2,
                       getTitlesWidget: (value, meta) {
                         final i = value.toInt();
                         if (i < 0 || i > 13) return const SizedBox.shrink();
                         final dayOffset = i - 7;
+                        // PROČ: Znaménko a tvar popisku (např. "+X" vs. "-X")
+                        // musí být lokalizovatelný, proto jej skládáme přes i18n klíče.
                         final label = dayOffset == 0
                             ? 'common.today'.tr()
-                            : (dayOffset > 0 ? '+$dayOffset' : '$dayOffset');
+                            : dayOffset > 0
+                                ? 'admin.dashboard_chart_day_offset_plus'.tr(
+                                    namedArgs: {'days': '$dayOffset'},
+                                  )
+                                : 'admin.dashboard_chart_day_offset_minus'.tr(
+                                    namedArgs: {'days': '${-dayOffset}'},
+                                  );
                         return Padding(
-                          padding: const EdgeInsets.only(top: 8),
+                          padding: const EdgeInsets.only(top: AppSpacing.xs),
                           child: Text(
                             label,
-                            style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
+                            style: context.textTheme.labelSmall?.copyWith(
+                              color: context.colors.onSurfaceVariant,
+                              fontSize: 10,
+                            ),
                           ),
                         );
                       },
@@ -1267,16 +1693,20 @@ class _ReservationsTrendChart extends StatelessWidget {
   }
 }
 
-/// Barvy pro kategorie úkolů v donut grafu – pastelové/brand.
-final _compositionColors = [
-  Colors.amber.shade400,
-  Colors.blue.shade400,
-  Colors.green.shade500,
-  Colors.orange.shade400,
-  Colors.purple.shade400,
-  Colors.teal.shade400,
-  Colors.indigo.shade400,
-];
+/// Paleta segmentů donut grafu z aktuálního tématu (PROČ: žádné natvrdo Material barvy).
+List<Color> _chartCompositionPalette(BuildContext context) {
+  final c = context.colors;
+  final cc = context.customColors;
+  return [
+    c.tertiary,
+    c.primary,
+    cc.success,
+    cc.warning,
+    c.secondary,
+    c.error,
+    c.inversePrimary,
+  ];
+}
 
 /// Prstencový graf – skladba dnešních úkolů nebo dalších 7 dní (Smart Fallback) s legendou.
 class _TasksCompositionChart extends StatelessWidget {
@@ -1288,8 +1718,9 @@ class _TasksCompositionChart extends StatelessWidget {
   final Map<String, int> tasksComposition;
   final bool isUpcoming;
 
-  String _titleKey(BuildContext context) =>
-      isUpcoming ? 'admin.dashboard_upcoming_composition'.tr() : 'admin.dashboard_chart_tasks_composition'.tr();
+  String _titleKey(BuildContext context) => isUpcoming
+      ? 'admin.dashboard_upcoming_composition'.tr()
+      : 'admin.dashboard_chart_tasks_composition'.tr();
 
   @override
   Widget build(BuildContext context) {
@@ -1298,81 +1729,60 @@ class _TasksCompositionChart extends StatelessWidget {
 
     if (entries.isEmpty) {
       return Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.05),
-              blurRadius: 15,
-              offset: const Offset(0, 5),
-            ),
-          ],
-        ),
+        padding: const EdgeInsets.all(AppSpacing.md),
+        decoration: premiumCardDecoration(context),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               _titleKey(context),
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
-                  ),
-            ),
-            const SizedBox(height: 20),
-            SizedBox(
-              height: 200,
-              child: Center(
-                child: _EmptyStateWidget(
-                  icon: Icons.pie_chart_outline,
-                  message: 'admin.dashboard_chart_no_data'.tr(),
-                ),
+                fontWeight: FontWeight.bold,
+                color: context.colors.onSurface,
               ),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            _DashboardCompactEmptyState(
+              icon: Icons.pie_chart_outline,
+              title: 'admin.dashboard_chart_no_data'.tr(),
             ),
           ],
         ),
       );
     }
 
+    final palette = _chartCompositionPalette(context);
     final sections = entries.asMap().entries.map((e) {
-      final idx = e.key % _compositionColors.length;
-      final color = _compositionColors[idx];
+      final idx = e.key % palette.length;
+      final color = palette[idx];
       return PieChartSectionData(
         value: e.value.value.toDouble(),
         color: color,
-        radius: 48,
+        radius: AppSpacing.xxl,
         title: '${e.value.value}',
-        titleStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+        titleStyle: context.textTheme.labelLarge?.copyWith(
+          fontWeight: FontWeight.bold,
+          color: context.colors.surface,
+        ),
       );
     }).toList();
 
     return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 15,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: premiumCardDecoration(context),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             _titleKey(context),
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
+              fontWeight: FontWeight.bold,
+              color: context.colors.onSurface,
+            ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.md),
           SizedBox(
-            height: 220,
+            height: AppSpacing.lg * 9 + AppSpacing.sm,
             child: Row(
               children: [
                 Expanded(
@@ -1395,9 +1805,10 @@ class _TasksCompositionChart extends StatelessWidget {
                       Center(
                         child: Text(
                           '$total',
-                          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          style: Theme.of(context).textTheme.headlineSmall
+                              ?.copyWith(
                                 fontWeight: FontWeight.bold,
-                                color: Colors.black87,
+                                color: context.colors.onSurface,
                               ),
                         ),
                       ),
@@ -1410,27 +1821,38 @@ class _TasksCompositionChart extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.center,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: entries.asMap().entries.map((e) {
-                      final idx = e.key % _compositionColors.length;
-                      final color = _compositionColors[idx];
+                      final idx = e.key % palette.length;
+                      final color = palette[idx];
                       return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                          vertical: AppSpacing.xs,
+                        ),
                         child: Row(
                           children: [
                             Container(
-                              width: 10,
-                              height: 10,
+                              width: AppSpacing.sm + AppSpacing.xs,
+                              height: AppSpacing.sm + AppSpacing.xs,
                               decoration: BoxDecoration(
                                 color: color,
-                                borderRadius: BorderRadius.circular(3),
+                                borderRadius: BorderRadius.circular(
+                                  AppSpacing.xs,
+                                ),
                               ),
                             ),
-                            const SizedBox(width: 8),
+                            const SizedBox(width: AppSpacing.sm),
                             Expanded(
+                              // PROČ: Závorky a pořadí kategorie + počet mohou být v různých jazycích různé,
+                              // proto je renderujeme přes i18n klíč.
                               child: Text(
-                                '${e.value.key} (${e.value.value})',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.grey.shade800,
+                                'admin.dashboard_chart_legend_category_with_count'
+                                    .tr(
+                                  namedArgs: {
+                                    'category': e.value.key.tr(),
+                                    'count': '${e.value.value}',
+                                  },
+                                ),
+                                style: context.textTheme.labelLarge?.copyWith(
+                                  color: context.colors.onSurface,
                                 ),
                                 overflow: TextOverflow.ellipsis,
                               ),
@@ -1459,7 +1881,8 @@ class _ActionStripWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasWarnings = summary.pendingTasksCount > 0 ||
+    final hasWarnings =
+        summary.pendingTasksCount > 0 ||
         summary.problemTasksCount > 0 ||
         summary.employeesWithCashCount > 0;
 
@@ -1467,35 +1890,44 @@ class _ActionStripWidget extends StatelessWidget {
       final greenPill = Container(
         decoration: BoxDecoration(
           gradient: LinearGradient(
-            colors: [Colors.green.shade400, Colors.green.shade700],
+            colors: [
+              context.customColors.success.withValues(alpha: 0.85),
+              context.customColors.success,
+            ],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(AppSpacing.sm + AppSpacing.xs),
           boxShadow: [
             BoxShadow(
-              color: Colors.green.withValues(alpha: 0.3),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
+              color: context.customColors.success.withValues(alpha: 0.35),
+              blurRadius: AppSpacing.sm + AppSpacing.xs,
+              offset: Offset(0, AppSpacing.xs),
             ),
           ],
         ),
         child: Material(
           color: Colors.transparent,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(AppSpacing.sm + AppSpacing.xs),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.md,
+              vertical: AppSpacing.sm + AppSpacing.xs,
+            ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.check_circle_outline, color: Colors.white, size: 22),
-                const SizedBox(width: 10),
+                Icon(
+                  Icons.check_circle_outline,
+                  color: context.customColors.onSuccess,
+                  size: AppSpacing.lg,
+                ),
+                const SizedBox(width: AppSpacing.sm + AppSpacing.xs),
                 Text(
                   'admin.dashboard_action_strip_all_clear'.tr(),
-                  style: const TextStyle(
-                    fontSize: 14,
+                  style: context.textTheme.titleSmall?.copyWith(
                     fontWeight: FontWeight.bold,
-                    color: Colors.white,
+                    color: context.customColors.onSuccess,
                   ),
                 ),
               ],
@@ -1517,50 +1949,65 @@ class _ActionStripWidget extends StatelessWidget {
     final switchToTab = AdminTabScope.of(context);
 
     if (summary.pendingTasksCount > 0) {
-      cards.add(_ActionCard(
-        text: 'admin.dashboard_action_pending_proposals'.tr(
-          namedArgs: {'count': '${summary.pendingTasksCount}'},
+      cards.add(
+        _ActionCard(
+          text: 'admin.dashboard_action_pending_proposals'.tr(
+            namedArgs: {'count': '${summary.pendingTasksCount}'},
+          ),
+          gradient: LinearGradient(
+            colors: [
+              context.colors.primary.withValues(alpha: 0.88),
+              context.colors.primary,
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          icon: Icons.pending_actions,
+          onTap: () => switchToTab?.call(adminTabIndexTasks),
         ),
-        gradient: LinearGradient(
-          colors: [Colors.blue.shade500, Colors.blue.shade700],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        icon: Icons.pending_actions,
-        onTap: () => switchToTab?.call(adminTabIndexTasks),
-      ));
+      );
     }
     if (summary.problemTasksCount > 0) {
-      cards.add(_ActionCard(
-        text: 'admin.dashboard_action_problems'.tr(
-          namedArgs: {'count': '${summary.problemTasksCount}'},
+      cards.add(
+        _ActionCard(
+          text: 'admin.dashboard_action_problems'.tr(
+            namedArgs: {'count': '${summary.problemTasksCount}'},
+          ),
+          gradient: LinearGradient(
+            colors: [
+              context.colors.error.withValues(alpha: 0.9),
+              context.colors.error.withValues(alpha: 0.65),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          icon: Icons.warning_amber_rounded,
+          onTap: () => switchToTab?.call(adminTabIndexTasks),
         ),
-        gradient: LinearGradient(
-          colors: [Colors.red.shade500, Colors.red.shade800],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        icon: Icons.warning_amber_rounded,
-        onTap: () => switchToTab?.call(adminTabIndexTasks),
-      ));
+      );
     }
     if (summary.employeesWithCashCount > 0) {
       final amountStr = summary.totalUncollectedCash.toStringAsFixed(1);
-      cards.add(_ActionCard(
-        text: 'admin.dashboard_action_cash_uncollected'.tr(
-          namedArgs: {
-            'amount': amountStr,
-            'count': '${summary.employeesWithCashCount}',
-          },
+      cards.add(
+        _ActionCard(
+          text: 'admin.dashboard_action_cash_uncollected'.tr(
+            namedArgs: {
+              'amount': amountStr,
+              'count': '${summary.employeesWithCashCount}',
+            },
+          ),
+          gradient: LinearGradient(
+            colors: [
+              context.customColors.warning,
+              context.customColors.warning.withValues(alpha: 0.75),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          icon: Icons.account_balance_wallet,
+          onTap: () => switchToTab?.call(adminTabIndexFinance),
         ),
-        gradient: LinearGradient(
-          colors: [Colors.orange.shade500, Colors.deepOrange.shade700],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        icon: Icons.account_balance_wallet,
-        onTap: () => switchToTab?.call(adminTabIndexFinance),
-      ));
+      );
     }
 
     return LayoutBuilder(
@@ -1568,8 +2015,8 @@ class _ActionStripWidget extends StatelessWidget {
         final isWide = constraints.maxWidth > 900;
         return Wrap(
           alignment: isWide ? WrapAlignment.end : WrapAlignment.start,
-          spacing: 12,
-          runSpacing: 12,
+          spacing: AppSpacing.sm + AppSpacing.xs,
+          runSpacing: AppSpacing.sm + AppSpacing.xs,
           children: cards,
         );
       },
@@ -1596,35 +2043,37 @@ class _ActionCard extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         gradient: gradient,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppSpacing.sm + AppSpacing.xs),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.2),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
+            color: context.colors.shadow.withValues(alpha: 0.22),
+            blurRadius: AppSpacing.sm + AppSpacing.xs,
+            offset: Offset(0, AppSpacing.xs),
           ),
         ],
       ),
       child: Material(
         color: Colors.transparent,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppSpacing.sm + AppSpacing.xs),
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(AppSpacing.sm + AppSpacing.xs),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.md,
+              vertical: AppSpacing.sm + AppSpacing.xs,
+            ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(icon, color: Colors.white, size: 22),
-                const SizedBox(width: 10),
+                Icon(icon, color: context.colors.surface, size: AppSpacing.lg),
+                const SizedBox(width: AppSpacing.sm + AppSpacing.xs),
                 Flexible(
                   child: Text(
                     text,
-                    style: const TextStyle(
-                      fontSize: 14,
+                    style: context.textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.bold,
-                      color: Colors.white,
+                      color: context.colors.surface,
                     ),
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -1633,6 +2082,265 @@ class _ActionCard extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Konsolidovaná karta komunikace + automatizací.
+///
+/// PROČ: Manažer řeší tyto metriky společně (pravidla, fronta, selhání,
+/// objem zpráv, náklady). Jedna karta minimalizuje redundanci a zkracuje
+/// cestu k nápravě.
+class _CommunicationAndAutomationStatusCard extends ConsumerWidget {
+  const _CommunicationAndAutomationStatusCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final switchToTab = AdminTabScope.of(context);
+    final automationAsync = ref.watch(automationSummaryProvider);
+    final healthAsync = ref.watch(messagingHealthProvider);
+    final failuresAsync = ref.watch(messagingFailuresProvider);
+
+    void openAutomations({
+      required bool showFailedQueue,
+      required bool showFailedLog,
+    }) {
+      // PROČ: Přenos filtru do Automations zajišťuje, že uživatel po kliknutí
+      // uvidí rovnou relevantní část modulu (bez ručního hledání).
+      final preferredTab = showFailedQueue
+          ? 1
+          : showFailedLog
+              ? 2
+              : 0;
+      ref.read(adminAutomationTabIndexProvider.notifier).state = preferredTab;
+      ref.read(adminAutomationFilterProvider.notifier).state =
+          AdminAutomationFilterState(
+        preferredTabIndex: preferredTab,
+        showFailedQueue: showFailedQueue,
+        showFailedLog: showFailedLog,
+      );
+      switchToTab?.call(adminTabIndexAutomations);
+    }
+
+    if (automationAsync.isLoading ||
+        healthAsync.isLoading ||
+        failuresAsync.isLoading) {
+      return _dashboardPanel(context,
+        padding: EdgeInsets.all(16),
+        child: Center(
+          child: SizedBox(
+            width: 26,
+            height: 26,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
+    }
+
+    if (automationAsync.hasError || healthAsync.hasError || failuresAsync.hasError) {
+      if (kDebugMode) {
+        debugPrint('Communication/Automation KPI error');
+      }
+      return _dashboardPanel(context,
+        onTap: () => openAutomations(showFailedQueue: true, showFailedLog: true),
+        padding: const EdgeInsets.all(16),
+        child: Text(
+          'common.generic_error_user_friendly'.tr(),
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: context.colors.error,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      );
+    }
+
+    final automation = automationAsync.valueOrNull;
+    final health = healthAsync.valueOrNull;
+    final failures = failuresAsync.valueOrNull;
+    if (automation == null || health == null || failures == null) {
+      return _dashboardPanel(context,
+        padding: const EdgeInsets.all(16),
+        child: Text(
+          'common.generic_error_user_friendly'.tr(),
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: context.colors.error,
+                fontWeight: FontWeight.w600,
+              ),
+        ),
+      );
+    }
+
+    final hasFailure =
+        automation.failedQueueCount > 0 || failures.failedLogCountLastDays > 0;
+
+    return _dashboardPanel(context,
+      onTap: () => openAutomations(
+        showFailedQueue: automation.failedQueueCount > 0,
+        showFailedLog: failures.failedLogCountLastDays > 0,
+      ),
+      padding: const EdgeInsets.all(AppSpacing.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.hub_outlined,
+                size: 20,
+                color: hasFailure ? context.colors.error : context.colors.tertiary,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'admin.dashboard_communication_automation_status_title'.tr(),
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: context.colors.onSurface,
+                      ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          // Mřížka 2×3 – rychlé skenování stejných metrik jako dříve (bez nových dat).
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: _AutomationMiniKpiTile(
+                      icon: Icons.auto_awesome_outlined,
+                      labelKey: 'admin.dashboard_automation_kpi_active_rules_label',
+                      namedArgs: const {},
+                      valueText: '${automation.activeRulesCount}',
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _AutomationMiniKpiTile(
+                      icon: Icons.hourglass_empty_outlined,
+                      labelKey:
+                          'admin.dashboard_automation_kpi_queue_scheduled_label',
+                      namedArgs: const {},
+                      valueText: '${automation.scheduledQueueCount}',
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _AutomationMiniKpiTile(
+                      icon: Icons.error_outline,
+                      labelKey:
+                          'admin.dashboard_automation_kpi_queue_failed_label',
+                      namedArgs: const {},
+                      valueText: '${automation.failedQueueCount}',
+                      iconColor: automation.failedQueueCount > 0
+                          ? context.colors.error
+                          : null,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: _AutomationMiniKpiTile(
+                      icon: Icons.forum_outlined,
+                      labelKey: 'admin.dashboard_messaging_health_sent_label',
+                      namedArgs: const {},
+                      valueText: '${health.sentMessagesThisMonth}',
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _AutomationMiniKpiTile(
+                      icon: Icons.euro_outlined,
+                      labelKey: 'admin.dashboard_messaging_health_cost_label',
+                      namedArgs: const {},
+                      valueText:
+                          health.estimatedCostEurThisMonth.toStringAsFixed(2),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _AutomationMiniKpiTile(
+                      icon: Icons.report_problem_outlined,
+                      labelKey:
+                          'admin.dashboard_messaging_failures_log_label',
+                      namedArgs: {'days': '${failures.lastDays}'},
+                      valueText: '${failures.failedLogCountLastDays}',
+                      iconColor: failures.failedLogCountLastDays > 0
+                          ? context.colors.error
+                          : null,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Jedna mini dlaždice v mřížce komunikace/automatizace – ikona, krátký popisek, číslo.
+class _AutomationMiniKpiTile extends StatelessWidget {
+  const _AutomationMiniKpiTile({
+    required this.icon,
+    required this.labelKey,
+    required this.namedArgs,
+    required this.valueText,
+    this.iconColor,
+  });
+
+  final IconData icon;
+  final String labelKey;
+  final Map<String, String> namedArgs;
+  final String valueText;
+  final Color? iconColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      decoration: BoxDecoration(
+        color: c.surfaceContainerHighest.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: iconColor ?? c.tertiary),
+          const SizedBox(height: 4),
+          Text(
+            labelKey.tr(namedArgs: namedArgs),
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: c.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                  height: 1.15,
+                ),
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            valueText,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: c.onSurface,
+                ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
       ),
     );
   }
@@ -1648,8 +2356,8 @@ class _QuickActionsSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final switchToTab = AdminTabScope.of(context);
     return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: _premiumCardDecoration,
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: premiumCardDecoration(context),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1657,9 +2365,9 @@ class _QuickActionsSection extends StatelessWidget {
           Text(
             'admin.dashboard_quick_actions'.tr(),
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
+              fontWeight: FontWeight.bold,
+              color: context.colors.onSurface,
+            ),
           ),
           const SizedBox(height: 12),
           Center(
@@ -1669,34 +2377,210 @@ class _QuickActionsSection extends StatelessWidget {
               spacing: 12,
               runSpacing: 12,
               children: [
-                  FilledButton.icon(
-                    onPressed: () {
-                      AdminTasksScreen.showAddTaskDialog(context, ref);
-                    },
-                    icon: const Icon(Icons.add, size: 20),
-                    label: Text('admin.dashboard_quick_add_task'.tr()),
+                FilledButton.icon(
+                  onPressed: () {
+                    AdminTasksScreen.showAddTaskDialog(context, ref);
+                  },
+                  icon: const Icon(Icons.add, size: 20),
+                  label: Text('admin.dashboard_quick_add_task'.tr()),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: () => switchToTab?.call(adminTabIndexTasks),
+                  icon: const Icon(Icons.auto_awesome, size: 20),
+                  label: Text('admin.dashboard_quick_generate_proposals'.tr()),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: context.colors.secondaryContainer,
+                    foregroundColor: context.colors.onSecondaryContainer,
                   ),
-                  FilledButton.tonalIcon(
-                    onPressed: () => switchToTab?.call(adminTabIndexTasks),
-                    icon: const Icon(Icons.auto_awesome, size: 20),
-                    label: Text('admin.dashboard_quick_generate_proposals'.tr()),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Colors.purple.shade50,
-                      foregroundColor: Colors.purple.shade800,
-                    ),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: () => switchToTab?.call(adminTabIndexFinance),
+                  icon: const Icon(Icons.account_balance_wallet, size: 20),
+                  label: Text('admin.dashboard_quick_finance_wallet'.tr()),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: context.colors.tertiaryContainer,
+                    foregroundColor: context.colors.onTertiaryContainer,
                   ),
-                  FilledButton.tonalIcon(
-                    onPressed: () => switchToTab?.call(adminTabIndexFinance),
-                    icon: const Icon(Icons.account_balance_wallet, size: 20),
-                    label: Text('admin.dashboard_quick_finance_wallet'.tr()),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Colors.teal.shade50,
-                      foregroundColor: Colors.teal.shade800,
-                    ),
-                  ),
-                ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// KPI karta „Absence radar do budoucna“.
+///
+/// PROČ: Manažer potřebuje v jednom pohledu vidět, jestli v dalších dnech
+/// budou některé osoby mimo provoz (schválené absence). Tím snížíme
+/// riziko špatných plánů a následných nouzových přerozdělení úkolů.
+class _AbsenceRadarCard extends ConsumerWidget {
+  const _AbsenceRadarCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final switchToTab = AdminTabScope.of(context);
+    final upcomingAbsencesAsync = ref.watch(upcomingAbsencesProvider);
+    final teamMembers = ref.watch(teamFullListProvider).valueOrNull ?? [];
+
+    // PROČ: `profile_id` -> jméno je potřeba pro „kdo“ (ne jen „kolik“),
+    // UI pak může zobrazit iniciály absentujících členů.
+    final memberByProfileId = <String, TeamMember>{
+      for (final m in teamMembers)
+        if (m.profileId != null && m.profileId!.isNotEmpty) m.profileId!: m,
+    };
+
+    return _dashboardPanel(context,
+      onTap: () => switchToTab?.call(adminTabIndexTeam),
+      padding: const EdgeInsets.all(AppSpacing.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.event_busy_outlined,
+                size: 18,
+                color: context.colors.tertiary,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'admin.dashboard_absence_radar_title'.tr(),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: context.colors.onSurfaceVariant,
+                        fontWeight: FontWeight.w600,
+                      ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          upcomingAbsencesAsync.when(
+            loading: () => const Center(
+              child: SizedBox(
+                width: 26,
+                height: 26,
+                child: CircularProgressIndicator(strokeWidth: 2),
               ),
             ),
+            error: (e, st) {
+              // PROČ: user-friendly error zabrání „white screen of death“,
+              // zatímco technický detail logujeme pro diagnostiku.
+              if (kDebugMode) {
+                debugPrint('upcomingAbsencesProvider error: $e');
+              }
+              return Text(
+                'common.generic_error_user_friendly'.tr(),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: context.colors.error,
+                  fontWeight: FontWeight.w600,
+                ),
+              );
+            },
+            data: (s) {
+              final absentMembersCount = s.absentMemberProfileIds14Days.length;
+              if (absentMembersCount == 0) {
+                return _DashboardCompactEmptyState(
+                  icon: Icons.event_available_outlined,
+                  title: 'admin.dashboard_absence_radar_empty'.tr(),
+                );
+              }
+
+              final absentIds = s.absentMemberProfileIds14Days;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'admin.dashboard_absence_radar_absences_14_label'.tr(
+                            namedArgs: {
+                              'count':
+                                  '${s.approvedAbsencesCount14Days}',
+                            },
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: context.colors.onSurfaceVariant,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
+                        child: SizedBox(
+                          height: 18,
+                          child: VerticalDivider(
+                            width: 1,
+                            thickness: 1,
+                            color: context.colors.outlineVariant,
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: Text(
+                          'admin.dashboard_absence_radar_members_label'.tr(
+                            namedArgs: {
+                              'count': '$absentMembersCount',
+                            },
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: context.colors.onSurfaceVariant,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: absentIds
+                        .take(4)
+                        .map((pid) {
+                          final member = memberByProfileId[pid];
+                          final name = member?.name ?? '';
+                          final initials = name.isNotEmpty
+                              ? AdminDashboardScreen._initialsFromName(name)
+                              : 'common.placeholder_dash'.tr();
+                          return CircleAvatar(
+                            radius: 14,
+                            backgroundColor:
+                                context.colors.secondaryContainer,
+                            child: Text(
+                              initials,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelSmall
+                                  ?.copyWith(
+                                    color: context.colors
+                                        .onSecondaryContainer,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 10,
+                                  ),
+                            ),
+                          );
+                        })
+                        .toList(),
+                  ),
+                ],
+              );
+            },
+          ),
         ],
       ),
     );
@@ -1718,68 +2602,98 @@ class _ExternalTasksSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      constraints: const BoxConstraints(minHeight: 120),
-      padding: const EdgeInsets.all(20),
-      decoration: _premiumCardDecoration,
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: premiumCardDecoration(context),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            isUpcoming ? 'admin.dashboard_upcoming_external'.tr() : 'admin.dashboard_external_services'.tr(),
+            isUpcoming
+                ? 'admin.dashboard_upcoming_external'.tr()
+                : 'admin.dashboard_external_services'.tr(),
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.w600,
-                  color: Colors.black87,
+                  color: context.colors.onSurface,
                 ),
           ),
           const SizedBox(height: 10),
           if (externalTasks.isEmpty)
-            _EmptyStateWidget(
+            _DashboardCompactEmptyState(
               icon: Icons.directions_car_outlined,
-              message: 'admin.dashboard_external_services_empty'.tr(),
+              title: 'admin.dashboard_external_services_empty'.tr(),
             )
           else
-            ...externalTasks.map((t) {
-              final local = t.dueDate.isUtc ? t.dueDate.toLocal() : t.dueDate;
-              final dateTimeStr = isUpcoming
-                  ? formatTaskDueForUpcoming(context, local, today)
-                  : '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
-              final title = t.customTitle?.trim().isNotEmpty == true
-                  ? t.customTitle!
-                  : t.title.trim().isNotEmpty
-                      ? t.title
-                      : 'admin.task_no_title'.tr();
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: InkWell(
-                  onTap: () {
-                    final switchToTab = AdminTabScope.of(context);
-                    if (switchToTab != null) switchToTab(adminTabIndexTasks);
-                  },
-                  borderRadius: BorderRadius.circular(6),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-                    child: Row(
-                      children: [
-                        Icon(TaskVisuals.getIconStatic(t.taskType),
-                            size: 18, color: Colors.blue.shade700),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            '$title • $dateTimeStr',
-                            style: const TextStyle(
-                              fontSize: 13,
-                              color: Colors.black87,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var i = 0; i < externalTasks.length; i++) ...[
+                  if (i > 0)
+                    Divider(
+                      height: 1,
+                      thickness: 0.5,
+                      color: context.colors.outlineVariant.withValues(
+                        alpha: 0.35,
+                      ),
+                    ),
+                  Builder(
+                    builder: (context) {
+                      final t = externalTasks[i];
+                      final local =
+                          t.dueDate.isUtc ? t.dueDate.toLocal() : t.dueDate;
+                      final dateTimeStr = isUpcoming
+                          ? formatTaskDueForUpcoming(context, local, today)
+                          : '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+                      final title = t.customTitle?.trim().isNotEmpty == true
+                          ? t.customTitle!
+                          : t.title.trim().isNotEmpty
+                              ? t.title
+                              : 'admin.task_no_title'.tr();
+                      return InkWell(
+                        onTap: () {
+                          final switchToTab = AdminTabScope.of(context);
+                          if (switchToTab != null) {
+                            switchToTab(adminTabIndexTasks);
+                          }
+                        },
+                        borderRadius: BorderRadius.circular(6),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 6,
+                            horizontal: 4,
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                TaskVisuals.getIconStatic(t.taskType),
+                                size: AppSpacing.sm +
+                                    AppSpacing.sm +
+                                    AppSpacing.xs,
+                                color: context.colors.primary,
+                              ),
+                              const SizedBox(
+                                width: AppSpacing.sm + AppSpacing.xs,
+                              ),
+                              Expanded(
+                                child: Text(
+                                  '$title • $dateTimeStr',
+                                  style: context.textTheme.bodyMedium?.copyWith(
+                                    color: context.colors.onSurface,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                      ],
-                    ),
+                      );
+                    },
                   ),
-                ),
-              );
-            }),
+                ],
+              ],
+            ),
         ],
       ),
     );
@@ -1801,121 +2715,41 @@ class _DashboardPlanSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      constraints: const BoxConstraints(minHeight: 200),
-      padding: const EdgeInsets.all(20),
-      decoration: _premiumCardDecoration,
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: premiumCardDecoration(context),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            isUpcoming ? 'admin.dashboard_upcoming_plan'.tr() : 'admin.dashboard_plan_today'.tr(),
+            isUpcoming
+                ? 'admin.dashboard_upcoming_plan'.tr()
+                : 'admin.dashboard_plan_today'.tr(),
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.bold,
-                  color: Colors.black87,
+                  color: context.colors.onSurface,
                 ),
           ),
           const SizedBox(height: 12),
           if (tasks.isEmpty)
-            _EmptyStateWidget(
+            _DashboardCompactEmptyState(
               icon: Icons.coffee_outlined,
-              message: 'admin.dashboard_today_done_coffee'.tr(),
+              title: 'admin.dashboard_today_done_coffee'.tr(),
             )
           else
-            SizedBox(
-              height: 140,
-              child: ListView.separated(
-                shrinkWrap: true,
-                itemCount: tasks.length,
-                separatorBuilder: (_, _) => const SizedBox(height: 8),
-                itemBuilder: (context, index) {
-                  final t = tasks[index];
-                  final icon = TaskVisuals.getIconStatic(t.taskType);
-                  final bgColor = TaskVisuals.getBackgroundColorStatic(t.taskType);
-                  final iconColor = TaskVisuals.getBorderColorStatic(t.taskType);
-                  final local = t.dueDate.isUtc ? t.dueDate.toLocal() : t.dueDate;
-                  final timeStr =
-                      '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
-                  final subtitleStr = isUpcoming
-                      ? formatTaskDueForUpcoming(context, local, today)
-                      : '${t.apartmentName ?? t.apartmentId} • $timeStr';
-                  final hasAssignee = t.assignedToName != null && t.assignedToName!.trim().isNotEmpty;
-                  return Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      onTap: () {
-                        final switchToTab = AdminTabScope.of(context);
-                        if (switchToTab != null) switchToTab(adminTabIndexTasks);
-                      },
-                      borderRadius: BorderRadius.circular(8),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.grey.shade50,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 40,
-                              height: 40,
-                              decoration: BoxDecoration(
-                                color: bgColor,
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Icon(icon, size: 20, color: iconColor),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    t.title,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 13,
-                                      color: Colors.black87,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    subtitleStr,
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: Colors.grey.shade600,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ],
-                              ),
-                            ),
-                            if (hasAssignee)
-                              Padding(
-                                padding: const EdgeInsets.only(left: 8),
-                                child: CircleAvatar(
-                                  radius: 14,
-                                  backgroundColor: Colors.purple.shade100,
-                                  child: Text(
-                                    AdminDashboardScreen._initialsFromName(t.assignedToName!),
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w600,
-                                      color: Colors.purple.shade800,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
-                },
-              ),
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var index = 0; index < tasks.length; index++) ...[
+                  if (index > 0) const SizedBox(height: 8),
+                  _DashboardPlanTaskTile(
+                    task: tasks[index],
+                    isUpcoming: isUpcoming,
+                    today: today,
+                  ),
+                ],
+              ],
             ),
         ],
       ),
@@ -1923,8 +2757,140 @@ class _DashboardPlanSection extends StatelessWidget {
   }
 }
 
+/// Jedna položka plánu – extrahováno kvůli čitelnosti po odstranění [ListView] s fixní výškou.
+class _DashboardPlanTaskTile extends StatelessWidget {
+  const _DashboardPlanTaskTile({
+    required this.task,
+    required this.isUpcoming,
+    required this.today,
+  });
+
+  final TaskRow task;
+  final bool isUpcoming;
+  final DateTime today;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = task;
+    final icon = TaskVisuals.getIconStatic(t.taskType);
+    final bgColor = TaskVisuals.getBackgroundColorStatic(t.taskType);
+    final iconColor = TaskVisuals.getBorderColorStatic(t.taskType);
+    final local = t.dueDate.isUtc ? t.dueDate.toLocal() : t.dueDate;
+    final timeStr =
+        '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+    final subtitleStr = isUpcoming
+        ? formatTaskDueForUpcoming(context, local, today)
+        : '${t.apartmentName ?? t.apartmentId} • $timeStr';
+    final hasAssignee =
+        t.assignedToName != null && t.assignedToName!.trim().isNotEmpty;
+    final canCommunicate = (t.reservationId?.trim().isNotEmpty ?? false) ||
+        (t.clientId?.trim().isNotEmpty ?? false);
+    final messageSent = t.lastCommunicationAt != null ||
+        (t.lastCommunicationTemplateId?.trim().isNotEmpty ?? false);
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () {
+          final switchToTab = AdminTabScope.of(context);
+          if (switchToTab != null) {
+            switchToTab(adminTabIndexTasks);
+          }
+        },
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: 10,
+            vertical: 8,
+          ),
+          decoration: BoxDecoration(
+            color: context.colors.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: bgColor,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(icon, size: 20, color: iconColor),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      t.title,
+                      style: context.textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: context.colors.onSurface,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitleStr,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: context.colors.onSurfaceVariant,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              if (canCommunicate)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Tooltip(
+                    message: messageSent
+                        ? 'admin.dashboard_plan_message_sent'.tr()
+                        : 'admin.dashboard_plan_message_missing'.tr(),
+                    child: Icon(
+                      messageSent
+                          ? Icons.mark_chat_read
+                          : Icons.mark_chat_unread,
+                      size: 18,
+                      color: messageSent
+                          ? context.customColors.success
+                          : context.customColors.warning,
+                    ),
+                  ),
+                ),
+              if (hasAssignee)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: CircleAvatar(
+                    radius: AppSpacing.sm + AppSpacing.xs,
+                    backgroundColor: context.colors.tertiaryContainer,
+                    child: Text(
+                      AdminDashboardScreen._initialsFromName(
+                        t.assignedToName!,
+                      ),
+                      style: context.textTheme.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: context.colors.onTertiaryContainer,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Sekce „Kdo je dnes v akci“ nebo „Nejbližší směny“ (Smart Fallback) – avatary pracovníků s počtem úkolů.
-class _TodaysTeamSection extends StatelessWidget {
+class _TodaysTeamSection extends ConsumerWidget {
   const _TodaysTeamSection({
     required this.members,
     required this.displayTasks,
@@ -1938,43 +2904,67 @@ class _TodaysTeamSection extends StatelessWidget {
   final bool isUpcoming;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // PROČ: Stejně jako u apartmánů chceme uživateli říct, když jsme se trefili na limit,
+    // takže kompletní seznam týmu nemusí být k dispozici.
+    final teamLimitReached = ref.watch(teamDataLimitReachedProvider);
+    final showLimitWarning = teamLimitReached && members.isNotEmpty;
+
     int taskCountFor(TeamMember m) {
       return displayTasks
-          .where((t) =>
-              (t.assignedTo == m.profileId || t.assignedTo == m.id) &&
-              (t.assignedTo != null && t.assignedTo!.trim().isNotEmpty))
+          .where(
+            (t) =>
+                (t.assignedTo == m.profileId || t.assignedTo == m.id) &&
+                (t.assignedTo != null && t.assignedTo!.trim().isNotEmpty),
+          )
           .length;
     }
 
     return Container(
-      constraints: const BoxConstraints(minHeight: 200),
-      padding: const EdgeInsets.all(20),
-      decoration: _premiumCardDecoration,
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: premiumCardDecoration(context),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            isUpcoming ? 'admin.dashboard_upcoming_team'.tr() : 'admin.dashboard_todays_team'.tr(),
+            isUpcoming
+                ? 'admin.dashboard_upcoming_team'.tr()
+                : 'admin.dashboard_todays_team'.tr(),
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
+              fontWeight: FontWeight.bold,
+              color: context.colors.onSurface,
+            ),
           ),
           const SizedBox(height: 12),
+          if (showLimitWarning)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                'admin.dashboard_data_limit_reached_warning'.tr(
+                  namedArgs: {'limit': '$teamFullListProviderLimit'},
+                ),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: context.customColors.warning,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
           if (members.isEmpty)
-            _EmptyStateWidget(
+            _DashboardCompactEmptyState(
               icon: Icons.groups_outlined,
-              message: 'admin.dashboard_no_shift_today'.tr(),
+              title: 'admin.dashboard_no_shift_today'.tr(),
             )
           else
             Wrap(
-              spacing: 12,
-              runSpacing: 12,
+              spacing: AppSpacing.sm + AppSpacing.xs,
+              runSpacing: AppSpacing.sm + AppSpacing.xs,
               children: members.map((m) {
                 final count = taskCountFor(m);
                 final profileId = m.profileId ?? m.id;
-                final hasCash = profileId.isNotEmpty && profileIdsWithCash.contains(profileId);
+                final hasCash =
+                    profileId.isNotEmpty &&
+                    profileIdsWithCash.contains(profileId);
                 return Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -1982,64 +2972,76 @@ class _TodaysTeamSection extends StatelessWidget {
                       clipBehavior: Clip.none,
                       children: [
                         Container(
-                          width: 46,
-                          height: 46,
+                          width: AppSpacing.xxl - AppSpacing.xs,
+                          height: AppSpacing.xxl - AppSpacing.xs,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: Colors.purple.shade100,
+                            color: context.colors.tertiaryContainer,
                             border: Border.all(
-                              color: Colors.grey.shade300,
+                              color: context.colors.outlineVariant,
                               width: 1.5,
                             ),
                           ),
                           child: Center(
                             child: Text(
                               AdminDashboardScreen._initialsFromName(m.name),
-                              style: TextStyle(
-                                fontSize: 14,
+                              style: context.textTheme.bodyMedium?.copyWith(
                                 fontWeight: FontWeight.w600,
-                                color: Colors.purple.shade800,
+                                color: context.colors.onTertiaryContainer,
                               ),
                             ),
                           ),
                         ),
                         if (hasCash)
                           Positioned(
-                            right: -2,
-                            bottom: -2,
+                            right: -AppSpacing.xs,
+                            bottom: -AppSpacing.xs,
                             child: Container(
-                              padding: const EdgeInsets.all(4),
+                              padding: const EdgeInsets.all(AppSpacing.xs),
                               decoration: BoxDecoration(
-                                color: Colors.amber.shade600,
+                                color: context.customColors.warning,
                                 shape: BoxShape.circle,
-                                border: Border.all(color: Colors.white, width: 1),
+                                border: Border.all(
+                                  color: context.colors.surface,
+                                  width: 1,
+                                ),
                               ),
-                              child: Icon(Icons.account_balance_wallet, size: 14, color: Colors.white),
+                              child: Icon(
+                                Icons.account_balance_wallet,
+                                size: AppSpacing.sm + AppSpacing.xs,
+                                color: context.customColors.onWarning,
+                              ),
                             ),
                           ),
                         if (count > 0)
                           Positioned(
-                            right: -2,
-                            top: -2,
+                            right: -AppSpacing.xs,
+                            top: -AppSpacing.xs,
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: AppSpacing.sm,
+                                vertical: AppSpacing.xs,
+                              ),
                               decoration: BoxDecoration(
-                                color: Colors.red.shade600,
-                                borderRadius: BorderRadius.circular(12),
+                                color: context.colors.error,
+                                borderRadius: BorderRadius.circular(
+                                  AppSpacing.sm + AppSpacing.xs,
+                                ),
                                 boxShadow: [
                                   BoxShadow(
-                                    color: Colors.black.withValues(alpha: 0.15),
-                                    blurRadius: 4,
-                                    offset: const Offset(0, 1),
+                                    color: context.colors.shadow.withValues(
+                                      alpha: 0.2,
+                                    ),
+                                    blurRadius: AppSpacing.xs,
+                                    offset: Offset(0, AppSpacing.xs),
                                   ),
                                 ],
                               ),
                               child: Text(
                                 '$count',
-                                style: const TextStyle(
-                                  fontSize: 11,
+                                style: context.textTheme.labelLarge?.copyWith(
                                   fontWeight: FontWeight.bold,
-                                  color: Colors.white,
+                                  color: context.colors.onError,
                                 ),
                               ),
                             ),
@@ -2055,9 +3057,9 @@ class _TodaysTeamSection extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Colors.black87,
-                              fontSize: 11,
-                            ),
+                          color: context.colors.onSurface,
+                          fontSize: 11,
+                        ),
                       ),
                     ),
                   ],
@@ -2070,68 +3072,120 @@ class _TodaysTeamSection extends StatelessWidget {
   }
 }
 
-/// Sekce „Stav apartmánů“ – barevné pilulky.
-class _ApartmentFleetSection extends StatelessWidget {
+/// Sekce „Stav apartmánů“ – celkový počet z flotily + dnešní provozní stavy (bez health KPI).
+///
+/// PROČ: Health check bez „N/A“ v DB matl uživatele; stačí rychlý přehled počtu a úklidů.
+class _ApartmentFleetSection extends ConsumerWidget {
   const _ApartmentFleetSection({
+    required this.totalApartments,
     required this.countClean,
     required this.countToClean,
     required this.countOccupied,
   });
 
+  final int totalApartments;
   final int countClean;
   final int countToClean;
   final int countOccupied;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final switchToTab = AdminTabScope.of(context);
+    final apartmentsLimitReached = ref.watch(apartmentsDataLimitReachedProvider);
+    final apartmentsEmpty = totalApartments == 0;
+
+    void openApartments() => switchToTab?.call(adminTabIndexApartments);
+
     return Container(
-      constraints: const BoxConstraints(minHeight: 140),
-      padding: const EdgeInsets.all(20),
-      decoration: _premiumCardDecoration,
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: premiumCardDecoration(context),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Text(
             'admin.dashboard_apartment_fleet'.tr(),
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.w600,
-                  color: Colors.black87,
+                  color: context.colors.onSurface,
                 ),
           ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _FleetStatusBlock(
-                  count: countClean,
-                  labelKey: 'admin.dashboard_fleet_clean',
-                  icon: Icons.check_circle_outline,
-                  backgroundColor: Colors.green.shade50,
-                  accentColor: Colors.green.shade700,
+          if (apartmentsLimitReached && !apartmentsEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8, bottom: 8),
+              child: Text(
+                'admin.dashboard_data_limit_reached_warning'.tr(
+                  namedArgs: {'limit': '$apartmentsFullListProviderLimit'},
+                ),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: context.customColors.warning,
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+            ),
+          if (apartmentsEmpty)
+            _DashboardCompactEmptyState(
+              icon: Icons.apartment_outlined,
+              title: 'admin.dashboard_no_apartments_in_fleet'.tr(),
+            )
+          else ...[
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: openApartments,
+                borderRadius: BorderRadius.circular(AppSpacing.sm),
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 8, bottom: 4),
+                  child: Text(
+                    'admin.dashboard_apartments_count'.tr(
+                      namedArgs: {'count': '$totalApartments'},
+                    ),
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: context.colors.primary,
+                        ),
+                  ),
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _FleetStatusBlock(
-                  count: countToClean,
-                  labelKey: 'admin.dashboard_fleet_to_clean',
-                  icon: Icons.cleaning_services_outlined,
-                  backgroundColor: Colors.orange.shade50,
-                  accentColor: Colors.orange.shade700,
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _FleetStatusBlock(
+                    count: countClean,
+                    labelKey: 'admin.dashboard_fleet_clean',
+                    icon: Icons.check_circle_outline,
+                    backgroundColor:
+                        context.customColors.success.withValues(alpha: 0.12),
+                    accentColor: context.customColors.success,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _FleetStatusBlock(
-                  count: countOccupied,
-                  labelKey: 'admin.dashboard_fleet_occupied',
-                  icon: Icons.people_outline,
-                  backgroundColor: Colors.blue.shade50,
-                  accentColor: Colors.blue.shade700,
+                const SizedBox(width: AppSpacing.sm + AppSpacing.xs),
+                Expanded(
+                  child: _FleetStatusBlock(
+                    count: countToClean,
+                    labelKey: 'admin.dashboard_fleet_to_clean',
+                    icon: Icons.cleaning_services_outlined,
+                    backgroundColor:
+                        context.customColors.warning.withValues(alpha: 0.12),
+                    accentColor: context.customColors.warning,
+                  ),
                 ),
-              ),
-            ],
-          ),
+                const SizedBox(width: AppSpacing.sm + AppSpacing.xs),
+                Expanded(
+                  child: _FleetStatusBlock(
+                    count: countOccupied,
+                    labelKey: 'admin.dashboard_fleet_occupied',
+                    icon: Icons.people_outline,
+                    backgroundColor: context.colors.primaryContainer
+                        .withValues(alpha: 0.5),
+                    accentColor: context.colors.primary,
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -2158,10 +3212,13 @@ class _FleetStatusBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     final labelText = labelKey.tr(namedArgs: {'count': '$count'});
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+      padding: const EdgeInsets.symmetric(
+        vertical: AppSpacing.md,
+        horizontal: AppSpacing.sm,
+      ),
       decoration: BoxDecoration(
         color: backgroundColor,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(AppSpacing.sm),
         border: Border.all(color: accentColor.withValues(alpha: 0.2), width: 1),
       ),
       child: Column(
@@ -2171,22 +3228,20 @@ class _FleetStatusBlock extends StatelessWidget {
         children: [
           Text(
             '$count',
-            style: TextStyle(
-              fontSize: 28,
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
               fontWeight: FontWeight.bold,
               color: accentColor,
             ),
           ),
-          const SizedBox(height: 8),
-          Icon(icon, size: 20, color: accentColor),
-          const SizedBox(height: 4),
+          const SizedBox(height: AppSpacing.sm),
+          Icon(icon, size: AppSpacing.md + AppSpacing.xs, color: accentColor),
+          const SizedBox(height: AppSpacing.xs),
           Text(
             labelText,
             textAlign: TextAlign.center,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 12,
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
               fontWeight: FontWeight.w600,
               color: accentColor,
             ),
