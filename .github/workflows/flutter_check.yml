@@ -1,0 +1,35 @@
+# Základní CI pro FalcoNest: závislosti, statická analýza, testy.
+# Spouští se na push a PR do main/master (ochrana před rozbitým buildem).
+
+name: Flutter check
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+jobs:
+  analyze-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Dart analyze
+        run: dart analyze
+
+      - name: Run tests
+        run: flutter test
