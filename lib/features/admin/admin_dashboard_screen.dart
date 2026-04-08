@@ -1188,24 +1188,50 @@ String _taskTypeToCategoryKey(String taskType) {
   return 'admin.dashboard_chart_category_other';
 }
 
+/// Formátuje časové okno úkolu pro Dnešní plán / externí služby (lokální čas).
+///
+/// PROČ: Dříve se bral jen [TaskRow.dueDate] → jeden čas (konec); dispečer potřebuje interval
+/// začátek–konec stejně jako v Kanbanu ([scheduled_start] + [due_date]).
+/// `task_duration_parse.dart` parsuje délku z popisu; zde pracujeme výhradně s DB časy.
+String formatDashboardTaskTimeWindow(BuildContext context, TaskRow t) {
+  final startRaw = t.scheduledStart;
+  final endRaw = t.dueDate;
+  final endLocal = endRaw.isUtc ? endRaw.toLocal() : endRaw;
+  String hm(DateTime d) =>
+      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+
+  if (startRaw != null) {
+    final startLocal = startRaw.isUtc ? startRaw.toLocal() : startRaw;
+    final diffMin = endRaw.difference(startRaw).inMinutes;
+    if (diffMin > 0) {
+      return '${hm(startLocal)} - ${hm(endLocal)}';
+    }
+    return 'admin.dashboard_task_from'.tr(namedArgs: {'time': hm(startLocal)});
+  }
+  // Bez explicitního začátku: půlnoc lokálně = heuristika „celý den“ (bez konkrétní hodiny).
+  if (endLocal.hour == 0 && endLocal.minute == 0) {
+    return 'admin.dashboard_task_all_day'.tr();
+  }
+  return hm(endLocal);
+}
+
 /// Formátuje datum a čas úkolu pro zobrazení v režimu „Nejbližší plán“ (Smart Fallback).
-/// Zítra → „Zítra 10:00“, jinak → „Čt 12.3. 10:00“. PROČ: Dispečer musí na první pohled vidět, že jde o budoucí den.
+/// Zítra → „Zítra 09:00–10:00“, jinak → „Čt 12.3. 09:00–10:00“. PROČ: Dispečer musí na první pohled vidět, že jde o budoucí den.
 String formatTaskDueForUpcoming(
   BuildContext context,
-  DateTime localDue,
+  TaskRow task,
   DateTime today,
 ) {
+  final localDue = task.dueDate.isUtc ? task.dueDate.toLocal() : task.dueDate;
   final taskDay = DateTime(localDue.year, localDue.month, localDue.day);
   final tomorrow = today.add(const Duration(days: 1));
-  final hour = localDue.hour.toString().padLeft(2, '0');
-  final minute = localDue.minute.toString().padLeft(2, '0');
-  final timeStr = '$hour:$minute';
+  final timePart = formatDashboardTaskTimeWindow(context, task);
   if (taskDay == tomorrow) {
     final tomorrowStr = 'common.tomorrow'.tr();
-    return '$tomorrowStr $timeStr';
+    return '$tomorrowStr $timePart';
   }
   final locale = context.locale.toString();
-  return '${DateFormat('EEE d.M.', locale).format(localDue)} $timeStr';
+  return '${DateFormat('EEE d.M.', locale).format(localDue)} $timePart';
 }
 
 /// Sjednocená karta „Vyžaduje pozornost“ – zpožděné úkoly a nedoplatky v hotovosti.
@@ -2640,11 +2666,9 @@ class _ExternalTasksSection extends StatelessWidget {
                   Builder(
                     builder: (context) {
                       final t = externalTasks[i];
-                      final local =
-                          t.dueDate.isUtc ? t.dueDate.toLocal() : t.dueDate;
                       final dateTimeStr = isUpcoming
-                          ? formatTaskDueForUpcoming(context, local, today)
-                          : '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+                          ? formatTaskDueForUpcoming(context, t, today)
+                          : formatDashboardTaskTimeWindow(context, t);
                       final title = t.customTitle?.trim().isNotEmpty == true
                           ? t.customTitle!
                           : t.title.trim().isNotEmpty
@@ -2775,12 +2799,10 @@ class _DashboardPlanTaskTile extends StatelessWidget {
     final icon = TaskVisuals.getIconStatic(t.taskType);
     final bgColor = TaskVisuals.getBackgroundColorStatic(t.taskType);
     final iconColor = TaskVisuals.getBorderColorStatic(t.taskType);
-    final local = t.dueDate.isUtc ? t.dueDate.toLocal() : t.dueDate;
-    final timeStr =
-        '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+    final timeWindowStr = formatDashboardTaskTimeWindow(context, t);
     final subtitleStr = isUpcoming
-        ? formatTaskDueForUpcoming(context, local, today)
-        : '${t.apartmentName ?? t.apartmentId} • $timeStr';
+        ? formatTaskDueForUpcoming(context, t, today)
+        : '${t.apartmentName ?? t.apartmentId} • $timeWindowStr';
     final hasAssignee =
         t.assignedToName != null && t.assignedToName!.trim().isNotEmpty;
     final canCommunicate = (t.reservationId?.trim().isNotEmpty ?? false) ||
