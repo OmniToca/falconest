@@ -23,7 +23,9 @@ Hlavní tabulka níže byla **srovnána 2026-03-28** s exportem sloupců ze Supa
 - Tabulka **notification_preferences** – místo čtyř sloupců `*_enabled` je **12 booleanských sloupců** (4 typy událostí × 3 kanály: **web** = in-app zvoneček, **push** = FCM, **email**) – migrace `20260403220000_notification_preferences_channels.sql` (2026-04-03).
 - Tabulka **notifications** – sloupec **metadata** (jsonb NOT NULL, výchozí `{}`) pro data UI (např. `task_id` u prokliku) – migrace `20260403240000_notifications_metadata_new_task_web.sql` (2026-04-03).
 - Trigger **`tasks_enqueue_new_assignment_push`** na **tasks** (AFTER INSERT OR UPDATE OF **assigned_to**) volá funkci **`enqueue_internal_push_on_new_task_assignment()`** – multi-channel doručení (fronta **internal_push** / **email**, řádek v **notifications**) podle kanálových přepínačů; typování času v těle zprávy viz sekce *notifications* níže.
+- Konvence **JSONB `tasks.metadata`**: kromě stávajících klíčů (hotovost, odhad minut, …) klient ukládá volitelně **`custom_tags`** — pole `{ "label": string, "color": "#RRGGBB" }` pro vlastní štítky na admin Kanbanu (2026-04).
 - Tabulka **upcoming_task_reminder_log** – PK (**task_id**, **scheduled_start**) pro idempotenci Edge **upcoming-task-reminder** (bez duplicit při push bez web kanálu); migrace `20260403280000_upcoming_task_reminder_log.sql` + pg_cron `20260403281000_upcoming_task_reminder_cron.sql`.
+- **Údržba DB (Fáze 5.2)** – funkce **`public.maintenance_data_cleanup()`** (migrace `20260407220000_maintenance_cleanup_cron.sql`): fyzické mazání řádků v **tenant_message_log** a **audit_logs** starších než **6 měsíců**; fyzické mazání soft-deleted záznamů v **tasks** a **reservations** s **deleted_at** starším než **1 rok**; pg_cron job **`maintenance-data-cleanup-weekly`** (neděle **03:00 UTC**). **VACUUM ANALYZE** pro **apartments**, **tasks**, **clients** kvůli PostGIS/GIST (PostgreSQL neumožňuje VACUUM uvnitř PL/pgSQL funkce) – tři samostatné pg_cron joby **`maintenance-vacuum-geo-apartments`**, **`maintenance-vacuum-geo-tasks`**, **`maintenance-vacuum-geo-clients`** v neděli **04:00–04:02 UTC**; dokumentační funkce **`public.maintenance_vacuum_geo()`** vrací text s odkazem na cron (migrace `20260407221000_postgis_vacuum_cron.sql`).
 
 **Co bylo odstraněno z dokumentace (v DB fyzicky neexistuje):**
 
@@ -206,6 +208,7 @@ Hlavní tabulka níže byla **srovnána 2026-03-28** s exportem sloupců ze Supa
 | employee_cash_transactions | is_shortfall_resolved | boolean | NO |
 | employee_cash_transactions | shortfall_resolution_type | text | YES |
 | employee_cash_transactions | shortfall_resolution_note | text | YES |
+| employee_cash_transactions | metadata | jsonb | NO |
 | employee_cash_wallets | id | uuid | NO |
 | employee_cash_wallets | tenant_id | uuid | NO |
 | employee_cash_wallets | profile_id | uuid | NO |
@@ -348,6 +351,7 @@ Hlavní tabulka níže byla **srovnána 2026-03-28** s exportem sloupců ze Supa
 | reservations | last_communication_template_id | uuid | YES |
 | reservations | guest_language | character varying | YES |
 | reservations | updated_at | timestamp with time zone | YES |
+| reservations | metadata | jsonb | NO |
 | reservations | search_vector | tsvector | NO |
 | staff_absences | id | uuid | NO |
 | staff_absences | profile_id | uuid | YES |
@@ -447,6 +451,7 @@ Hlavní tabulka níže byla **srovnána 2026-03-28** s exportem sloupců ze Supa
 | tenant_calendar_feed_tokens | revoked_at | timestamp with time zone | YES |
 | tenant_calendar_feed_tokens | created_at | timestamp with time zone | NO |
 | tenant_calendar_feed_tokens | apartment_id | uuid | YES |
+| tenant_calendar_feed_tokens | owner_visible_calendar_url | text | YES |
 | tenant_message_log | id | uuid | NO |
 | tenant_message_log | tenant_id | uuid | NO |
 | tenant_message_log | queue_id | uuid | YES |
@@ -550,6 +555,8 @@ Hlavní tabulka níže byla **srovnána 2026-03-28** s exportem sloupců ze Supa
 ### Export kalendáře (.ics) – `get_calendar_feed_data`
 
 Funkce **`public.get_calendar_feed_data(p_token_hash text)`** (SECURITY DEFINER, `GRANT EXECUTE` jen **`service_role`**) vrací úkoly tenanta pro Edge Function **`supabase/functions/export_calendar`**. Výstupní tabule obsahuje mimo jiné **`location_text`**, **`geo_latitude`**, **`geo_longitude`** (nullable double precision): souřadnice z **`tasks.geo_location`**, pokud je vyplněná, jinak z **`apartments.geo_location`**. V SQL se používají **`extensions.ST_Y` / `extensions.ST_X`** (PostGIS je v projektu ve schématu `extensions`; nekvalifikované `ST_*` při `search_path = public` by RPC rozbily).
+
+**Majitelský portál:** funkce **`public.get_owner_calendar_feed_url_for_apartment(p_apartment_id uuid) RETURNS text`** (SECURITY DEFINER, `GRANT EXECUTE` pro **`authenticated`**) vrátí uloženou hodnotu **`tenant_calendar_feed_tokens.owner_visible_calendar_url`** pro aktivní token daného bytu, pokud je volající **`property_owner`** s vazbou v **`apartment_owners`**; jinak `NULL`. Sloupec **`owner_visible_calendar_url`** se při generování tokenu v adminu plní stejnou URL jako v dialogu (plain `export_token` v query – hash v DB zůstává jediným tajným stavem pro ověření).
 
 **Rozšířená pole pro Home Assistant (od migrace `20260405120000_calendar_feed_ha_automation_fields.sql`):**
 

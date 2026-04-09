@@ -1,7 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
+import 'package:falconest/features/owner/providers/owner_planning_calendar_apartment_filter_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/calendar/providers/planning_calendar_provider.dart';
 
@@ -12,6 +14,9 @@ import 'package:falconest/features/calendar/providers/planning_calendar_provider
 /// .inFilter('apartment_id', ...). Nestahuje profiles (jména personálu).
 final ownerPlanningCalendarTasksProvider =
     FutureProvider.autoDispose.family<List<PlanningTask>, DateTime>((ref, weekStart) async {
+  // PROČ: Při změně filtru bytu znovu načteme úkoly pro stejný týden.
+  ref.watch(ownerPlanningCalendarApartmentFilterProvider);
+
   final apartments = await ref.read(ownerApartmentsProvider.future);
   final ownedApartmentIds = apartments
       .map((a) => a.id)
@@ -21,6 +26,17 @@ final ownerPlanningCalendarTasksProvider =
   // Early exit: uživatel nevlastní žádný apartmán.
   if (ownedApartmentIds.isEmpty) return [];
 
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return [];
+
+  final filterApartmentId = ref.watch(ownerPlanningCalendarApartmentFilterProvider);
+  final apartmentIdsForQuery =
+      (filterApartmentId != null &&
+              filterApartmentId.isNotEmpty &&
+              ownedApartmentIds.contains(filterApartmentId))
+          ? <String>[filterApartmentId]
+          : ownedApartmentIds;
+
   final start = DateTime(weekStart.year, weekStart.month, weekStart.day);
   final weekEnd = start.add(const Duration(days: 7));
 
@@ -28,13 +44,12 @@ final ownerPlanningCalendarTasksProvider =
     // BUGFIX: Dvojitá ochrana – úkoly POUZE pro vlastněné byty.
     // Nestahujeme profiles – ochrana soukromí personálu.
     // PROČ: Archivace. Vyfakturované úkoly (invoiced_at != null) schováváme z aktivních pohledů.
-    final res = await SupabaseService.client
-        .from('tasks')
+    final res = await SupabaseService.safeFrom('tasks', tenantId)
         .select(
           'id, title, description, task_type, scheduled_start, due_date, status, '
-          'assigned_to, apartment_id, metadata, apartments(name)',
+          'assigned_to, apartment_id, metadata, media_urls, apartments(name)',
         )
-        .inFilter('apartment_id', ownedApartmentIds)
+        .inFilter('apartment_id', apartmentIdsForQuery)
         .isFilter('deleted_at', null)
         .isFilter('invoiced_at', null)
         .gte('scheduled_start', start.toUtc().toIso8601String())
@@ -88,12 +103,21 @@ List<PlanningTask> _parseTasksForOwner(dynamic res) {
       final rawTaskType = (map['task_type']?.toString() ?? '').trim();
       final taskType = rawTaskType.isEmpty ? 'other' : rawTaskType;
 
+      DateTime? dueParsed;
+      final dueRaw = map['due_date'];
+      if (dueRaw != null) {
+        dueParsed = dueRaw is DateTime
+            ? dueRaw.toLocal()
+            : (dueRaw is String ? DateTime.tryParse(dueRaw)?.toLocal() : null);
+      }
+
       tasks.add(PlanningTask(
         id: idStr,
         title: (map['title']?.toString() ?? '').trim(),
         description: (map['description']?.toString() ?? '').trim(),
         taskType: taskType,
         scheduledStart: start,
+        dueDate: dueParsed,
         assignedTo: (map['assigned_to']?.toString() ?? '').trim().isEmpty
             ? null
             : (map['assigned_to']?.toString() ?? '').trim(),
@@ -106,6 +130,7 @@ List<PlanningTask> _parseTasksForOwner(dynamic res) {
         assignedUserName: null, // Ochrana soukromí: jména personálu nenačítáme.
         apartmentName: aptName.isEmpty ? null : aptName,
         metadata: _parseMetadata(map['metadata']),
+        mediaUrls: _parseMediaUrls(map['media_urls']),
       ));
     } catch (err) {
       if (kDebugMode) {
@@ -122,6 +147,20 @@ Map<String, dynamic>? _parseMetadata(dynamic raw) {
   if (raw is Map<String, dynamic>) return raw;
   if (raw is Map) return Map<String, dynamic>.from(raw);
   return null;
+}
+
+/// Parsuje media_urls (text[]) z PostgreSQL – stejná logika jako TaskRow.
+List<String> _parseMediaUrls(dynamic raw) {
+  if (raw == null) return const [];
+  if (raw is List) {
+    final list = <String>[];
+    for (final e in raw) {
+      final s = e?.toString().trim();
+      if (s != null && s.isNotEmpty) list.add(s);
+    }
+    return list;
+  }
+  return const [];
 }
 
 bool _isDraftStatus(String? status) {

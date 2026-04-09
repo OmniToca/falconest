@@ -28,7 +28,7 @@ class ModuleModel {
   final int sortOrder;
   /// Logické pořadí v menu (1 = Dashboard první, 9 = Automation, 99 = ostatní na konec).
   final int orderIndex;
-  /// Cena modulu (např. měsíční předplatné). Null = nezadáno / zobrazit "—".
+  /// Cena modulu (např. měsíční předplatné). Null = nezadáno / v UI zobrazit common.placeholder_dash.
   final num? price;
   /// 'fixed' | 'per_apartment' | 'per_user' – jak se cena násobí (počet bytů / uživatelů).
   final String pricingType;

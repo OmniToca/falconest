@@ -5,126 +5,81 @@ import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/presentation/widgets/task_guest_cash_summary.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
-import 'package:falconest/features/worker/widgets/task_countdown_timer.dart';
-import 'package:falconest/features/worker/widgets/worker_task_shared_header.dart';
 import 'package:falconest/features/worker/utils/cash_collection_dialog.dart';
 import 'package:falconest/features/worker/widgets/issue_reporter_dialog.dart';
 import 'package:falconest/features/worker/widgets/task_complete_with_photo_section.dart';
+import 'package:falconest/features/worker/widgets/worker_task_shared_header.dart';
 
-/// MVP obrazovka pro úkoly typu Check-in.
-/// Jednoduché zobrazení dat a tlačítko Dokončit.
-class CheckinTaskScreen extends ConsumerWidget {
-  const CheckinTaskScreen({super.key, required this.taskId});
+/// Obsah scrollu pro Check-in – bez Scaffold.
+abstract final class CheckinTaskScreen {
+  CheckinTaskScreen._();
 
-  final String taskId;
+  static const Color backgroundColor = Color(0xFFFFF3E0);
 
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final detailAsync = ref.watch(workerTaskDetailProvider(taskId));
-
-    return detailAsync.when(
-      data: (detail) {
-        if (detail == null) {
-          return Scaffold(
-            body: Center(child: Text('worker.task_detail_not_found'.tr())),
+  static List<Widget> buildAppBarActions(
+    BuildContext context,
+    WidgetRef ref,
+    WorkerTaskDetail detail,
+  ) {
+    return [
+      IconButton(
+        icon: const Icon(Icons.report_problem_outlined),
+        onPressed: () {
+          final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+          if (tenantId == null || tenantId.isEmpty) return;
+          showDialog(
+            context: context,
+            builder: (ctx) => IssueReporterDialog(
+              tenantId: tenantId,
+              apartmentId: detail.apartmentId,
+            ),
           );
-        }
-        return Scaffold(
-          backgroundColor: const Color(0xFFFFF3E0),
-          appBar: AppBar(
-            title: Text(
-              _appBarTitle(detail),
-              style: const TextStyle(color: Colors.black87),
-            ),
-            backgroundColor: Colors.transparent,
-            foregroundColor: Colors.black87,
-            elevation: 0,
-            iconTheme: const IconThemeData(color: Colors.black87),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.report_problem_outlined),
-                onPressed: () {
-                  final tenantId = ref.read(authNotifierProvider).tenantIdForData;
-                  if (tenantId == null || tenantId.isEmpty) return;
-                  showDialog(
-                    context: context,
-                    builder: (ctx) => IssueReporterDialog(
-                      tenantId: tenantId,
-                      apartmentId: detail.apartmentId,
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-          body: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        WorkerTaskSharedHeader(
-                          title: _mainHeading(detail),
-                          scheduledStart: detail.scheduledStart,
-                          apartmentAddress: detail.apartmentAddress,
-                          startedAt: detail.startedAt,
-                          completedAt: detail.completedAt,
-                          estimatedMinutes: parseTaskEstimateMinutes(
-                            detail.description,
-                            detail.metadata,
-                          ),
-                        ),
-                        // PROČ: Kód schránky a kontakt na hosta – check-in agent řeší zpoždění a předání klíčů.
-                        ..._buildKeyboxAndGuestContact(context, detail),
-                        const SizedBox(height: 16),
-                        Text(
-                          detail.description.isNotEmpty ? detail.description : '—',
-                          style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
-                        ),
-                        ..._buildCheckinMetadata(context, ref, detail.metadata ?? {}),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TaskCompleteWithPhotoSection(
-                  taskId: taskId,
-                  detail: detail,
-                  finishKey: 'worker.task_detail_finish',
-                  beforeComplete: (ctx, ref, mediaUrls, {localPhotoPaths}) =>
-                      maybeShowCashCollectionDialog(
-                    ctx,
-                    ref,
-                    detail,
-                    taskId: taskId,
-                    onCompleted: () {
-                      ref.invalidate(workerTaskDetailProvider(taskId));
-                      if (ctx.mounted) ctx.pop();
-                    },
-                    mediaUrls: mediaUrls.isEmpty ? null : mediaUrls,
-                    localPhotoPaths: localPhotoPaths,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-      loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
-      error: (_, _) => Scaffold(
-        body: Center(child: Text('worker.task_detail_not_found'.tr())),
+        },
       ),
-    );
+    ];
   }
 
-  /// Kód schránky, jméno a telefon hosta – check-in agent musí řešit zpoždění.
-  List<Widget> _buildKeyboxAndGuestContact(BuildContext context, dynamic detail) {
+  static BeforeCompleteCallback? beforeComplete(String taskId, WorkerTaskDetail detail) {
+    return (ctx, ref, mediaUrls, {localPhotoPaths}) => maybeShowCashCollectionDialog(
+          ctx,
+          ref,
+          detail,
+          taskId: taskId,
+          onCompleted: () {
+            ref.invalidate(workerTaskDetailProvider(taskId));
+            if (ctx.mounted) ctx.pop();
+          },
+          mediaUrls: mediaUrls.isEmpty ? null : mediaUrls,
+          localPhotoPaths: localPhotoPaths,
+        );
+  }
+
+  static List<Widget> buildScrollChildren(
+    BuildContext context,
+    WidgetRef ref,
+    WorkerTaskDetail detail,
+  ) {
+    return [
+      WorkerTaskAddressContextBar(
+        address: detail.displayAddress,
+        latitude: detail.latitude,
+        longitude: detail.longitude,
+      ),
+      const SizedBox(height: 12),
+      ..._buildKeyboxAndGuestContact(context, detail),
+      const SizedBox(height: 16),
+      Text(
+        detail.description.isNotEmpty ? detail.description : 'common.placeholder_dash'.tr(),
+        style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
+      ),
+      ..._buildCheckinMetadata(context, ref, detail.metadata ?? {}),
+    ];
+  }
+
+  static List<Widget> _buildKeyboxAndGuestContact(BuildContext context, WorkerTaskDetail detail) {
     final widgets = <Widget>[];
     final keybox = detail.keybox?.trim();
     final guestName = detail.guestName?.trim();
@@ -139,7 +94,7 @@ class CheckinTaskScreen extends ConsumerWidget {
     return widgets;
   }
 
-  Widget _buildKeyboxCard(String keybox) {
+  static Widget _buildKeyboxCard(String keybox) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -170,7 +125,7 @@ class CheckinTaskScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildGuestContactCard(BuildContext context, String? guestName, String? guestPhone) {
+  static Widget _buildGuestContactCard(BuildContext context, String? guestName, String? guestPhone) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -240,24 +195,13 @@ class CheckinTaskScreen extends ConsumerWidget {
     );
   }
 
-  static String _appBarTitle(dynamic detail) {
-    final raw = detail.title.isNotEmpty ? detail.title : (detail.apartmentName ?? '—');
-    final base = raw.split(':').first.trim();
-    final ref = detail.referenceNumber?.trim();
-    return (ref != null && ref.isNotEmpty) ? '$base • #$ref' : base;
-  }
-
-  static String _mainHeading(dynamic detail) {
-    final raw = detail.title.isNotEmpty ? detail.title : (detail.apartmentName ?? '—');
-    return raw.contains(':') ? raw.split(':').sublist(1).join(':').trim() : raw;
-  }
-
-  /// Vykreslení metadat pro Check-in: custom_note (instrukce k předání klíčů), banner na peníze, rozpad platby.
-  /// [ref] – pro formatTaskAmount (měna dle tenanta, fallback profil).
-  List<Widget> _buildCheckinMetadata(BuildContext context, WidgetRef ref, Map<String, dynamic> meta) {
+  static List<Widget> _buildCheckinMetadata(
+    BuildContext context,
+    WidgetRef ref,
+    Map<String, dynamic> meta,
+  ) {
     final widgets = <Widget>[];
 
-    // Poznámka (instrukce k předání klíčů).
     final note = meta['custom_note'];
     final noteText = note is String ? note.trim() : (note?.toString().trim() ?? '');
     if (noteText.isNotEmpty) {
@@ -267,17 +211,20 @@ class CheckinTaskScreen extends ConsumerWidget {
       ]);
     }
 
-    // Vykreslení obřího banneru pro výběr hotovosti.
-    final amountRaw = meta['amount_to_collect'];
-    final amount = (amountRaw is num) ? amountRaw.toDouble() : (amountRaw != null ? double.tryParse(amountRaw.toString()) : null);
-    if (amount != null && amount > 0) {
+    final agency = taskMetadataAmountEur(meta, 'amount_to_collect');
+    final transit = taskMetadataAmountEur(meta, 'transit_amount_to_collect');
+    if (agency + transit > 0) {
       widgets.addAll([
         const SizedBox(height: 16),
-        _buildAmountBanner(context, ref, amount),
+        TaskGuestCashSummary(
+          agencyEur: agency,
+          transitEur: transit,
+          formatEurAmount: (e) => formatTaskAmount(context, ref, e),
+          variant: TaskGuestCashSummaryVariant.workerBanner,
+        ),
       ]);
     }
 
-    // Detailní rozpad platby (collection_breakdown) – klíče přeloženy přes admin.task_type_*.
     final breakdown = meta['collection_breakdown'];
     if (breakdown is Map && breakdown.isNotEmpty) {
       widgets.addAll([
@@ -289,7 +236,7 @@ class CheckinTaskScreen extends ConsumerWidget {
     return widgets;
   }
 
-  Widget _buildCustomNoteCard(String text, {IconData icon = Icons.note_outlined}) {
+  static Widget _buildCustomNoteCard(String text, {IconData icon = Icons.note_outlined}) {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -320,34 +267,7 @@ class CheckinTaskScreen extends ConsumerWidget {
     );
   }
 
-  /// Sjednocené formátování přes formatTaskAmount – měna dle tenanta, fallback profil uživatele.
-  Widget _buildAmountBanner(BuildContext context, WidgetRef ref, num amount) {
-    final formatted = formatTaskAmount(context, ref, amount);
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.orange.shade100,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.orange.shade400, width: 2),
-      ),
-      child: Column(
-        children: [
-          Text(
-            'worker.task_amount_to_collect'.tr(),
-            style: TextStyle(fontSize: 16, color: Colors.grey.shade800),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            formatted,
-            style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.orange.shade900),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Sjednocené formátování přes formatTaskAmount – měna dle tenanta, fallback profil uživatele.
-  Widget _buildBreakdownCard(BuildContext context, WidgetRef ref, Map<dynamic, dynamic> map) {
+  static Widget _buildBreakdownCard(BuildContext context, WidgetRef ref, Map<dynamic, dynamic> map) {
     final parts = <Widget>[];
     for (final e in map.entries) {
       final key = e.key.toString().toLowerCase().replaceAll('-', '_');
@@ -387,7 +307,7 @@ class CheckinTaskScreen extends ConsumerWidget {
     );
   }
 
-  String _translateTaskTypeKey(String key) {
+  static String _translateTaskTypeKey(String key) {
     final candidate = 'admin.task_type_$key';
     final translated = candidate.tr();
     return translated == candidate ? 'admin.task_type_other'.tr() : translated;

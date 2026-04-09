@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/admin/models/module_model.dart';
 
 /// Načte VŠECHNY moduly z tabulky [modules] – žádný hardcoded seznam.
@@ -18,7 +19,8 @@ final allModulesProvider = FutureProvider<List<ModuleModel>>((ref) async {
         .map((e) => ModuleModel.fromJson(e as Map<String, dynamic>))
         .where((m) => m.key.isNotEmpty && m.id.isNotEmpty)
         .toList();
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('allModulesProvider: načtení katalogu modules selhalo', e, st);
     return [];
   }
 });
@@ -53,10 +55,8 @@ final tenantModuleCancelAtPeriodEndIdsProvider =
 /// trial_ends_at v budoucnosti nebo null – modul je aktivní POUZE pokud splňuje všechny podmínky.
 Future<Set<String>> _fetchActiveModuleKeysForTenant(String tenantId) async {
   try {
-    final res = await SupabaseService.client
-        .from('tenant_modules')
+    final res = await SupabaseService.safeFrom('tenant_modules', tenantId)
         .select('module_id, modules(key), valid_until, trial_ends_at')
-        .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null);
     final list = res as List;
     final now = DateTime.now().toUtc();
@@ -72,7 +72,8 @@ Future<Set<String>> _fetchActiveModuleKeysForTenant(String tenantId) async {
       if (key != null && key.isNotEmpty) keys.add(key);
     }
     return keys;
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('_fetchActiveModuleKeysForTenant selhal', e, st);
     return {};
   }
 }
@@ -100,10 +101,8 @@ DateTime? _parseOptionalDateTime(Object? value) {
 /// Moduly s cancel_at_period_end = true zůstávají v množině (stále aktivní do konce období).
 Future<Set<String>> _fetchActiveModuleIdsForTenant(String tenantId) async {
   try {
-    final res = await SupabaseService.client
-        .from('tenant_modules')
+    final res = await SupabaseService.safeFrom('tenant_modules', tenantId)
         .select('module_id, valid_until, trial_ends_at')
-        .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null);
     final list = res as List;
     final now = DateTime.now().toUtc();
@@ -118,7 +117,8 @@ Future<Set<String>> _fetchActiveModuleIdsForTenant(String tenantId) async {
       if (id != null && id.isNotEmpty) ids.add(id);
     }
     return ids;
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('_fetchActiveModuleIdsForTenant selhal', e, st);
     return {};
   }
 }
@@ -126,10 +126,8 @@ Future<Set<String>> _fetchActiveModuleIdsForTenant(String tenantId) async {
 /// Načte množinu UUID modulů s cancel_at_period_end = true (odložené zrušení na konec období).
 Future<Set<String>> _fetchCancelAtPeriodEndModuleIdsForTenant(String tenantId) async {
   try {
-    final res = await SupabaseService.client
-        .from('tenant_modules')
+    final res = await SupabaseService.safeFrom('tenant_modules', tenantId)
         .select('module_id, cancel_at_period_end, valid_until, trial_ends_at')
-        .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
         .eq('cancel_at_period_end', true);
     final list = res as List;
@@ -143,7 +141,8 @@ Future<Set<String>> _fetchCancelAtPeriodEndModuleIdsForTenant(String tenantId) a
       if (id != null && id.isNotEmpty) ids.add(id);
     }
     return ids;
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('_fetchCancelAtPeriodEndModuleIdsForTenant selhal', e, st);
     return {};
   }
 }

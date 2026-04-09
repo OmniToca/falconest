@@ -4,23 +4,22 @@ import 'package:falconest/features/communication/models/message_template_row.dar
 /// Repozitář pro CRUD operace nad šablonami zpráv (tenant_message_templates).
 ///
 /// VŠECHNY dotazy jsou striktně vázány na tenant_id – multi-tenant izolace.
+/// Frontend Firewall: [SupabaseService.safeFrom] vynutí tenant i pro Super Admina.
 /// Soft delete: místo DELETE se volá UPDATE deleted_at = now().
 class MessageTemplatesRepository {
   MessageTemplatesRepository._();
 
   /// Načte všechny aktivní šablony tenanta (deleted_at IS NULL).
-  /// Seřazeno podle order_index, pak language_code, pak name.
-  /// Limit 500 jako pojistka proti přetečení paměti u velkých tenantů.
+  /// Seřazeno podle order_index, pak name.
   static Future<List<MessageTemplateRow>> fetchAll(String tenantId) async {
     if (tenantId.isEmpty) return [];
 
-    final res = await SupabaseService.client
-        .from('tenant_message_templates')
-        .select()
-        .eq('tenant_id', tenantId)
+    final res = await SupabaseService.safeFrom('tenant_message_templates', tenantId)
+        .select(
+          'id, tenant_id, key, name, channel, email_subject, translations, trigger_context, order_index, created_at, deleted_at',
+        )
         .isFilter('deleted_at', null)
         .order('order_index')
-        .order('language_code', ascending: true)
         .order('name')
         .limit(500);
 
@@ -30,15 +29,13 @@ class MessageTemplatesRepository {
   }
 
   /// Vytvoří novou šablonu. Klíč se vygeneruje z názvu + časové razítko pro jednoznačnost.
-  ///
-  /// PROČ: key musí být unikátní v rámci tenanta; slug z názvu + suffix zajišťuje
-  /// čitelnost v DB a unikátnost. tenant_id se předává z auth – RLS blokuje inserty jiným.
   static Future<MessageTemplateRow> createTemplate(
     String tenantId, {
     required String name,
-    required String body,
+    required String channel,
+    String? emailSubject,
+    required MessageTemplateTranslations translations,
     String? triggerContext,
-    String? languageCode,
     int orderIndex = 0,
   }) async {
     if (tenantId.isEmpty) {
@@ -48,22 +45,20 @@ class MessageTemplatesRepository {
     final key = _generateKey(name, triggerContext);
 
     final map = <String, dynamic>{
-      'tenant_id': tenantId,
       'key': key,
       'name': name.trim(),
-      'body': body.trim(),
-      'channel': 'whatsapp_link',
+      'channel': channel.trim().toLowerCase(),
+      'translations': translations.toJson(),
       'order_index': orderIndex,
     };
+    if (emailSubject != null && emailSubject.trim().isNotEmpty) {
+      map['email_subject'] = emailSubject.trim();
+    }
     if (triggerContext != null && triggerContext.trim().isNotEmpty) {
       map['trigger_context'] = triggerContext.trim();
     }
-    if (languageCode != null && languageCode.trim().isNotEmpty) {
-      map['language_code'] = languageCode.trim();
-    }
 
-    final res = await SupabaseService.client
-        .from('tenant_message_templates')
+    final res = await SupabaseService.safeFrom('tenant_message_templates', tenantId)
         .insert(map)
         .select()
         .single();
@@ -89,34 +84,27 @@ class MessageTemplatesRepository {
     final map = <String, dynamic>{
       'key': template.key.trim(),
       'name': template.name.trim(),
-      'body': template.body.trim(),
       'channel': template.channel,
+      'email_subject': template.emailSubject?.trim(),
+      'translations': template.translations.toJson(),
       'order_index': template.orderIndex,
       'trigger_context': template.triggerContext?.trim(),
-      'language_code': template.languageCode?.trim(),
     };
 
-    await SupabaseService.client
-        .from('tenant_message_templates')
+    await SupabaseService.safeFrom('tenant_message_templates', tenantId)
         .update(map)
-        .eq('id', template.id)
-        .eq('tenant_id', tenantId);
+        .eq('id', template.id);
   }
 
-  /// Soft delete – nastaví deleted_at = now(). Záznam zůstane v DB, ale nebude se zobrazovat.
-  ///
-  /// PROČ: Zachovává historická data, RLS i sync na mobil; Worker nevidí smazané šablony.
+  /// Soft delete – nastaví deleted_at = now().
   static Future<void> deleteTemplate(String tenantId, String templateId) async {
     if (tenantId.isEmpty || templateId.isEmpty) return;
 
-    await SupabaseService.client
-        .from('tenant_message_templates')
-        .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
-        .eq('id', templateId)
-        .eq('tenant_id', tenantId);
+    await SupabaseService.safeFrom('tenant_message_templates', tenantId).update({
+      'deleted_at': DateTime.now().toUtc().toIso8601String(),
+    }).eq('id', templateId);
   }
 
-  /// Vygeneruje unikátní key z názvu a trigger kontextu.
   static String _generateKey(String name, String? triggerContext) {
     final base = name
         .trim()

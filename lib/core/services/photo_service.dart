@@ -5,6 +5,8 @@ import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'package:falconest/core/utils/app_logger.dart';
+
 /// Maximální povolená velikost komprimované fotky v bytech (200 KB).
 const int _maxPhotoSizeBytes = 200 * 1024;
 
@@ -53,7 +55,9 @@ class PhotoService {
     // 4. Smazání původního dočasného souboru z image_picker
     try {
       await sourceFile.delete();
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('PhotoService: smazání dočasného souboru po kompresi selhalo', e, st);
+    }
 
     return resultPath;
   }

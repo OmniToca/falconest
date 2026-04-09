@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,9 +9,11 @@ import 'package:falconest/features/admin/admin_layout.dart';
 import 'package:falconest/features/admin/admin_reservations_screen.dart';
 // Sdílená komponenta pro zobrazení financí a poznámek z rezervace je v dialogu úpravy úkolu (AdminTasksScreen).
 import 'package:falconest/features/admin/admin_tasks_screen.dart';
+import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/models/task_category_model.dart';
 import 'package:falconest/features/calendar/providers/planning_calendar_provider.dart';
+import 'package:falconest/features/calendar/widgets/planning_grid_slot_widgets.dart';
 import 'package:falconest/features/admin/providers/task_categories_provider.dart';
 import 'package:falconest/utils/task_visuals.dart';
 import 'package:falconest/widgets/task_legend.dart';
@@ -20,8 +25,9 @@ enum _CardVisualState { critical, conflict, normal }
 const int _gridStartHour = 0;
 const int _gridEndHour = 24;
 const int _slotMinutes = 15;
-/// Výška jednoho 15min slotu – kompaktní, méně scrollování.
-const double _slotHeight = 18;
+
+/// Výška jednoho 15min slotu – sdílená s [kPlanningGridSlotHeight] (const pozadí mřížky).
+const double _slotHeight = kPlanningGridSlotHeight;
 const double _timeColumnWidth = 48;
 const double _dayHeaderHeight = 32;
 
@@ -45,14 +51,22 @@ class PlanningCalendarScreen extends ConsumerStatefulWidget {
   const PlanningCalendarScreen({super.key});
 
   @override
-  ConsumerState<PlanningCalendarScreen> createState() => _PlanningCalendarScreenState();
+  ConsumerState<PlanningCalendarScreen> createState() =>
+      _PlanningCalendarScreenState();
 }
 
-class _PlanningCalendarScreenState extends ConsumerState<PlanningCalendarScreen> {
+class _PlanningCalendarScreenState
+    extends ConsumerState<PlanningCalendarScreen> {
   late DateTime _weekStart;
   String? _selectedFilterId;
   final ScrollController _verticalScrollController = ScrollController();
   final TextEditingController _searchController = TextEditingController();
+
+  /// PROČ debounce: každý znak dřív spustil [setState] a přestavěl stovky buněk mřížky.
+  Timer? _searchDebounce;
+
+  /// Hodnota předávaná do mřížky až po 300 ms klidu v poli vyhledávání.
+  String _debouncedSearchQuery = '';
 
   @override
   void initState() {
@@ -62,9 +76,21 @@ class _PlanningCalendarScreenState extends ConsumerState<PlanningCalendarScreen>
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _verticalScrollController.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  /// Naplánuje aktualizaci filtru vyhledávání po 300 ms bez dalšího vstupu.
+  void _onSearchTextChanged() {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      final q = _searchController.text.trim();
+      if (q == _debouncedSearchQuery) return;
+      setState(() => _debouncedSearchQuery = q);
+    });
   }
 
   static DateTime _getMonday(DateTime date) {
@@ -72,8 +98,10 @@ class _PlanningCalendarScreenState extends ConsumerState<PlanningCalendarScreen>
     return d.subtract(Duration(days: d.weekday - 1));
   }
 
-  void _prevWeek() => setState(() => _weekStart = _weekStart.subtract(const Duration(days: 7)));
-  void _nextWeek() => setState(() => _weekStart = _weekStart.add(const Duration(days: 7)));
+  void _prevWeek() =>
+      setState(() => _weekStart = _weekStart.subtract(const Duration(days: 7)));
+  void _nextWeek() =>
+      setState(() => _weekStart = _weekStart.add(const Duration(days: 7)));
 
   /// Přepne na aktuální týden a posune scroll na aktuální čas (nebo 08:00 když je před 08:00).
   void _jumpToToday() {
@@ -88,33 +116,78 @@ class _PlanningCalendarScreenState extends ConsumerState<PlanningCalendarScreen>
     });
   }
 
-  void _openEditTask(PlanningTask task) {
-    // PRAVIDLO: Při úpravě existujícího úkolu vždy předáváme čas Z ÚKOLU (task.scheduledStart).
-    // Nikdy nepoužíváme čas z tapu/pozice – kalendář nemá CalendarTapDetails, tap je vždy na kartu úkolu.
-    // Předání zaokrouhleného času nebo details.date by způsobilo „phantom time shift“ při uložení.
-    final taskRow = task.toTaskRow(roundedDueDate: task.scheduledStart);
-    AdminTasksScreen.showEditTaskDialog(
-      context,
-      ref,
-      taskRow,
-      onReservationTap: taskRow.reservationId != null && taskRow.reservationId!.isNotEmpty
-          ? (id) => _navigateToReservation(context, ref, id)
-          : null,
-      onSaved: () {
-        ref.invalidate(planningCalendarAllTasksProvider);
-        ref.invalidate(planningCalendarDataProvider);
-      },
+  Future<void> _openEditTask(PlanningTask task) async {
+    // PROČ: Kalendář používá odlehčený PlanningTask. Pro editaci musíme vždy načíst plný TaskRow,
+    // jinak chybí service_id/reservation_id/client_id a dialog zobrazuje nekompletní data.
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const Center(child: CircularProgressIndicator()),
     );
+
+    try {
+      final fullTaskRow = await ref.read(taskByIdProvider(task.id).future);
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+
+      if (fullTaskRow == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('task_detail.not_found'.tr()),
+            backgroundColor: Colors.red.shade700,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      AdminTasksScreen.showEditTaskDialog(
+        context,
+        ref,
+        fullTaskRow,
+        onReservationTap:
+            fullTaskRow.reservationId != null &&
+                fullTaskRow.reservationId!.isNotEmpty
+            ? (id) => _navigateToReservation(context, ref, id)
+            : null,
+        onSaved: () {
+          ref.invalidate(adminTasksProvider);
+          ref.invalidate(adminTasksStreamProvider);
+          invalidatePlanningCalendarCaches(ref);
+        },
+      );
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('common.generic_error_user_friendly'.tr()),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   /// Zavře dialog úkolu, přepne na záložku Rezervace a otevře detail dané rezervace.
-  void _navigateToReservation(BuildContext context, WidgetRef ref, String reservationId) {
+  void _navigateToReservation(
+    BuildContext context,
+    WidgetRef ref,
+    String reservationId,
+  ) {
     Navigator.of(context).pop();
     final reservations = ref.read(adminReservationsProvider).valueOrNull ?? [];
-    final reservation = reservations.where((r) => r.id == reservationId).firstOrNull;
+    final reservation = reservations
+        .where((r) => r.id == reservationId)
+        .firstOrNull;
     if (reservation != null) {
       AdminTabScope.of(context)?.call(adminTabIndexReservations);
-      AdminReservationsScreen.showEditReservationDialog(context, ref, reservation);
+      AdminReservationsScreen.showEditReservationDialog(
+        context,
+        ref,
+        reservation,
+      );
     }
   }
 
@@ -137,14 +210,14 @@ class _PlanningCalendarScreenState extends ConsumerState<PlanningCalendarScreen>
                 Text(
                   'planning_calendar.title'.tr(),
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 const SizedBox(width: 32),
                 Expanded(
                   child: TextField(
                     controller: _searchController,
-                    onChanged: (_) => setState(() {}),
+                    onChanged: (_) => _onSearchTextChanged(),
                     decoration: InputDecoration(
                       hintText: 'admin.tasks_search_hint'.tr(),
                       prefixIcon: const Icon(Icons.search),
@@ -185,10 +258,10 @@ class _PlanningCalendarScreenState extends ConsumerState<PlanningCalendarScreen>
                     Text(
                       '${dateFormat.format(_weekStart)} – ${dateFormat.format(_weekStart.add(const Duration(days: 6)))}',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w600,
-                            color: Colors.black87,
-                            letterSpacing: 0.2,
-                          ),
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black87,
+                        letterSpacing: 0.2,
+                      ),
                     ),
                     const SizedBox(width: 12),
                     IconButton.filled(
@@ -204,7 +277,10 @@ class _PlanningCalendarScreenState extends ConsumerState<PlanningCalendarScreen>
                     OutlinedButton(
                       onPressed: _jumpToToday,
                       style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 10,
+                        ),
                         foregroundColor: Colors.grey.shade800,
                         side: BorderSide(color: Colors.grey.shade400),
                       ),
@@ -217,7 +293,8 @@ class _PlanningCalendarScreenState extends ConsumerState<PlanningCalendarScreen>
                         child: _FilterDropdown(
                           resources: data.resources,
                           selectedId: _selectedFilterId,
-                          onChanged: (id) => setState(() => _selectedFilterId = id),
+                          onChanged: (id) =>
+                              setState(() => _selectedFilterId = id),
                         ),
                       ),
                       loading: () => const SizedBox(width: 160, height: 40),
@@ -227,9 +304,7 @@ class _PlanningCalendarScreenState extends ConsumerState<PlanningCalendarScreen>
                 ),
                 const SizedBox(width: 24),
                 // Pravé křídlo: legenda scrolluje horizontálně, nezalamuje se.
-                Expanded(
-                  child: TaskLegend(scrollHorizontally: true),
-                ),
+                Expanded(child: TaskLegend(scrollHorizontally: true)),
               ],
             ),
           ),
@@ -243,7 +318,10 @@ class _PlanningCalendarScreenState extends ConsumerState<PlanningCalendarScreen>
                 builder: (context, constraints) {
                   final w = constraints.maxWidth;
                   final h = constraints.maxHeight;
-                  final dayColumnWidth = ((w - _timeColumnWidth) / 7).clamp(80.0, double.infinity);
+                  final dayColumnWidth = ((w - _timeColumnWidth) / 7).clamp(
+                    80.0,
+                    double.infinity,
+                  );
                   final totalWidth = _timeColumnWidth + 7 * dayColumnWidth;
                   return SizedBox(
                     width: w,
@@ -275,18 +353,27 @@ class _PlanningCalendarScreenState extends ConsumerState<PlanningCalendarScreen>
                               data: (data) => _WeekGridScrollBody(
                                 weekStart: _weekStart,
                                 data: data,
-                                categoriesByCode: ref.watch(taskCategoriesProvider).valueOrNull ?? {},
+                                categoriesByCode:
+                                    ref
+                                        .watch(taskCategoriesProvider)
+                                        .valueOrNull ??
+                                    {},
                                 selectedFilterId: _selectedFilterId,
-                                searchQuery: _searchController.text.trim(),
+                                searchQuery: _debouncedSearchQuery,
                                 onTaskTap: _openEditTask,
                                 dayColumnWidth: dayColumnWidth,
                                 totalWidth: totalWidth,
-                                verticalScrollController: _verticalScrollController,
+                                verticalScrollController:
+                                    _verticalScrollController,
                               ),
-                              loading: () => const Center(child: CircularProgressIndicator()),
+                              loading: () => const Center(
+                                child: CircularProgressIndicator(),
+                              ),
                               error: (e, _) => Center(
                                 child: Text(
-                                  'planning_calendar.error'.tr(namedArgs: {'error': '$e'}),
+                                  'planning_calendar.error'.tr(
+                                    namedArgs: {'error': '$e'},
+                                  ),
                                 ),
                               ),
                             ),
@@ -346,10 +433,12 @@ class _FilterDropdown extends StatelessWidget {
             ),
             ...resources
                 .where((r) => r.id != kUnassignedResourceId)
-                .map((r) => DropdownMenuItem<String?>(
-                      value: r.id,
-                      child: Text(r.displayName),
-                    )),
+                .map(
+                  (r) => DropdownMenuItem<String?>(
+                    value: r.id,
+                    child: Text(r.displayName),
+                  ),
+                ),
           ],
           onChanged: onChanged,
         ),
@@ -372,9 +461,7 @@ class _DayHeaderRow extends StatelessWidget {
 
   bool _isToday(DateTime day) {
     final now = DateTime.now();
-    return day.year == now.year &&
-        day.month == now.month &&
-        day.day == now.day;
+    return day.year == now.year && day.month == now.month && day.day == now.day;
   }
 
   @override
@@ -501,7 +588,8 @@ class _WeekGridScrollBodyState extends State<_WeekGridScrollBody> {
       if (_initialScrollDone) return;
       if (!widget.verticalScrollController.hasClients) return;
       final offset = 8 * _slotsPerHour * _slotHeight;
-      final maxExtent = widget.verticalScrollController.position.maxScrollExtent;
+      final maxExtent =
+          widget.verticalScrollController.position.maxScrollExtent;
       widget.verticalScrollController.jumpTo(offset.clamp(0.0, maxExtent));
       if (mounted) setState(() => _initialScrollDone = true);
     });
@@ -510,7 +598,9 @@ class _WeekGridScrollBodyState extends State<_WeekGridScrollBody> {
   List<PlanningTask> _filteredTasks() {
     var list = widget.data.tasks;
     if (widget.selectedFilterId != null) {
-      list = list.where((t) => t.resourceId == widget.selectedFilterId).toList();
+      list = list
+          .where((t) => t.resourceId == widget.selectedFilterId)
+          .toList();
     }
     if (widget.searchQuery.isEmpty) return list;
     final q = widget.searchQuery.toLowerCase();
@@ -524,7 +614,9 @@ class _WeekGridScrollBodyState extends State<_WeekGridScrollBody> {
 
   _CardVisualState _visualState(PlanningTask task) {
     if (task.assignedTo == null) return _CardVisualState.critical;
-    if (widget.data.conflictIds.contains(task.id)) return _CardVisualState.conflict;
+    if (widget.data.conflictIds.contains(task.id)) {
+      return _CardVisualState.conflict;
+    }
     return _CardVisualState.normal;
   }
 
@@ -538,7 +630,9 @@ class _WeekGridScrollBodyState extends State<_WeekGridScrollBody> {
       case _CardVisualState.normal:
         return TaskVisuals.getBackgroundColor(
           task.taskType,
-          categoriesByCode: widget.categoriesByCode.isNotEmpty ? widget.categoriesByCode : null,
+          categoriesByCode: widget.categoriesByCode.isNotEmpty
+              ? widget.categoriesByCode
+              : null,
         );
     }
   }
@@ -553,7 +647,9 @@ class _WeekGridScrollBodyState extends State<_WeekGridScrollBody> {
       case _CardVisualState.normal:
         return TaskVisuals.getBorderColor(
           task.taskType,
-          categoriesByCode: widget.categoriesByCode.isNotEmpty ? widget.categoriesByCode : null,
+          categoriesByCode: widget.categoriesByCode.isNotEmpty
+              ? widget.categoriesByCode
+              : null,
         );
     }
   }
@@ -562,7 +658,11 @@ class _WeekGridScrollBodyState extends State<_WeekGridScrollBody> {
   Widget _buildCurrentTimeIndicator(double gridHeight) {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
-    final weekStartNorm = DateTime(widget.weekStart.year, widget.weekStart.month, widget.weekStart.day);
+    final weekStartNorm = DateTime(
+      widget.weekStart.year,
+      widget.weekStart.month,
+      widget.weekStart.day,
+    );
     final dayIndex = today.difference(weekStartNorm).inDays;
     if (dayIndex < 0 || dayIndex > 6) return const SizedBox.shrink();
     final minutesFromMidnight = now.hour * 60 + now.minute;
@@ -573,18 +673,18 @@ class _WeekGridScrollBodyState extends State<_WeekGridScrollBody> {
       top: top,
       width: widget.dayColumnWidth,
       height: 2,
-      child: Container(
-        color: Colors.red,
-        child: const SizedBox.expand(),
-      ),
+      child: Container(color: Colors.red, child: const SizedBox.expand()),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final tasks = _filteredTasks();
-    final processed = getProcessedTasksForWeek(tasks, widget.weekStart, _gridStartHour);
-    final lineColor = Colors.grey.withValues(alpha: 0.25);
+    final processed = getProcessedTasksForWeek(
+      tasks,
+      widget.weekStart,
+      _gridStartHour,
+    );
     final gridHeight = totalGridHeight(_slotHeight);
 
     return SingleChildScrollView(
@@ -605,29 +705,13 @@ class _WeekGridScrollBodyState extends State<_WeekGridScrollBody> {
                     width: _timeColumnWidth,
                     height: gridHeight,
                     child: Column(
-                      children: List.generate(_totalSlots, (i) {
-                        final totalMinutes = _gridStartHour * 60 + i * _slotMinutes;
+                      children: List<Widget>.generate(_totalSlots, (i) {
+                        final totalMinutes =
+                            _gridStartHour * 60 + i * _slotMinutes;
                         final h = totalMinutes ~/ 60;
                         final m = totalMinutes % 60;
-                        final showLabel = m == 0;
-                        return SizedBox(
-                          height: _slotHeight,
-                          child: showLabel
-                              ? Align(
-                                  alignment: Alignment.topRight,
-                                  child: Padding(
-                                    padding: const EdgeInsets.only(right: 4, top: 0),
-                                    child: Text(
-                                      '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}',
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: Colors.grey.shade600,
-                                      ),
-                                    ),
-                                  ),
-                                )
-                              : null,
-                        );
+                        if (m != 0) return const PlanningGridTimeEmptySlot();
+                        return PlanningGridTimeLabeledSlot(hour: h, minute: m);
                       }),
                     ),
                   ),
@@ -635,32 +719,13 @@ class _WeekGridScrollBodyState extends State<_WeekGridScrollBody> {
                     width: 7 * widget.dayColumnWidth,
                     height: gridHeight,
                     child: Row(
-                      children: List.generate(7, (dayIndex) {
-                        return Container(
+                      children: List<Widget>.generate(
+                        7,
+                        (_) => PlanningGridDayColumn(
                           width: widget.dayColumnWidth,
-                          decoration: BoxDecoration(
-                            border: Border(
-                              right: BorderSide(color: lineColor),
-                            ),
-                          ),
-                          child: Column(
-                            children: List.generate(
-                              _totalSlots,
-                              (_) => Container(
-                                height: _slotHeight,
-                                decoration: BoxDecoration(
-                                  border: Border(
-                                    bottom: BorderSide(
-                                      color: lineColor.withValues(alpha: 0.6),
-                                      width: 0.5,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        );
-                      }),
+                          slotCount: _totalSlots,
+                        ),
+                      ),
                     ),
                   ),
                 ],
@@ -669,22 +734,30 @@ class _WeekGridScrollBodyState extends State<_WeekGridScrollBody> {
                 final state = _visualState(p.task);
                 final backgroundColor = _backgroundColorFor(state, p.task);
                 final borderColor = _borderColorFor(state, p.task);
-                final startMinutes = p.task.scheduledStart.hour * 60 +
+                final startMinutes =
+                    p.task.scheduledStart.hour * 60 +
                     p.task.scheduledStart.minute -
                     _gridStartHour * 60;
                 if (startMinutes < 0) return const SizedBox.shrink();
-                final durationMinutes = parseDurationMinutesFromDescription(p.task.description);
+                final durationMinutes = planningTaskBlockDurationMinutes(
+                  p.task,
+                );
                 final top = (startMinutes / _slotMinutes) * _slotHeight + 1;
-                final height = (durationMinutes / _slotMinutes) * _slotHeight - 2;
+                final height =
+                    (durationMinutes / _slotMinutes) * _slotHeight - 2;
                 if (height < 20) return const SizedBox.shrink();
                 final cellW = widget.dayColumnWidth - 2;
-                final left = _timeColumnWidth +
+                final left =
+                    _timeColumnWidth +
                     p.dayIndex * widget.dayColumnWidth +
                     1 +
                     (p.colIndex / p.totalCols) * cellW;
                 final width = (1 / p.totalCols) * cellW;
 
-                final category = TaskVisuals.resolveCategory(p.task.taskType, widget.categoriesByCode);
+                final category = TaskVisuals.resolveCategory(
+                  p.task.taskType,
+                  widget.categoriesByCode,
+                );
                 return Positioned(
                   left: left,
                   top: top,
@@ -717,6 +790,11 @@ class _WeekGridScrollBodyState extends State<_WeekGridScrollBody> {
 }
 
 /// Karta úkolu v mřížce – čistý design: ikona + název kategorie, apartmán, přiřazení.
+///
+/// PROČ ochrana layoutu: u krátkých časových slotů je výška z [Positioned] malá; původní
+/// [Column] s [mainAxisSize.min] měla intrinsickou výšku větší než constraint → RenderFlex overflow.
+/// Řešení: [clipBehavior] + [ClipRect], prahy podle dostupné výšky (mikro/kompaktní/plná karta)
+/// a u plné verze [FittedBox.scaleDown] pro druhé dva řádky, aby se vešly bez přetékání.
 /// Category-driven UI: nepoužíváme task.title jako hlavní text, ale i18n název kategorie.
 class _TaskCard extends StatelessWidget {
   const _TaskCard({
@@ -738,89 +816,187 @@ class _TaskCard extends StatelessWidget {
   static const Color _textPrimary = Color(0xFF1A1A1A);
   static const Color _textSecondary = Color(0xFF6B6B6B);
 
+  /// Pod tuto výšku (po vnitřním paddingu) kreslíme jen ikonu – detail by stejně nebyl čitelný.
+  static const double _microCardMaxHeight = 45;
+
+  /// Mezi mikro a plnou kartou: jeden řádek ikona + kategorie (bez apartmánu a assignee).
+  static const double _compactCardMaxHeight = 58;
+
   @override
   Widget build(BuildContext context) {
-    final rawCode = category?.code ?? (task.taskType.trim().isEmpty ? 'other' : task.taskType.toLowerCase().trim());
+    final rawCode =
+        category?.code ??
+        (task.taskType.trim().isEmpty
+            ? 'other'
+            : task.taskType.toLowerCase().trim());
     // Normalizace: DB/formulář může mít "check-in", JSON má "check_in" – pomlčka -> podtržítko.
     final code = rawCode.replaceAll('-', '_');
     final categoryLabel = 'admin.task_type_$code'.tr();
     final apartmentLabel = task.apartmentName ?? task.title;
-    final assigneeLabel = task.assignedUserName != null &&
+    final assigneeLabel =
+        task.assignedUserName != null &&
             (task.assignedUserName!.trim().isNotEmpty)
         ? task.assignedUserName!
         : 'planning_calendar.unassigned_row'.tr();
 
+    final taskIcon = TaskVisuals.getIcon(
+      task.taskType,
+      categoriesByCode: categoriesByCode.isNotEmpty ? categoriesByCode : null,
+    );
+    final tooltipLines = <String>[
+      categoryLabel,
+      apartmentLabel,
+      assigneeLabel,
+    ].join('\n');
+
     return Padding(
       padding: const EdgeInsets.all(1),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(8),
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
-              color: backgroundColor,
-              border: Border(
-                left: BorderSide(color: borderColor, width: 4),
+      child: Tooltip(
+        message: tooltipLines,
+        waitDuration: const Duration(milliseconds: 500),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                color: backgroundColor,
+                border: Border(left: BorderSide(color: borderColor, width: 4)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.08),
+                    blurRadius: 4,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
               ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.08),
-                  blurRadius: 4,
-                  offset: const Offset(0, 1),
-                ),
-              ],
-            ),
-            padding: const EdgeInsets.all(6),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      TaskVisuals.getIcon(task.taskType, categoriesByCode: categoriesByCode.isNotEmpty ? categoriesByCode : null),
-                      size: 12,
-                      color: _textPrimary,
-                    ),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: Text(
-                        categoryLabel,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                          color: _textPrimary,
+              clipBehavior: Clip.hardEdge,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final maxH = constraints.maxHeight;
+                  final maxW = constraints.maxWidth;
+                  final pad = maxH < _microCardMaxHeight ? 3.0 : 6.0;
+
+                  if (maxH < _microCardMaxHeight) {
+                    final iconSize = math.max(
+                      10.0,
+                      math.min(16.0, maxH - pad * 2),
+                    );
+                    return Padding(
+                      padding: EdgeInsets.all(pad),
+                      child: ClipRect(
+                        child: Center(
+                          child: Icon(
+                            taskIcon,
+                            size: iconSize,
+                            color: _textPrimary,
+                          ),
                         ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                      ),
+                    );
+                  }
+
+                  if (maxH < _compactCardMaxHeight) {
+                    return Padding(
+                      padding: EdgeInsets.all(pad),
+                      child: ClipRect(
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Icon(taskIcon, size: 11, color: _textPrimary),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                categoryLabel,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: _textPrimary,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }
+
+                  return Padding(
+                    padding: EdgeInsets.all(pad),
+                    child: ClipRect(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.max,
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              Icon(taskIcon, size: 12, color: _textPrimary),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  categoryLabel,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    color: _textPrimary,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          Expanded(
+                            child: ClipRect(
+                              child: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                alignment: Alignment.topLeft,
+                                child: ConstrainedBox(
+                                  constraints: BoxConstraints(
+                                    maxWidth: math.max(0, maxW - pad * 2),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        apartmentLabel,
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          color: _textSecondary,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      Text(
+                                        assigneeLabel,
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          fontStyle: FontStyle.italic,
+                                          color: _textSecondary,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  apartmentLabel,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: _textSecondary,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  assigneeLabel,
-                  style: const TextStyle(
-                    fontSize: 10,
-                    fontStyle: FontStyle.italic,
-                    color: _textSecondary,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
+                  );
+                },
+              ),
             ),
           ),
         ),

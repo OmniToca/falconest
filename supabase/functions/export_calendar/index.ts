@@ -10,6 +10,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
+import { checkRateLimit } from "../_shared/rate_limiter.ts"
 
 /** CORS pro případné testování z prohlížeče (HA samotné CORS nepotřebuje). */
 const corsHeaders: Record<string, string> = {
@@ -53,6 +54,10 @@ async function sha256Hex(plain: string): Promise<string> {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("")
 }
+
+/** Max. požadavků na token za minutu (stejné chování jako před extrakcí do _shared). */
+const RATE_LIMIT_PER_MINUTE = 20
+const RATE_WINDOW_MS = 60_000
 
 // -----------------------------------------------------------------------------
 // Escapování hodnot vlastností iCalendar (SUMMARY, LOCATION, DESCRIPTION) dle RFC 5545
@@ -306,6 +311,22 @@ Deno.serve(async (req: Request) => {
     })
   }
 
+  const tokenHash = await sha256Hex(exportToken)
+
+  if (!checkRateLimit(tokenHash, RATE_LIMIT_PER_MINUTE, RATE_WINDOW_MS)) {
+    return new Response(
+      "Příliš mnoho požadavků na tento odkaz. Zkuste to znovu za minutu.",
+      {
+        status: 429,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "text/plain; charset=utf-8",
+          "Retry-After": "60",
+        },
+      },
+    )
+  }
+
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? ""
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
 
@@ -321,8 +342,6 @@ Deno.serve(async (req: Request) => {
   const supabase = createClient(supabaseUrl, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   })
-
-  const tokenHash = await sha256Hex(exportToken)
 
   const { data, error } = await supabase.rpc("get_calendar_feed_data", {
     p_token_hash: tokenHash,

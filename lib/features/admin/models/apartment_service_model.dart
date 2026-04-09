@@ -2,7 +2,10 @@
 ///
 /// [customPrice] a [customDescription] přepisují výchozí hodnoty z tenant_services.
 /// [requiresPhoto] – null = dědit z katalogu, true/false = override pro tento byt.
+/// [checklistTemplateId] – volitelná šablona checklistu pro tuto službu u tohoto bytu (DB: checklist_template_id).
 /// Ceny v DB jsou v EUR; v UI se přepočítávají podle preferované měny uživatele.
+///
+/// POZN.: Projekt zde nepoužívá balíček Freezed; mapování z/do Supabase je ruční v [fromJson] a v repozitáři.
 class ApartmentServiceRow {
   const ApartmentServiceRow({
     required this.id,
@@ -16,6 +19,7 @@ class ApartmentServiceRow {
     this.isMandatory = false,
     this.payerType = 'guest',
     this.requiresPhoto,
+    this.checklistTemplateId,
   });
 
   final String id;
@@ -32,6 +36,8 @@ class ApartmentServiceRow {
   final String payerType;
   /// Override focení: null = dědit z katalogu, true = vždy vyžadovat, false = nevyžadovat.
   final bool? requiresPhoto;
+  /// Šablona checklistu pro tuto službu v tomto apartmánu; null = nepřiřazeno.
+  final String? checklistTemplateId;
 
   factory ApartmentServiceRow.fromJson(Map<String, dynamic> json) {
     final rawPrice = json['custom_price'];
@@ -75,6 +81,12 @@ class ApartmentServiceRow {
         return (v == 'owner' || v == 'guest') ? v! : 'guest';
       }(),
       requiresPhoto: _parseBoolNullable(json['requires_photo']),
+      checklistTemplateId: () {
+        final v = json['checklist_template_id'];
+        if (v == null) return null;
+        final s = v.toString().trim();
+        return s.isEmpty ? null : s;
+      }(),
     );
   }
 
@@ -106,6 +118,7 @@ class ApartmentServiceEditState {
     this.isMandatory = false,
     this.payerType = 'guest',
     this.requiresPhoto,
+    this.checklistTemplateId,
   });
 
   final String serviceId;
@@ -122,6 +135,8 @@ class ApartmentServiceEditState {
   final String payerType;
   /// Override focení: null = dědit z katalogu, true = vždy vyžadovat, false = nevyžadovat.
   final bool? requiresPhoto;
+  /// Šablona checklistu pro tuto službu u bytu (uloží se do apartment_services.checklist_template_id).
+  final String? checklistTemplateId;
 
   ApartmentServiceEditState copyWith({
     bool? enabled,
@@ -133,6 +148,8 @@ class ApartmentServiceEditState {
     String? payerType,
     bool? requiresPhoto,
     bool clearRequiresPhoto = false,
+    String? checklistTemplateId,
+    bool clearChecklistTemplateId = false,
   }) {
     return ApartmentServiceEditState(
       serviceId: serviceId,
@@ -146,6 +163,8 @@ class ApartmentServiceEditState {
       isMandatory: isMandatory ?? this.isMandatory,
       payerType: payerType ?? this.payerType,
       requiresPhoto: clearRequiresPhoto ? null : (requiresPhoto ?? this.requiresPhoto),
+      checklistTemplateId:
+          clearChecklistTemplateId ? null : (checklistTemplateId ?? this.checklistTemplateId),
     );
   }
 }

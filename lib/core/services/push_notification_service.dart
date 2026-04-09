@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
+import 'package:go_router/go_router.dart';
 
 import 'package:falconest/core/repositories/user_device/user_device_repository.dart';
 
@@ -19,6 +21,10 @@ import 'package:falconest/core/repositories/user_device/user_device_repository.d
 ///
 /// **Firebase konfigurace:** Pro funkčnost je nutné spustit `flutterfire configure`
 /// a mít v projektu Firebase projekt s povoleným Cloud Messaging.
+///
+/// **Kde se spouští:** [AuthNotifier] po načtení profilu (Supabase) nebo po offline cache –
+/// metoda `_registerFcmIfTenantUser` volá [initialize] na pozadí. [main] volá
+/// [Firebase.initializeApp] dříve (`DefaultFirebaseOptions`), aby SDK bylo připravené.
 class PushNotificationService {
   PushNotificationService._();
 
@@ -26,8 +32,25 @@ class PushNotificationService {
   static PushNotificationService get instance => _instance;
 
   StreamSubscription<String>? _tokenRefreshSubscription;
+  StreamSubscription<RemoteMessage>? _messageOpenedSubscription;
   String? _currentProfileId;
   String? _currentTenantId;
+
+  GoRouter? _router;
+  bool _deepLinkListenersAttached = false;
+
+  /// iOS: APNS token často nedorazí okamžitě – bez opakovaného čekání [getToken] hází `apns-token-not-set`.
+  static Future<String?> _pollApnsToken({
+    int maxAttempts = 15,
+    Duration step = const Duration(milliseconds: 700),
+  }) async {
+    for (var i = 0; i < maxAttempts; i++) {
+      final t = await FirebaseMessaging.instance.getAPNSToken();
+      if (t != null && t.isNotEmpty) return t;
+      await Future<void>.delayed(step);
+    }
+    return null;
+  }
 
   /// Inicializuje FCM a zaregistruje token zařízení v databázi.
   ///
@@ -68,21 +91,23 @@ class PushNotificationService {
         return;
       }
 
-      // FIX: Race condition na iOS – getToken() vyžaduje APNS token, který se
-      // inicializuje asynchronně. Bez čekání vzniká chyba [apns-token-not-set].
-      // Ochrana: Pokud APNS po čekání zůstane null, nevolat getToken() – vyhodil by
-      // apns-token-not-set a způsobil Riverpod crash v AuthNotifier.
+      // iOS: notifikace i když je appka na popředí (banner/zvuk) – jinak uživatel „nic nevidí“.
       if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
-        String? apnsToken = await FirebaseMessaging.instance.getAPNSToken();
-        if (apnsToken == null) {
-          await Future<void>.delayed(const Duration(seconds: 3));
-          apnsToken = await FirebaseMessaging.instance.getAPNSToken();
-        }
+        await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
+          alert: true,
+          badge: true,
+          sound: true,
+        );
+      }
+
+      // FIX: Race na iOS – FCM [getToken] potřebuje APNS token; ten přijde často až po několika sekundách.
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+        final apnsToken = await _pollApnsToken();
         debugPrint('FCM TRACE 4: APNS token status: $apnsToken');
         if (apnsToken == null) {
           debugPrint(
             'FCM WARNING: APNS token není k dispozici '
-            '(zkontrolujte Xcode Capabilities nebo Apple Developer účet). '
+            '(Push Capabilities, provisioning, síť). '
             'Notifikace jsou pro tuto relaci deaktivovány.',
           );
           return;
@@ -110,6 +135,7 @@ class PushNotificationService {
             _currentTenantId!,
             newToken,
           ).catchError((e, st) {
+            // SnackBar při chybě DB: [UserDeviceRepository.upsertToken].
             debugPrint('CRITICAL FCM ERROR: onTokenRefresh upsert failed: $e');
             if (kDebugMode) {
               debugPrint('CRITICAL FCM ERROR: $st');
@@ -117,7 +143,10 @@ class PushNotificationService {
           });
         }
       });
-    } catch (e) {
+    } catch (e, st) {
+      if (kDebugMode) {
+        debugPrint('PushNotificationService.initialize: $e\n$st');
+      }
       rethrow;
     }
   }
@@ -141,8 +170,58 @@ class PushNotificationService {
   void dispose() {
     _tokenRefreshSubscription?.cancel();
     _tokenRefreshSubscription = null;
+    _messageOpenedSubscription?.cancel();
+    _messageOpenedSubscription = null;
+    _deepLinkListenersAttached = false;
+    _router = null;
     _currentProfileId = null;
     _currentTenantId = null;
+  }
+
+  /// Naváže [GoRouter] pro deep link z FCM (`data['route']`).
+  ///
+  /// PROČ: [getInitialMessage] a [onMessageOpenedApp] potřebují router až po
+  /// sestavení [MaterialApp.router]. Volá se z UI po prvním frame (např. z
+  /// [FalcoNestApp]). Při nové instanci routeru (refresh provideru) zavolej znovu –
+  /// posluchače FCM registrujeme jen jednou, aktualizuje se jen reference na router.
+  void attachGoRouter(GoRouter router) {
+    _router = router;
+    if (_deepLinkListenersAttached) return;
+    _deepLinkListenersAttached = true;
+
+    _messageOpenedSubscription =
+        FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+      _navigateFromFcmData(message.data);
+    });
+
+    FirebaseMessaging.instance.getInitialMessage().then((RemoteMessage? message) {
+      if (message != null) {
+        _navigateFromFcmData(message.data);
+      }
+    });
+  }
+
+  /// Vytáhne cílovou cestu z datové části FCM (stejný formát jako [automation-dispatch]).
+  static String? routeFromFcmData(Map<String, dynamic> data) {
+    final raw = data['route'];
+    if (raw == null) return null;
+    final s = raw.toString().trim();
+    return s.isEmpty ? null : s;
+  }
+
+  void _navigateFromFcmData(Map<String, dynamic> data) {
+    final route = routeFromFcmData(data);
+    if (route == null) return;
+    final router = _router;
+    if (router == null) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      try {
+        router.go(route);
+      } catch (e, st) {
+        debugPrint('PushNotificationService: deep link go($route) failed: $e\n$st');
+      }
+    });
   }
 }
 

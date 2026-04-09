@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import 'package:falconest/core/services/fcm_registration_feedback.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
 /// Repozitář pro zápis FCM tokenů do tabulky [user_devices].
@@ -48,15 +49,24 @@ class UserDeviceRepository {
 
     final now = DateTime.now().toUtc().toIso8601String();
 
-    await SupabaseService.client.from('user_devices').upsert(
-      {
-        'tenant_id': tenantId,
-        'profile_id': profileId,
-        'fcm_token': fcmToken,
-        'device_type': deviceType,
-        'last_active_at': now,
-      },
-      onConflict: 'fcm_token',
-    );
+    try {
+      await SupabaseService.client.from('user_devices').upsert(
+        SupabaseService.safeInsertPayload(tenantId, {
+          'profile_id': profileId,
+          'fcm_token': fcmToken,
+          'device_type': deviceType,
+          'last_active_at': now,
+        }),
+        onConflict: 'fcm_token',
+      );
+    } catch (e, st) {
+      // PROČ: V release/TestFlight není vidět konzole – červený SnackBar odhalí RLS/síť.
+      FcmRegistrationFeedback.showDeviceTokenSaveFailed(e);
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('UserDeviceRepository.upsertToken ERROR: $e\n$st');
+      }
+      rethrow;
+    }
   }
 }

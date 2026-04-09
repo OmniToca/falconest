@@ -15,7 +15,7 @@ Future<Map<String, List<ReservationServiceRow>>> fetchByReservationIds(
   // PROČ timeout: Pojistka proti nekonečnému načítání – výjimka probublá do UI.
   const timeout = Duration(seconds: 10);
   final res = await SupabaseService.safeFrom('reservation_services', tenantId)
-      .select('id, tenant_id, reservation_id, apartment_service_id, charged_price, custom_note, flight_number, payer_type, requires_photo')
+      .select('id, tenant_id, reservation_id, apartment_service_id, charged_price, transit_cash_to_collect, custom_note, flight_number, payer_type, requires_photo')
       .inFilter('reservation_id', ids)
       .timeout(timeout);
   final list = (res as List).cast<Map<String, dynamic>>();
@@ -40,7 +40,7 @@ Future<List<ReservationServiceRow>> fetchByReservationId(
   // PROČ timeout: Pojistka proti nekonečnému načítání v Tabu 2 dialogu rezervace – výjimka probublá do UI.
   const timeout = Duration(seconds: 10);
   final res = await SupabaseService.safeFrom('reservation_services', tenantId)
-      .select('id, tenant_id, reservation_id, apartment_service_id, charged_price, custom_note, flight_number, payer_type, requires_photo')
+      .select('id, tenant_id, reservation_id, apartment_service_id, charged_price, transit_cash_to_collect, custom_note, flight_number, payer_type, requires_photo')
       .eq('reservation_id', reservationId)
       .timeout(timeout);
   final list = res as List;
@@ -67,6 +67,10 @@ Future<void> saveForReservation({
       'reservation_id': reservationId,
       'apartment_service_id': s.apartmentServiceId,
       'charged_price': s.chargedPriceEur,
+      'transit_cash_to_collect':
+          (s.transitCashToCollectEur != null && s.transitCashToCollectEur! > 0)
+              ? s.transitCashToCollectEur
+              : null,
       'custom_note': s.customNote?.trim().isEmpty == true ? null : s.customNote?.trim(),
       'flight_number': s.flightNumber?.trim().isEmpty == true ? null : s.flightNumber?.trim(),
       'payer_type': (s.payerType == 'owner' || s.payerType == 'guest') ? s.payerType : null,

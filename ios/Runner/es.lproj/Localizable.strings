@@ -1,0 +1,8 @@
+/* FCM: push_daily_summary_* z Edge Function daily-task-summary */
+"push_daily_summary_title" = "Resumen matutino de tareas";
+"push_daily_summary_body_singular" = "Hoy tienes %@ tarea. ¡Que tengas un gran día!";
+"push_daily_summary_body_few" = "Hoy tienes %@ tareas. ¡Que tengas un gran día!";
+"push_daily_summary_body_many" = "Hoy tienes %@ tareas. ¡Que tengas un gran día!";
+/* FCM: template-reminders */
+"fcm_template_reminder_title" = "📱 Hora de enviar un mensaje: %@";
+"fcm_template_reminder_body" = "%@ — Vuelo a las %@ — Envía la plantilla de WhatsApp (paso %@: 1=48h, 2=24h, 3=1h).";

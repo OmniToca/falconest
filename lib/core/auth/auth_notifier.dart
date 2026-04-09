@@ -5,8 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:falconest/core/auth/profile_cache_service.dart';
+import 'package:falconest/features/communication/services/template_placeholder_service.dart';
 import 'package:falconest/core/services/push_notification_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/super_admin/services/support_interventions_repository.dart';
 
 /// Stav přihlášeného uživatele (efektivní „profile model“) – role a tenant_id z profiles.
@@ -35,6 +37,7 @@ class AppAuthState {
     this.paidUntil,
     this.languageCode,
     this.preferredCurrency,
+    this.tenantTimezone,
   });
 
   final User? user;
@@ -62,6 +65,13 @@ class AppAuthState {
 
   /// Preferovaná měna z profiles (CZK, EUR, USD). Pro zobrazení cen v katalogu modulů.
   final String? preferredCurrency;
+
+  /// IANA zóna z `tenants.timezone`. Null = nenačteno; pro šablony použij [effectiveTenantTimezone].
+  final String? tenantTimezone;
+
+  /// Vždy platná IANA hodnota (fallback [TemplatePlaceholderService.defaultTenantTimezone]).
+  String get effectiveTenantTimezone =>
+      TemplatePlaceholderService.normalizeTenantIana(tenantTimezone);
 
   bool get isLoggedIn => user != null;
 
@@ -118,6 +128,9 @@ class AuthNotifier extends ChangeNotifier {
 
   /// Agentura z DB (profiles.tenant_id). Null pro super_admin.
   String? get tenantId => _state.tenantId;
+
+  /// UUID řádku v `profiles` – např. `completed_by` u položek checklistu.
+  String? get profileId => _state.profileId;
 
   /// Super Admin: vybraná agentura v UI. Běžný uživatel: vždy null.
   String? get selectedTenantId => _selectedTenantId;
@@ -195,10 +208,11 @@ class AuthNotifier extends ChangeNotifier {
 
     bool? isTenantActive;
     DateTime? paidUntil;
+    String? impersonationTz;
     try {
       final tenantRes = await SupabaseService.client
           .from('tenants')
-          .select('is_active, paid_until')
+          .select('is_active, paid_until, timezone')
           .eq('id', id)
           .maybeSingle();
       if (tenantRes != null) {
@@ -206,8 +220,11 @@ class AuthNotifier extends ChangeNotifier {
         final v = m['is_active'];
         isTenantActive = v is bool ? v : (v == true || v == 'true');
         paidUntil = _parseOptionalDateTime(m['paid_until']);
+        impersonationTz = _parseTenantTimezoneString(m['timezone']);
       }
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('AuthNotifier: načtení stavu tenanta při startImpersonating selhalo', e, st);
+    }
 
     _selectedTenantId = id;
     _state = AppAuthState(
@@ -220,6 +237,7 @@ class AuthNotifier extends ChangeNotifier {
       paidUntil: paidUntil,
       languageCode: _state.languageCode,
       preferredCurrency: _state.preferredCurrency,
+      tenantTimezone: impersonationTz,
     );
     notifyListeners();
   }
@@ -250,6 +268,7 @@ class AuthNotifier extends ChangeNotifier {
       paidUntil: null,
       languageCode: _state.languageCode,
       preferredCurrency: _state.preferredCurrency,
+      tenantTimezone: null,
     );
     notifyListeners();
   }
@@ -279,9 +298,12 @@ class AuthNotifier extends ChangeNotifier {
         paidUntil: paidUntil,
         languageCode: _state.languageCode,
         preferredCurrency: _state.preferredCurrency,
+        tenantTimezone: _state.tenantTimezone,
       );
       notifyListeners();
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('AuthNotifier: refreshTenantPaymentStatus (paid_until) selhal', e, st);
+    }
   }
 
   static DateTime? _parseOptionalDateTime(dynamic value) {
@@ -290,6 +312,12 @@ class AuthNotifier extends ChangeNotifier {
     final s = value.toString().trim();
     if (s.isEmpty) return null;
     return DateTime.tryParse(s);
+  }
+
+  static String? _parseTenantTimezoneString(dynamic value) {
+    if (value == null) return null;
+    final s = value.toString().trim();
+    return s.isEmpty ? null : s;
   }
 
   /// Inicializace – odběr auth streamu a prvotní načtení stavu.
@@ -333,13 +361,56 @@ class AuthNotifier extends ChangeNotifier {
       _pendingPasswordRecovery = false;
       _isProfileLoading = false;
       _selectedTenantId = null;
-      _state = const AppAuthState(isImpersonating: false, isTenantActive: null, paidUntil: null, preferredCurrency: null);
+      _state = const AppAuthState(
+        isImpersonating: false,
+        isTenantActive: null,
+        paidUntil: null,
+        preferredCurrency: null,
+        tenantTimezone: null,
+      );
       // Push notifikace: zrušit listener na obnovu tokenu – uživatel není přihlášen.
       PushNotificationService.instance.dispose();
       // OFFLINE-FIRST: Při odhlášení vymazat cachovaný profil – nesmí zůstat data předchozího uživatele.
       ProfileCacheService.clear();
       notifyListeners();
     }
+  }
+
+  /// Zaregistruje FCM token do [user_devices] – pouze pokud má uživatel [tenantId] i [profileId].
+  ///
+  /// PROČ: Volá se po úspěšném načtení profilu ze Supabase i po offline fallbacku z [ProfileCacheService].
+  /// Dříve se FCM po čistě offline startu vůbec nespouštěl → worker bez nového network profilu neměl token v DB.
+  /// [unawaited]: neblokovat UI čekáním na APNS; chyby jen do logů.
+  void _registerFcmIfTenantUser(String? profileId, String? tenantId) {
+    debugPrint('FCM TRACE 1: Profil načten. profileId: $profileId, tenantId: $tenantId');
+    if (profileId != null &&
+        profileId.isNotEmpty &&
+        tenantId != null &&
+        tenantId.isNotEmpty) {
+      debugPrint('FCM TRACE 2: Volám PushNotificationService.initialize() na pozadí');
+      unawaited(
+        PushNotificationService.instance
+            .initialize(profileId, tenantId)
+            .catchError((e, st) {
+          // SnackBar už zobrazuje [UserDeviceRepository.upsertToken] při chybě DB.
+          debugPrint('CRITICAL FCM ERROR: FCM token registration failed: $e');
+          if (kDebugMode) {
+            debugPrint('CRITICAL FCM ERROR: $st');
+          }
+        }),
+      );
+    } else {
+      debugPrint('FCM TRACE 1B: Přeskakuji FCM inicializaci (chybí profil nebo tenant).');
+    }
+  }
+
+  /// Znovu zaregistruje FCM token (stejná logika jako po načtení profilu).
+  ///
+  /// PROČ: Po návratu z pozadí může na iOS konečně dorazit APNS token; při studeném startu
+  /// mohl první pokus skončit dřív než je token k dispozici. Opakované volání je levné
+  /// (Firebase vrátí stejný token, upsert jen obnoví `last_active_at`).
+  void retryFcmRegistrationIfLoggedIn() {
+    _registerFcmIfTenantUser(_state.profileId, _state.tenantId);
   }
 
   /// Načte roli a tenant_id z tabulky profiles. Po úspěchu upozorní posluchače.
@@ -509,11 +580,12 @@ class AuthNotifier extends ChangeNotifier {
 
       bool? isTenantActive;
       DateTime? paidUntil;
+      String? tenantTimezoneStr;
       if (tenantIdStr != null && tenantIdStr.isNotEmpty) {
         try {
           final tenantRes = await SupabaseService.client
               .from('tenants')
-              .select('is_active, paid_until')
+              .select('is_active, paid_until, timezone')
               .eq('id', tenantIdStr)
               .maybeSingle();
           if (tenantRes != null) {
@@ -521,8 +593,11 @@ class AuthNotifier extends ChangeNotifier {
             final v = m['is_active'];
             isTenantActive = v is bool ? v : (v == true || v == 'true');
             paidUntil = _parseOptionalDateTime(m['paid_until']);
+            tenantTimezoneStr = _parseTenantTimezoneString(m['timezone']);
           }
-        } catch (_) {}
+        } catch (e, st) {
+          AppLogger.error('AuthNotifier: načtení tenants (is_active, paid_until) při loginu selhalo', e, st);
+        }
       }
 
       _state = AppAuthState(
@@ -535,6 +610,7 @@ class AuthNotifier extends ChangeNotifier {
         paidUntil: paidUntil,
         languageCode: languageCodeStr,
         preferredCurrency: preferredCurrencyStr,
+        tenantTimezone: tenantTimezoneStr,
       );
 
       // Obnovení převtělení po obnovení stránky: pokud HQ (Super Admin nebo Account Manager) měl
@@ -550,18 +626,22 @@ class AuthNotifier extends ChangeNotifier {
             _selectedTenantId = active.tenantId;
             bool? ia;
             DateTime? pu;
+            String? tzImp;
             try {
               final tr = await SupabaseService.client
                   .from('tenants')
-                  .select('is_active, paid_until')
+                  .select('is_active, paid_until, timezone')
                   .eq('id', active.tenantId)
                   .maybeSingle();
               if (tr != null) {
                 final m = tr as Map;
                 ia = m['is_active'] == true || m['is_active'] == 'true';
                 pu = _parseOptionalDateTime(m['paid_until']);
+                tzImp = _parseTenantTimezoneString(m['timezone']);
               }
-            } catch (_) {}
+            } catch (e, st) {
+              AppLogger.error('AuthNotifier: načtení tenanta při obnově aktivního převtělení selhalo', e, st);
+            }
             _state = AppAuthState(
               user: user,
               role: role,
@@ -572,34 +652,16 @@ class AuthNotifier extends ChangeNotifier {
               paidUntil: pu,
               languageCode: languageCodeStr,
               preferredCurrency: preferredCurrencyStr,
+              tenantTimezone: tzImp,
             );
           }
-        } catch (_) {}
+        } catch (e, st) {
+          AppLogger.error('AuthNotifier: obnovení aktivního support intervention / převtělení selhalo', e, st);
+        }
       }
 
       // Push notifikace: zaregistrovat FCM token zařízení do user_devices.
-      // Pouze pro uživatele s tenantem (Worker, Admin) – Super Admin bez tenanta přeskočíme.
-      // Spouštíme úmyslně na pozadí (unawaited), aby inicializace neblokovala bleskový start
-      // aplikace – uživatel se dostane ihned na Nástěnku místo čekání na APNS token a síť.
-      debugPrint('FCM TRACE 1: Profil načten. profileId: $profileIdStr, tenantId: $tenantIdStr');
-      if (profileIdStr != null &&
-          profileIdStr.isNotEmpty &&
-          tenantIdStr != null &&
-          tenantIdStr.isNotEmpty) {
-        debugPrint('FCM TRACE 2: Volám PushNotificationService.initialize() na pozadí');
-        unawaited(
-          PushNotificationService.instance
-              .initialize(profileIdStr, tenantIdStr)
-              .catchError((e, st) {
-            debugPrint('CRITICAL FCM ERROR: FCM token registration failed: $e');
-            if (kDebugMode) {
-              debugPrint('CRITICAL FCM ERROR: $st');
-            }
-          }),
-        );
-      } else {
-        debugPrint('FCM TRACE 1B: Přeskakuji FCM inicializaci (chybí profil nebo tenant).');
-      }
+      _registerFcmIfTenantUser(profileIdStr, tenantIdStr);
 
       // OFFLINE-FIRST: Uložit profil do lokální cache. Při příštím startu bez sítě
       // (letadlo, sklep, horší signál) AuthNotifier načte z cache místo chybové obrazovky.
@@ -613,6 +675,7 @@ class AuthNotifier extends ChangeNotifier {
           preferredCurrency: preferredCurrencyStr,
           isTenantActive: isTenantActive,
           paidUntil: paidUntil,
+          tenantTimezone: _state.tenantTimezone,
           cachedAt: DateTime.now().toUtc(),
         ),
       );
@@ -653,7 +716,9 @@ class AuthNotifier extends ChangeNotifier {
           paidUntil: cached.paidUntil,
           languageCode: cached.languageCode,
           preferredCurrency: cached.preferredCurrency,
+          tenantTimezone: cached.tenantTimezone,
         );
+        _registerFcmIfTenantUser(cached.profileId, cached.tenantId);
       } else {
         // Cache prázdná nebo neplatná – zobrazit chybu jako dosud.
         // NEODHLASOVAT! Uživatel zůstane přihlášen, odhlášení pouze při explicitním kliknutí.
@@ -668,6 +733,7 @@ class AuthNotifier extends ChangeNotifier {
           paidUntil: null,
           languageCode: null,
           preferredCurrency: null,
+          tenantTimezone: null,
         );
       }
     } finally {
@@ -681,10 +747,17 @@ class AuthNotifier extends ChangeNotifier {
     final uid = _state.user?.id;
     if (uid == null || code.trim().isEmpty) return;
     final trimmed = code.trim();
-    await SupabaseService.client
-        .from('profiles')
-        .update({'language_code': trimmed})
-        .eq('auth_id', uid);
+    final tid = _state.tenantId;
+    if (tid != null && tid.isNotEmpty) {
+      await SupabaseService.safeFrom('profiles', tid)
+          .update({'language_code': trimmed})
+          .eq('auth_id', uid);
+    } else {
+      await SupabaseService.client
+          .from('profiles')
+          .update({'language_code': trimmed})
+          .eq('auth_id', uid);
+    }
     _state = AppAuthState(
       user: _state.user,
       role: _state.role,
@@ -695,6 +768,7 @@ class AuthNotifier extends ChangeNotifier {
       paidUntil: _state.paidUntil,
       languageCode: trimmed,
       preferredCurrency: _state.preferredCurrency,
+      tenantTimezone: _state.tenantTimezone,
     );
     notifyListeners();
   }
@@ -704,10 +778,17 @@ class AuthNotifier extends ChangeNotifier {
     final uid = _state.user?.id;
     if (uid == null || code.trim().isEmpty) return;
     final trimmed = code.trim().toUpperCase();
-    await SupabaseService.client
-        .from('profiles')
-        .update({'preferred_currency': trimmed})
-        .eq('auth_id', uid);
+    final tid = _state.tenantId;
+    if (tid != null && tid.isNotEmpty) {
+      await SupabaseService.safeFrom('profiles', tid)
+          .update({'preferred_currency': trimmed})
+          .eq('auth_id', uid);
+    } else {
+      await SupabaseService.client
+          .from('profiles')
+          .update({'preferred_currency': trimmed})
+          .eq('auth_id', uid);
+    }
     _state = AppAuthState(
       user: _state.user,
       role: _state.role,
@@ -718,8 +799,65 @@ class AuthNotifier extends ChangeNotifier {
       paidUntil: _state.paidUntil,
       languageCode: _state.languageCode,
       preferredCurrency: trimmed,
+      tenantTimezone: _state.tenantTimezone,
     );
     notifyListeners();
+  }
+
+  /// Uloží IANA časovou zónu agentury (`tenants.timezone`). Admin/manager; Super Admin při převtělení předá tenant v RPC.
+  Future<void> updateTenantTimezone(String iana) async {
+    final normalized = TemplatePlaceholderService.normalizeTenantIana(iana);
+    final dataTid = tenantIdForData?.trim();
+    final isHq = _state.role == 'super_admin' || _state.role == 'account_manager';
+
+    if (isHq) {
+      if (dataTid == null || dataTid.isEmpty) return;
+      await SupabaseService.client.rpc(
+        'set_tenant_timezone',
+        params: {
+          'p_timezone': normalized,
+          'p_tenant_id': dataTid,
+        },
+      );
+    } else {
+      if (!_state.isAdminOrManager) return;
+      await SupabaseService.client.rpc(
+        'set_tenant_timezone',
+        params: {'p_timezone': normalized},
+      );
+    }
+
+    _state = AppAuthState(
+      user: _state.user,
+      role: _state.role,
+      tenantId: _state.tenantId,
+      profileId: _state.profileId,
+      isImpersonating: _state.isImpersonating,
+      isTenantActive: _state.isTenantActive,
+      paidUntil: _state.paidUntil,
+      languageCode: _state.languageCode,
+      preferredCurrency: _state.preferredCurrency,
+      tenantTimezone: normalized,
+    );
+    notifyListeners();
+
+    final uid = _state.user?.id;
+    if (uid != null) {
+      await ProfileCacheService.save(
+        CachedProfile(
+          authId: uid,
+          role: _state.role ?? '',
+          profileId: _state.profileId,
+          tenantId: _state.tenantId,
+          languageCode: _state.languageCode,
+          preferredCurrency: _state.preferredCurrency,
+          isTenantActive: _state.isTenantActive,
+          paidUntil: _state.paidUntil,
+          tenantTimezone: normalized,
+          cachedAt: DateTime.now().toUtc(),
+        ),
+      );
+    }
   }
 
   @override

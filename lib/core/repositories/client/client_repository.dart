@@ -1,6 +1,18 @@
 import 'package:falconest/core/models/client_address_model.dart';
 import 'package:falconest/core/models/client_model.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+// TextSearchType je re-export z postgrest přes supabase_flutter.
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+/// Filtr typu klienta pro stránkovaný výpis na záložkách CRM (Majitelé / Agentury / Externí).
+///
+/// PROČ samostatný enum: Supabase dotaz musí filtrovat přímo na backendu, ne až dělením
+/// v paměti – jinak jsou záložky poloprázdné. Hodnota [external] zahrnuje `external` i NULL.
+enum ClientPaginatedFilterKind {
+  owner,
+  agency,
+  external,
+}
 
 /// Repozitář pro CRUD operace nad klienty a jejich adresami (client_addresses).
 ///
@@ -13,22 +25,22 @@ import 'package:falconest/core/services/supabase_service.dart';
 class ClientRepository {
   ClientRepository._();
 
-  /// Escapuje znaky %, _ a \ pro použití v ilike patternu (PostgreSQL).
-  static String _escapeIlikePattern(String s) {
-    return s.replaceAll(r'\', r'\\').replaceAll('%', r'\%').replaceAll('_', r'\_');
-  }
-
   /// Stránkovaný výpis klientů se server-side vyhledáváním.
   ///
-  /// PROČ: Při 1000+ klientech nelze stahovat všechny naráz. Pagination + ilike
-  /// na name/email/phone umožňuje škálovatelný seznam a vyhledávání na backendu.
+  /// PROČ: Při 1000+ klientech nelze stahovat všechny naráz. Full-Text Search nad sloupcem
+  /// [clients.search_vector] (GIN, konfigurace `simple`) místo tří `ilike` — měřítko a relevance.
+  /// [TextSearchType.websearch] mapuje na `websearch_to_tsquery` (bezpečné pro surový vstup z UI).
   ///
   /// [tenantId] – z authNotifierProvider.tenantIdForData.
   /// [limit] – počet řádků na stránku (např. 50).
   /// [offset] – posun (0 = první stránka).
-  /// [searchQuery] – volitelný řetězec; pokud neprázdný, filtruje přes .or('name.ilike.%query%,...').
+  /// [searchQuery] – volitelný řetězec; pokud neprázdný, filtr přes `.textSearch('search_vector', ...)`.
+  ///
+  /// [typeTab]: pokud null, žádný filtr podle client_type (dropdowny, plný export až 500 řádků).
+  /// Pokud vyplněno, stránkuje jen danou záložku CRM přímo v SQL/PostgREST.
   static Future<List<ClientModel>> getPaginatedClients(
     String tenantId, {
+    ClientPaginatedFilterKind? typeTab,
     required int limit,
     required int offset,
     String? searchQuery,
@@ -38,19 +50,97 @@ class ClientRepository {
     final q = searchQuery?.trim() ?? '';
     dynamic query = SupabaseService.safeFrom('clients', tenantId)
         .select(
-          'id, tenant_id, name, email, phone, client_type, profile_id, agency_id, created_at, deleted_at',
+          'id, tenant_id, name, email, phone, client_type, language_code, profile_id, agency_id, created_at, deleted_at, geo_location',
         )
         .isFilter('deleted_at', null);
 
+    query = _applyClientTypeTabFilter(query, typeTab);
+
     if (q.isNotEmpty) {
-      final escaped = _escapeIlikePattern(q);
-      final pattern = '%$escaped%';
-      query = query.or(
-        'name.ilike.$pattern,email.ilike.$pattern,phone.ilike.$pattern',
+      query = query.textSearch(
+        'search_vector',
+        q,
+        config: 'simple',
+        type: TextSearchType.websearch,
       );
     }
 
     final response = await query.order('name').range(offset, offset + limit - 1);
+    return (response as List)
+        .map((e) => ClientModel.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Aplikuje filtr záložky (owner / agency / external+NULL) na builder dotazu clients.
+  static dynamic _applyClientTypeTabFilter(
+    dynamic query,
+    ClientPaginatedFilterKind? typeTab,
+  ) {
+    if (typeTab == null) return query;
+    switch (typeTab) {
+      case ClientPaginatedFilterKind.owner:
+        return query.eq('client_type', 'owner');
+      case ClientPaginatedFilterKind.agency:
+        return query.eq('client_type', 'agency');
+      case ClientPaginatedFilterKind.external:
+        // PostgREST: externí typ nebo chybějící client_type (staré záznamy).
+        return query.or('client_type.eq.external,client_type.is.null');
+    }
+  }
+
+  /// Lehká mapa id → jméno jen pro agentury (záložka Externí – řádek „doporučila agentura X“).
+  ///
+  /// PROČ: Nepotřebujeme stahovat 500 celých klientů jen kvůli jednomu jménu.
+  static Future<Map<String, String>> fetchAgencyIdNameMap(String tenantId) async {
+    if (tenantId.isEmpty) return {};
+
+    final res = await SupabaseService.safeFrom('clients', tenantId)
+        .select('id, name')
+        .eq('client_type', 'agency')
+        .isFilter('deleted_at', null)
+        .order('name');
+
+    final map = <String, String>{};
+    for (final row in res as List) {
+      final m = row as Map<String, dynamic>;
+      final id = m['id']?.toString() ?? '';
+      if (id.isEmpty) continue;
+      map[id] = (m['name'] as String?)?.trim() ?? '';
+    }
+    return map;
+  }
+
+  /// Počet externích klientů doporučených danou agenturou (jen COUNT na serveru).
+  static Future<int> countClientsRecommendedByAgency(
+    String tenantId,
+    String agencyId,
+  ) async {
+    if (tenantId.isEmpty || agencyId.trim().isEmpty) return 0;
+
+    final res = await SupabaseService.safeFrom('clients', tenantId)
+        .select('id')
+        .eq('agency_id', agencyId.trim())
+        .isFilter('deleted_at', null)
+        .count(CountOption.exact);
+
+    return res.count;
+  }
+
+  /// Plný seznam doporučených klientů pro záložku v detailu agentury (lazy – až po otevření tabu).
+  static Future<List<ClientModel>> fetchClientsRecommendedByAgency(
+    String tenantId,
+    String agencyId,
+  ) async {
+    if (tenantId.isEmpty || agencyId.trim().isEmpty) return [];
+
+    final response = await SupabaseService.safeFrom('clients', tenantId)
+        .select(
+          'id, tenant_id, name, email, phone, client_type, language_code, profile_id, agency_id, created_at, deleted_at, geo_location',
+        )
+        .eq('agency_id', agencyId.trim())
+        .isFilter('deleted_at', null)
+        .order('name');
+
     return (response as List)
         .map((e) => ClientModel.fromJson(e as Map<String, dynamic>))
         .toList();

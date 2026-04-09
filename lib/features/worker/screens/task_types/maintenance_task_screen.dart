@@ -4,122 +4,56 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
-import 'package:falconest/features/worker/widgets/task_countdown_timer.dart';
-import 'package:falconest/features/worker/widgets/worker_task_shared_header.dart';
 import 'package:falconest/features/worker/widgets/issue_reporter_dialog.dart';
-import 'package:falconest/features/worker/widgets/task_complete_with_photo_section.dart';
+import 'package:falconest/features/worker/widgets/worker_task_shared_header.dart';
 
-/// Specifická obrazovka pro úkoly typu Údržba (maintenance).
-///
-/// Zobrazuje adresu s navigací, čas, popis problému (custom_note nebo description)
-/// a tlačítka Zahájit práci / Závada vyřešena.
-/// Používá standardní offline-first provider pro aktualizaci stavu (Isar + sync),
-/// ale poskytuje uživateli přesnější texty (Závada vyřešena).
-class MaintenanceTaskScreen extends ConsumerWidget {
-  const MaintenanceTaskScreen({super.key, required this.taskId});
+/// Obsah scrollu pro údržbu – bez Scaffold.
+abstract final class MaintenanceTaskScreen {
+  MaintenanceTaskScreen._();
 
-  final String taskId;
+  static const Color backgroundColor = Color(0xFFFFF3E0);
 
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final detailAsync = ref.watch(workerTaskDetailProvider(taskId));
-
-    return detailAsync.when(
-      data: (detail) {
-        if (detail == null) {
-          return Scaffold(
-            body: Center(child: Text('worker.task_detail_not_found'.tr())),
-          );
-        }
-        return Scaffold(
-          backgroundColor: const Color(0xFFFFF3E0),
-          appBar: AppBar(
-            title: Text(
-              _appBarTitle(detail),
-              style: const TextStyle(color: Colors.black87),
-            ),
-            backgroundColor: Colors.transparent,
-            foregroundColor: Colors.black87,
-            elevation: 0,
-            iconTheme: const IconThemeData(color: Colors.black87),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.report_problem_outlined),
-                onPressed: () {
-                  final tenantId = ref.read(authNotifierProvider).tenantIdForData;
-                  if (tenantId == null || tenantId.isEmpty) return;
-                  showDialog(
-                    context: context,
-                    builder: (ctx) => IssueReporterDialog(
-                      tenantId: tenantId,
-                      apartmentId: detail.apartmentId,
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-          body: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        WorkerTaskSharedHeader(
-                          title: detail.title.isNotEmpty ? detail.title : detail.apartmentName ?? '—',
-                          scheduledStart: detail.scheduledStart,
-                          apartmentAddress: detail.apartmentAddress,
-                          startedAt: detail.startedAt,
-                          completedAt: detail.completedAt,
-                          estimatedMinutes: parseTaskEstimateMinutes(
-                            detail.description,
-                            detail.metadata,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        ..._buildMaintenanceMetadata(context, detail),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TaskCompleteWithPhotoSection(
-                  taskId: taskId,
-                  detail: detail,
-                  finishKey: 'worker.action_maintenance_resolved',
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-      loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
-      error: (_, _) => Scaffold(
-        body: Center(child: Text('worker.task_detail_not_found'.tr())),
-      ),
-    );
-  }
-
-  static String _appBarTitle(dynamic detail) {
-    final base = detail.title.isNotEmpty ? detail.title : (detail.apartmentName ?? '—');
-    final ref = detail.referenceNumber?.trim();
-    return (ref != null && ref.isNotEmpty) ? '$base • #$ref' : base;
-  }
-
-  /// Popis problému z custom_note nebo description. Prázdný fallback má i18n text.
-  List<Widget> _buildMaintenanceMetadata(
+  static List<Widget> buildAppBarActions(
     BuildContext context,
-    dynamic detail,
+    WidgetRef ref,
+    WorkerTaskDetail detail,
   ) {
+    return [
+      IconButton(
+        icon: const Icon(Icons.report_problem_outlined),
+        onPressed: () {
+          final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+          if (tenantId == null || tenantId.isEmpty) return;
+          showDialog(
+            context: context,
+            builder: (ctx) => IssueReporterDialog(
+              tenantId: tenantId,
+              apartmentId: detail.apartmentId,
+            ),
+          );
+        },
+      ),
+    ];
+  }
+
+  static List<Widget> buildScrollChildren(WorkerTaskDetail detail) {
+    return [
+      WorkerTaskAddressContextBar(
+        address: detail.displayAddress,
+        latitude: detail.latitude,
+        longitude: detail.longitude,
+      ),
+      const SizedBox(height: 16),
+      ..._buildMaintenanceMetadata(detail),
+    ];
+  }
+
+  static List<Widget> _buildMaintenanceMetadata(WorkerTaskDetail detail) {
     final note = detail.metadata?['custom_note'];
     final noteText = note is String
         ? note.trim()
         : (note?.toString().trim() ?? '');
-    final descText = (detail.description ?? '').trim();
+    final descText = (detail.description).trim();
     final text = noteText.isNotEmpty ? noteText : descText;
 
     return [
@@ -129,7 +63,7 @@ class MaintenanceTaskScreen extends ConsumerWidget {
     ];
   }
 
-  Widget _buildProblemCard(String text) {
+  static Widget _buildProblemCard(String text) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(

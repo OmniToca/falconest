@@ -43,6 +43,12 @@ class CashTransactionUIModel {
       ? (raw['task_id'] as String).trim()
       : null;
 
+  /// Vazba na rezervaci (sloupec `reservation_id` nebo doplněno z úkolu při enrichi).
+  String? get reservationId =>
+      (raw['reservation_id'] as String?)?.trim().isNotEmpty == true
+          ? (raw['reservation_id'] as String).trim()
+          : null;
+
   /// ID klienta – pro transakce vázané na klienta (např. externí platba).
   String? get clientId => (raw['client_id'] as String?)?.trim().isNotEmpty == true
       ? (raw['client_id'] as String).trim()

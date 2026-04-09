@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 
 /// Jeden záznam interního HQ personálu (Super-Admin nebo Account Manager).
 ///
@@ -50,10 +51,13 @@ final hqStaffProvider = FutureProvider<List<HqStaffRow>>((ref) async {
                 : '$first $last'.trim();
         final role = (map['role'] as String?)?.trim();
         result.add(HqStaffRow(id: id, name: displayName, role: role?.isEmpty == true ? null : role));
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('hqStaffProvider: parsování řádku profilu HQ selhalo', e, st);
+      }
     }
     return result;
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('hqStaffProvider: načtení seznamu HQ staff selhalo', e, st);
     return [];
   }
 });
@@ -88,10 +92,13 @@ final hqStaffListProvider = FutureProvider<List<HqStaffRow>>((ref) async {
                 : '$first $last'.trim();
         final role = (map['role'] as String?)?.trim();
         result.add(HqStaffRow(id: id, name: displayName, role: role?.isEmpty == true ? null : role));
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('hqStaffListProvider: parsování řádku profilu HQ selhalo', e, st);
+      }
     }
     return result;
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('hqStaffListProvider: načtení seznamu HQ týmu selhalo', e, st);
     return [];
   }
 });

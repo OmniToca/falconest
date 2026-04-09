@@ -5,7 +5,10 @@ import 'package:falconest/core/database/drift/repositories/drift_apartment_repos
 import 'package:falconest/core/database/drift/repositories/drift_client_repository.dart';
 import 'package:falconest/core/database/drift/repositories/drift_pending_mutation_repository.dart';
 import 'package:falconest/core/database/drift/repositories/drift_reservation_repository.dart';
+import 'package:falconest/core/offline/network_error_helper.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/core/repositories/task/task_repository.dart';
+import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest_drift/app_database.dart' as db;
 
 /// Drift implementace [ITaskRepository] – čte/zapisuje z SQLite místo Isar.
@@ -41,7 +44,42 @@ class DriftTaskRepository implements ITaskRepository {
     try {
       final decoded = jsonDecode(raw);
       if (decoded is Map) return Map<String, dynamic>.from(decoded);
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('DriftTaskRepository: parsování metadataJson (_parseMetadata) selhalo', e, st);
+    }
+    return null;
+  }
+
+  /// Dekóduje JSON pole URL z Drift sloupce `media_urls` (Fáze 2 – offline fotky úkolu).
+  static List<String> _mediaUrlsFromJsonColumn(String? raw) {
+    if (raw == null || raw.trim().isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded
+            .map((e) => e?.toString().trim())
+            .whereType<String>()
+            .where((s) => s.isNotEmpty)
+            .toList();
+      }
+    } catch (e, st) {
+      AppLogger.error('DriftTaskRepository: parsování media_urls JSON sloupce selhalo', e, st);
+    }
+    return const [];
+  }
+
+  /// Supabase vrací `media_urls` jako pole – ukládáme jako JSON text do SQLite.
+  static String? _encodeMediaUrlsForDrift(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is List) {
+      final list = raw
+          .map((e) => e?.toString().trim())
+          .whereType<String>()
+          .where((s) => s.isNotEmpty)
+          .toList();
+      if (list.isEmpty) return null;
+      return jsonEncode(list);
+    }
     return null;
   }
 
@@ -67,7 +105,8 @@ class DriftTaskRepository implements ITaskRepository {
         final list = jsonDecode(json);
         if (list is! List) return false;
         return list.any((e) => (e?.toString().trim() ?? '') == workerId);
-      } catch (_) {
+      } catch (e, st) {
+        AppLogger.error('DriftTaskRepository: parsování assigned_user_ids JSON (getWorkerTasks) selhalo', e, st);
         return false;
       }
     }).toList();
@@ -180,6 +219,10 @@ class DriftTaskRepository implements ITaskRepository {
       customTitle:
           (t.customTitle?.trim().isEmpty ?? true) ? null : t.customTitle!.trim(),
       metadata: _parseMetadata(t.metadataJson),
+      // PROČ: Drift tabulky Tasks/Apartments zatím nemají sloupec geo_location – GPS z API sem nepřiteče,
+      // dokud nepřidáme migraci + sync. Worker na mobilu offline tedy zůstává u textové adresy v mapách.
+      latitude: null,
+      longitude: null,
     );
   }
 
@@ -249,10 +292,44 @@ class DriftTaskRepository implements ITaskRepository {
           ? null
           : res?.guestPhone?.trim(),
       photoUrl: (task.photoUrl?.trim().isEmpty ?? true) ? null : task.photoUrl,
-      mediaUrls: const [],
+      mediaUrls: _mediaUrlsFromJsonColumn(task.mediaUrlsJson),
       metadata: _parseMetadata(task.metadataJson),
       startedAt: task.startedAt,
       completedAt: task.completedAt,
+      specialRequests: res?.specialRequests?.trim().isEmpty ?? true
+          ? null
+          : res?.specialRequests?.trim(),
+      apartmentCheckInTime: apt?.checkInTime?.trim().isEmpty ?? true
+          ? null
+          : apt?.checkInTime?.trim(),
+      apartmentCheckOutTime: apt?.checkOutTime?.trim().isEmpty ?? true
+          ? null
+          : apt?.checkOutTime?.trim(),
+      apartmentZoneId:
+          apt?.zoneId?.trim().isEmpty ?? true ? null : apt?.zoneId?.trim(),
+      parkingInstructions: () {
+        final p = apt?.parkingInstructions;
+        if (p == null) return null;
+        final t = p.trim();
+        return t.isEmpty ? null : t;
+      }(),
+      dueDate: task.dueDate?.toLocal(),
+      unassignedInfo: () {
+        final u = task.unassignedInfo;
+        if (u == null) return null;
+        final t = u.trim();
+        return t.isEmpty ? null : t;
+      }(),
+      guestLanguage: () {
+        final g = res?.guestLanguage;
+        if (g == null) return null;
+        final t = g.trim();
+        return t.isEmpty ? null : t;
+      }(),
+      hasLinkedReservation: res != null,
+      // Stejně jako u [_taskToWorkerTask]: bez geo sloupců v Drift zde GPS nedoplňujeme.
+      latitude: null,
+      longitude: null,
     );
   }
 
@@ -304,6 +381,21 @@ class DriftTaskRepository implements ITaskRepository {
       newMetadataJson = jsonEncode({...existing, ...metadataOverlay});
     }
 
+    // PROČ: Po nahrání fotek online má lokální řádek obsahovat nové URL (offline náhled do dalšího pullu).
+    String? newMediaUrlsJson = task.mediaUrlsJson;
+    if (mediaUrls != null && mediaUrls.isNotEmpty) {
+      final existing = _mediaUrlsFromJsonColumn(task.mediaUrlsJson);
+      final seen = existing.toSet();
+      final merged = List<String>.from(existing);
+      for (final u in mediaUrls) {
+        final trimmed = u.trim();
+        if (trimmed.isEmpty || seen.contains(trimmed)) continue;
+        seen.add(trimmed);
+        merged.add(trimmed);
+      }
+      newMediaUrlsJson = merged.isEmpty ? null : jsonEncode(merged);
+    }
+
     await _db.update(_db.tasks).replace(
           db.Task(
             id: task.id,
@@ -321,6 +413,7 @@ class DriftTaskRepository implements ITaskRepository {
             description: task.description,
             taskType: task.taskType,
             scheduledStart: task.scheduledStart,
+            dueDate: task.dueDate,
             status: status.trim(),
             photoUrl: task.photoUrl,
             localUpdatedAt: now,
@@ -328,6 +421,9 @@ class DriftTaskRepository implements ITaskRepository {
             syncStatus: 1, // pending
             lastUpdated: now,
             metadataJson: newMetadataJson,
+            unassignedInfo: task.unassignedInfo,
+            serviceId: task.serviceId,
+            mediaUrlsJson: newMediaUrlsJson,
             startedAt: startedAt?.toUtc() ?? task.startedAt,
             completedAt: completedAt?.toUtc() ?? task.completedAt,
             invoicedAt: task.invoicedAt,
@@ -336,6 +432,89 @@ class DriftTaskRepository implements ITaskRepository {
 
     // POZNÁMKA: Změna statusu rezervace (check-in/check-out) vyžaduje tabulku
     // Reservations v Drift – zatím vynecháno, doplníme v další fázi.
+  }
+
+  @override
+  Future<void> appendWorkerQuickNote(
+    String tenantId,
+    String taskId,
+    String appendedLine,
+  ) async {
+    final tid = tenantId.trim();
+    final id = taskId.trim();
+    final line = appendedLine.trim();
+    if (tid.isEmpty || id.isEmpty || line.isEmpty) return;
+
+    final rows = await (_db.select(_db.tasks)
+          ..where((t) => t.tenantId.equals(tid) & t.supabaseId.equals(id)))
+        .get();
+    if (rows.isEmpty) return;
+
+    final task = rows.first;
+    final oldDesc = task.description.trim();
+    final merged = oldDesc.isEmpty ? line : '$oldDesc\n$line';
+    final now = DateTime.now().toUtc();
+
+    await _db.update(_db.tasks).replace(
+          db.Task(
+            id: task.id,
+            supabaseId: task.supabaseId,
+            tenantId: task.tenantId,
+            apartmentSupabaseId: task.apartmentSupabaseId,
+            clientSupabaseId: task.clientSupabaseId,
+            customLocation: task.customLocation,
+            customTitle: task.customTitle,
+            reservationSupabaseId: task.reservationSupabaseId,
+            assignedUserSupabaseId: task.assignedUserSupabaseId,
+            assignedUserIdsJson: task.assignedUserIdsJson,
+            referenceNumber: task.referenceNumber,
+            title: task.title,
+            description: merged,
+            taskType: task.taskType,
+            scheduledStart: task.scheduledStart,
+            dueDate: task.dueDate,
+            status: task.status,
+            photoUrl: task.photoUrl,
+            localUpdatedAt: now,
+            lastSyncedAt: task.lastSyncedAt,
+            syncStatus: 1,
+            lastUpdated: now,
+            metadataJson: task.metadataJson,
+            unassignedInfo: task.unassignedInfo,
+            serviceId: task.serviceId,
+            mediaUrlsJson: task.mediaUrlsJson,
+            startedAt: task.startedAt,
+            completedAt: task.completedAt,
+            invoicedAt: task.invoicedAt,
+          ),
+        );
+
+    try {
+      await SupabaseService.safeFrom('tasks', tid)
+          .update(<String, dynamic>{'description': merged})
+          .eq('id', id);
+      final synced = await (_db.select(_db.tasks)
+            ..where((t) => t.id.equals(task.id)))
+          .get();
+      if (synced.isNotEmpty) {
+        await markTaskSynced(synced.first);
+      }
+    } catch (e) {
+      final pending = _pendingRepo;
+      if (isNetworkError(e) && pending != null) {
+        await pending.enqueue(
+          table: 'tasks',
+          action: 'UPDATE',
+          recordId: id,
+          payload: <String, dynamic>{
+            'tenant_id': tid,
+            'description': merged,
+          },
+        );
+      } else {
+        rethrow;
+      }
+    }
   }
 
   /// Stream úkolů pro reaktivní UI (watch).
@@ -356,7 +535,8 @@ class DriftTaskRepository implements ITaskRepository {
           final list = jsonDecode(json);
           if (list is! List) return false;
           return list.any((e) => (e?.toString().trim() ?? '') == workerId);
-        } catch (_) {
+        } catch (e, st) {
+          AppLogger.error('DriftTaskRepository: parsování assigned_user_ids JSON (watchWorkerTasks) selhalo', e, st);
           return false;
         }
       });
@@ -412,6 +592,98 @@ class DriftTaskRepository implements ITaskRepository {
     });
   }
 
+  /// Statistiky týdne z lokálních úkolů: dokončené v aktuálním kalendářním týdnu (Po–Ne, lokální čas).
+  ///
+  /// PROČ: [watchWorkerTasks] úmyslně skrývá hotové úkoly; drawer „Tento týden“ má ale počítat
+  /// dokončenou práci podle `completed_at`, ne podle plánovaného termínu.
+  Stream<WorkerWeekTaskStats> watchWeeklyCompletedTaskStats(String tenantId, String workerId) {
+    if (tenantId.isEmpty || workerId.isEmpty) {
+      return Stream.value(const WorkerWeekTaskStats(totalTasks: 0, totalEstimatedMinutes: 0));
+    }
+    return (_db.select(_db.tasks)
+          ..where((t) =>
+              t.tenantId.equals(tenantId) &
+              (t.assignedUserSupabaseId.equals(workerId) | t.assignedUserIdsJson.isNotNull())))
+        .watch()
+        .map((rows) {
+      final forWorker = rows.where((t) {
+        if (t.assignedUserSupabaseId == workerId) return true;
+        final json = t.assignedUserIdsJson;
+        if (json == null || json.isEmpty) return false;
+        try {
+          final list = jsonDecode(json);
+          if (list is! List) return false;
+          return list.any((e) => (e?.toString().trim() ?? '') == workerId);
+        } catch (e, st) {
+          AppLogger.error('DriftTaskRepository: parsování assigned_user_ids JSON (watchWeeklyCompletedTaskStats) selhalo', e, st);
+          return false;
+        }
+      });
+
+      final now = DateTime.now();
+      final weekStart = _weekStartLocal(now);
+      final weekEnd = _weekEndLocal(now);
+      var totalTasks = 0;
+      var totalMin = 0;
+
+      for (final t in forWorker) {
+        if (!_isCompletedTaskStatus(t.status)) continue;
+        final ca = t.completedAt;
+        if (ca == null) continue;
+        final localDone = ca.toLocal();
+        if (localDone.isBefore(weekStart) || localDone.isAfter(weekEnd)) continue;
+        totalTasks++;
+        totalMin += _estimateMinutesFromTaskRow(t);
+      }
+
+      return WorkerWeekTaskStats(totalTasks: totalTasks, totalEstimatedMinutes: totalMin);
+    });
+  }
+
+  /// Začátek týdne (pondělí 00:00) v lokálním čase – shodně s původním weekly stats UI.
+  DateTime _weekStartLocal(DateTime now) {
+    final daysFromMonday = now.weekday - 1;
+    return DateTime(now.year, now.month, now.day).subtract(Duration(days: daysFromMonday));
+  }
+
+  /// Konec týdne (neděle 23:59:59.999) v lokálním čase.
+  DateTime _weekEndLocal(DateTime now) {
+    final start = _weekStartLocal(now);
+    return start.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59, milliseconds: 999));
+  }
+
+  bool _isCompletedTaskStatus(String status) {
+    final s = status.trim().toLowerCase();
+    return s == 'completed' || s == 'done' || s == 'dokončeno' || s == 'hotovo';
+  }
+
+  /// Parita s [parseTaskEstimateMinutes] ve worker widgetu – bez importu UI vrstvy.
+  int _estimateMinutesFromTaskRow(db.Task t) {
+    try {
+      final j = t.metadataJson;
+      if (j != null && j.trim().isNotEmpty) {
+        final decoded = jsonDecode(j);
+        if (decoded is Map<String, dynamic>) {
+          final fromMeta = decoded['estimated_minutes'] ?? decoded['estimate_minutes'];
+          if (fromMeta != null) {
+            final m = fromMeta is int ? fromMeta : int.tryParse(fromMeta.toString());
+            if (m != null && m > 0) return m;
+          }
+        }
+      }
+    } catch (e, st) {
+      AppLogger.error('DriftTaskRepository: čtení estimated_minutes z metadataJson selhalo', e, st);
+    }
+    final desc = t.description.trim();
+    if (desc.isEmpty) return 0;
+    final match = RegExp(r'(?:Odhad|Estimate|Estimación)[:\s]*(\d+)\s*min|(\d+)\s*min')
+        .firstMatch(desc);
+    if (match == null) return 0;
+    final a = int.tryParse(match.group(1) ?? '');
+    final b = int.tryParse(match.group(2) ?? '');
+    return (a ?? b) ?? 0;
+  }
+
   /// Uloží nebo aktualizuje úkol (např. ze sync). Používá [localUpdatedAt] pro Timestamp Merging.
   Future<void> upsertTask(db.Task task) async {
     final existing = await (_db.select(_db.tasks)
@@ -441,6 +713,7 @@ class DriftTaskRepository implements ITaskRepository {
                 description: task.description,
                 taskType: task.taskType,
                 scheduledStart: task.scheduledStart,
+                dueDate: task.dueDate,
                 status: task.status,
                 photoUrl: task.photoUrl,
                 localUpdatedAt: task.localUpdatedAt,
@@ -448,6 +721,9 @@ class DriftTaskRepository implements ITaskRepository {
                 syncStatus: task.syncStatus,
                 lastUpdated: task.lastUpdated,
                 metadataJson: task.metadataJson,
+                unassignedInfo: task.unassignedInfo,
+                serviceId: task.serviceId,
+                mediaUrlsJson: task.mediaUrlsJson,
                 startedAt: task.startedAt,
                 completedAt: task.completedAt,
                 invoicedAt: task.invoicedAt,
@@ -471,6 +747,7 @@ class DriftTaskRepository implements ITaskRepository {
               description: Value(task.description),
               taskType: Value(task.taskType),
               scheduledStart: task.scheduledStart,
+              dueDate: Value(task.dueDate),
               status: task.status,
               photoUrl: Value(task.photoUrl),
               localUpdatedAt: task.localUpdatedAt,
@@ -478,6 +755,9 @@ class DriftTaskRepository implements ITaskRepository {
               syncStatus: Value(task.syncStatus),
               lastUpdated: task.lastUpdated,
               metadataJson: Value(task.metadataJson),
+              unassignedInfo: Value(task.unassignedInfo),
+              serviceId: Value(task.serviceId),
+              mediaUrlsJson: Value(task.mediaUrlsJson),
               startedAt: Value(task.startedAt),
               completedAt: Value(task.completedAt),
               invoicedAt: Value(task.invoicedAt),
@@ -519,15 +799,10 @@ class DriftTaskRepository implements ITaskRepository {
     if (tenantId.isEmpty) return null;
 
     final now = DateTime.now().toUtc();
-    final rawStart = map['scheduled_start'] ?? map['due_date'];
-    DateTime scheduledStart;
-    if (rawStart is DateTime) {
-      scheduledStart = rawStart.toUtc();
-    } else if (rawStart is String) {
-      scheduledStart = DateTime.tryParse(rawStart)?.toUtc() ?? now;
-    } else {
-      scheduledStart = now;
-    }
+    final dueParsed = _parseOptionalDateTime(map['due_date']);
+    final scheduledParsed = _parseOptionalDateTime(map['scheduled_start']);
+    // PROČ: scheduled_start je na serveru povinný; due_date držíme zvlášť pro zobrazení termínu splnění.
+    final scheduledStart = scheduledParsed ?? dueParsed ?? now;
 
     String? metadataJson;
     final rawMeta = map['metadata'];
@@ -566,6 +841,7 @@ class DriftTaskRepository implements ITaskRepository {
       description: (map['description']?.toString() ?? '').trim(),
       taskType: (map['task_type']?.toString() ?? 'Jiné').trim(),
       scheduledStart: scheduledStart,
+      dueDate: dueParsed,
       status: (map['status']?.toString() ?? 'pending').trim(),
       photoUrl: opt('photo_url'),
       localUpdatedAt: now,
@@ -573,10 +849,53 @@ class DriftTaskRepository implements ITaskRepository {
       syncStatus: 0, // synced
       lastUpdated: now,
       metadataJson: metadataJson,
+      unassignedInfo: _encodeUnassignedInfo(map['unassigned_info']),
+      serviceId: opt('service_id'),
+      mediaUrlsJson: _encodeMediaUrlsForDrift(map['media_urls']),
       startedAt: parseDt(map['started_at']),
       completedAt: parseDt(map['completed_at']),
       invoicedAt: parseDt(map['invoiced_at']),
     );
+  }
+
+  /// ISO / PostgreSQL date / text `due_date` → UTC; null při neplatné hodnotě (sync nesmí spadnout).
+  static DateTime? _parseOptionalDateTime(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is DateTime) return raw.toUtc();
+    final s = raw.toString().trim();
+    if (s.isEmpty) return null;
+    final parsed = DateTime.tryParse(s);
+    if (parsed != null) return parsed.toUtc();
+    final head = s.split('T').first;
+    final m = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$').firstMatch(head);
+    if (m != null) {
+      final y = int.tryParse(m.group(1)!);
+      final mo = int.tryParse(m.group(2)!);
+      final d = int.tryParse(m.group(3)!);
+      if (y != null && mo != null && d != null) {
+        return DateTime.utc(y, mo, d);
+      }
+    }
+    return null;
+  }
+
+  /// `unassigned_info` jsonb z API → jeden textový řádek JSON pro SQLite.
+  static String? _encodeUnassignedInfo(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is Map) {
+      try {
+        return jsonEncode(Map<String, dynamic>.from(raw));
+      } catch (e, st) {
+        AppLogger.error('DriftTaskRepository._encodeUnassignedInfo: jsonEncode mapy selhalo', e, st);
+        return null;
+      }
+    }
+    if (raw is String) {
+      final t = raw.trim();
+      return t.isEmpty ? null : t;
+    }
+    final s = raw.toString().trim();
+    return s.isEmpty ? null : s;
   }
 
   /// Smaže všechny úkoly tenanta a pracovníka (např. před sync).
@@ -603,7 +922,9 @@ class DriftTaskRepository implements ITaskRepository {
         if (contains) {
           await (_db.delete(_db.tasks)..where((ta) => ta.id.equals(t.id))).go();
         }
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('DriftTaskRepository: parsování assignedUserIdsJson při mazání úkolů selhalo', e, st);
+      }
     }
   }
 
@@ -652,6 +973,7 @@ class DriftTaskRepository implements ITaskRepository {
             description: task.description,
             taskType: task.taskType,
             scheduledStart: task.scheduledStart,
+            dueDate: task.dueDate,
             status: task.status,
             photoUrl: task.photoUrl,
             localUpdatedAt: task.localUpdatedAt,
@@ -659,6 +981,9 @@ class DriftTaskRepository implements ITaskRepository {
             syncStatus: 0, // synced
             lastUpdated: now,
             metadataJson: task.metadataJson,
+            unassignedInfo: task.unassignedInfo,
+            serviceId: task.serviceId,
+            mediaUrlsJson: task.mediaUrlsJson,
             startedAt: task.startedAt,
             completedAt: task.completedAt,
             invoicedAt: task.invoicedAt,
@@ -698,6 +1023,7 @@ class DriftTaskRepository implements ITaskRepository {
             description: mergedDescription ?? task.description,
             taskType: taskType ?? task.taskType,
             scheduledStart: scheduledStart ?? task.scheduledStart,
+            dueDate: task.dueDate,
             status: mergedStatus,
             photoUrl: task.photoUrl,
             localUpdatedAt: task.localUpdatedAt,
@@ -705,6 +1031,9 @@ class DriftTaskRepository implements ITaskRepository {
             syncStatus: 0,
             lastUpdated: now,
             metadataJson: mergedMetadataJson ?? task.metadataJson,
+            unassignedInfo: task.unassignedInfo,
+            serviceId: task.serviceId,
+            mediaUrlsJson: task.mediaUrlsJson,
             startedAt: task.startedAt,
             completedAt: task.completedAt,
             invoicedAt: task.invoicedAt,

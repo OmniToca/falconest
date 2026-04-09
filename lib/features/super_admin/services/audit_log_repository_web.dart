@@ -4,6 +4,7 @@
 library;
 import 'package:falconest/features/super_admin/services/audit_log_shared.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 
 class AuditLogRepository {
   AuditLogRepository._();
@@ -33,7 +34,8 @@ class AuditLogRepository {
         out[authId] = display;
       }
       return out;
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('AuditLogRepository (web): fetchActorNames selhal', e, st);
       return {};
     }
   }
@@ -56,7 +58,47 @@ class AuditLogRepository {
         if (entry != null) out.add(entry);
       }
       return out;
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('AuditLogRepository (web): fetchLogs selhal', e, st);
+      return [];
+    }
+  }
+
+  /// Záznamy pro jeden řádek entity (např. audit úkolu v admin detailu).
+  ///
+  /// PROČ: Filtruje podle `table_name` + `record_id` v rámci tenanta; řazení od nejstaršího.
+  static Future<List<AuditLogEntry>> fetchLogsForRecord({
+    required String tenantId,
+    required String tableName,
+    required String recordId,
+    int limit = 150,
+  }) async {
+    final tid = tenantId.trim();
+    final tbl = tableName.trim();
+    final rid = recordId.trim();
+    if (tid.isEmpty || tbl.isEmpty || rid.isEmpty) return [];
+    try {
+      final res = await _client
+          .from('audit_logs')
+          .select(
+            'id, tenant_id, user_id, action_type, table_name, record_id, details, created_at',
+          )
+          .eq('tenant_id', tid)
+          .eq('table_name', tbl)
+          .eq('record_id', rid)
+          .order('created_at', ascending: true)
+          .limit(limit);
+      final list = List<dynamic>.from(res as List);
+      final out = <AuditLogEntry>[];
+      for (final e in list) {
+        final entry = AuditLogEntry.fromJson(
+          Map<String, dynamic>.from(e as Map),
+        );
+        if (entry != null) out.add(entry);
+      }
+      return out;
+    } catch (e, st) {
+      AppLogger.error('AuditLogRepository (web): fetchLogsForRecord selhal', e, st);
       return [];
     }
   }
@@ -68,14 +110,14 @@ class AuditLogRepository {
     final table = entry.tableName;
     final recordId = entry.recordId;
     if (table == null || recordId == null || !kSoftDeleteTables.contains(table)) return;
-    await applyRestoreToSupabase(table, recordId);
+    await applyRestoreToSupabase(table, recordId, entry.tenantId);
   }
 
   static Future<void> hardDelete(AuditLogEntry entry) async {
     final table = entry.tableName;
     final recordId = entry.recordId;
     if (table == null || recordId == null || !kSoftDeleteTables.contains(table)) return;
-    await applyHardDeleteToSupabase(table, recordId);
+    await applyHardDeleteToSupabase(table, recordId, entry.tenantId);
   }
 
   static Future<void> processPendingAuditActions() async {}

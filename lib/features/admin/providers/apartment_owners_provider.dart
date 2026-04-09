@@ -35,8 +35,8 @@ class ApartmentOwnerRow {
 /// Provider načítající majitele přiřazené k danému apartmánu.
 ///
 /// Dotaz na apartment_owners s JOIN na profiles. Soft delete: pouze
-/// záznamy s deleted_at IS NULL. Tabulka apartment_owners nemá tenant_id –
-/// multi-tenant bezpečnost zajišťuje filtrace podle apartment_id (byt patří tenantovi).
+/// záznamy s deleted_at IS NULL. Sloupec tenant_id (denormalizace z apartments) umožňuje
+/// striktní [SupabaseService.safeFrom] na klientovi – dříve spoléhání jen na RLS + apartment_id.
 /// BUGFIX: Explicitní hint !apartment_owners_owner_id_fkey pro PostgREST –
 /// zajistí správný JOIN při více FK vazbách a po doplnění migrace 20260223.
 final apartmentOwnersForApartmentProvider =
@@ -44,8 +44,7 @@ final apartmentOwnersForApartmentProvider =
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];
 
-  final res = await SupabaseService.client
-      .from('apartment_owners')
+  final res = await SupabaseService.safeFrom('apartment_owners', tenantId)
       .select(
         'id, owner_id, is_primary_billing, profiles!apartment_owners_owner_id_fkey(id, name, first_name, last_name, email, status)',
       )
@@ -99,15 +98,13 @@ List<ApartmentOwnerRow> _parseOwnerRows(List<dynamic> raw) {
 ///
 /// Jeden dotaz na apartment_owners pro celý tenant. Slouží pro zobrazení
 /// "Počet apartmánů: X" na kartě majitele v modulu Klienti bez rizika N+1.
-/// Tenant izolace: inner join na apartments a filtr apartments.tenant_id (apartment_owners nemá tenant_id).
+/// PROČ safeFrom: tenant_id je přímo na apartment_owners – join na apartments už není nutný pro izolaci.
 final ownerApartmentCountsProvider = FutureProvider<Map<String, int>>((ref) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return {};
 
-  final res = await SupabaseService.client
-      .from('apartment_owners')
-      .select('owner_id, apartments!inner(tenant_id)')
-      .eq('apartments.tenant_id', tenantId)
+  final res = await SupabaseService.safeFrom('apartment_owners', tenantId)
+      .select('owner_id')
       .isFilter('deleted_at', null);
 
   final map = <String, int>{};
@@ -133,8 +130,9 @@ final apartmentsForProfileProvider =
 
   final res = await SupabaseService.safeFrom('apartments', tenantId)
       .select(
-        'id, name, address, keybox, tenant_id, zone_id, status, '
+        'id, name, address, keybox, parking_instructions, review_link, tenant_id, zone_id, status, '
         'check_in_time, check_out_time, standard_cleaning_duration, owner_notes, '
+        'geo_location, '
         'apartment_owners!inner(owner_id)',
       )
       .eq('apartment_owners.owner_id', profileId)
@@ -233,14 +231,13 @@ class ApartmentOwnersRepository {
 
   /// Zajistí propojení majitel–byt: pokud existuje soft-deleted záznam, obnoví ho,
   /// jinak vloží nový řádek. Tím se vyhneme chybě duplicate key při znovupřidání majitele.
-  /// Tabulka apartment_owners nemá tenant_id – bezpečnost zajišťuje RLS a kontext (apartment patří tenantovi).
+  /// PROČ safeFrom + safeInsertPayload: každý řádek nese tenant_id synchronně s bytem (migrace + insert).
   static Future<void> _ensureOwnerLinked({
     required String apartmentId,
     required String ownerId,
     required String tenantId,
   }) async {
-    final existing = await SupabaseService.client
-        .from('apartment_owners')
+    final existing = await SupabaseService.safeFrom('apartment_owners', tenantId)
         .select('id, deleted_at')
         .eq('apartment_id', apartmentId)
         .eq('owner_id', ownerId)
@@ -250,15 +247,14 @@ class ApartmentOwnersRepository {
       final id = (existing as Map)['id']?.toString();
       final deletedAt = (existing as Map)['deleted_at'];
       if (id != null && id.isNotEmpty && deletedAt != null) {
-        await SupabaseService.client
-            .from('apartment_owners')
+        await SupabaseService.safeFrom('apartment_owners', tenantId)
             .update({'deleted_at': null})
             .eq('id', id);
       }
       return;
     }
 
-    await SupabaseService.client.from('apartment_owners').insert({
+    await SupabaseService.safeFrom('apartment_owners', tenantId).insert({
       'apartment_id': apartmentId,
       'owner_id': ownerId,
     });
@@ -304,19 +300,16 @@ class ApartmentOwnersRepository {
     final firstName = parts.isNotEmpty ? parts.first : '';
     final lastName = parts.length > 1 ? parts.sublist(1).join(' ') : ' ';
 
-    final profilePayload = <String, dynamic>{
-      'tenant_id': tenantId,
-      'email': email,
-      'first_name': firstName,
-      'last_name': lastName.isEmpty ? ' ' : lastName,
-      'name': displayName,
-      'status': 'pending',
-      'role': 'property_owner',
-      'roles': [],
-    };
-    final profileRes = await SupabaseService.client
-        .from('profiles')
-        .insert(profilePayload)
+    final profileRes = await SupabaseService.safeFrom('profiles', tenantId)
+        .insert({
+          'email': email,
+          'first_name': firstName,
+          'last_name': lastName.isEmpty ? ' ' : lastName,
+          'name': displayName,
+          'status': 'pending',
+          'role': 'property_owner',
+          'roles': [],
+        })
         .select('id')
         .single();
     final newProfileId = (profileRes as Map)['id']?.toString();
@@ -325,7 +318,6 @@ class ApartmentOwnersRepository {
     }
 
     final invPayload = <String, dynamic>{
-      'tenant_id': tenantId,
       'profile_id': newProfileId,
       'email': email,
       'first_name': firstName,
@@ -369,14 +361,12 @@ class ApartmentOwnersRepository {
   }
 
   /// Odebere propojení – soft delete (nastavení deleted_at).
-  /// Tabulka apartment_owners nemá tenant_id – RLS a kontext (id z aktuálního tenanta) zajišťují bezpečnost.
   static Future<void> removeOwner({
     required String apartmentOwnersId,
     required String tenantId,
   }) async {
     final deletedAt = DateTime.now().toUtc().toIso8601String();
-    await SupabaseService.client
-        .from('apartment_owners')
+    await SupabaseService.safeFrom('apartment_owners', tenantId)
         .update({'deleted_at': deletedAt})
         .eq('id', apartmentOwnersId);
   }
@@ -387,16 +377,15 @@ class ApartmentOwnersRepository {
   /// (paušál i úkoly) jde jen jemu. Nejprve nastavíme is_primary_billing = false všem
   /// záznamům daného bytu, pak true vybranému záznamu.
   static Future<void> setPrimaryBillingOwner({
+    required String tenantId,
     required String apartmentId,
     required String apartmentOwnersRecordId,
   }) async {
-    await SupabaseService.client
-        .from('apartment_owners')
+    await SupabaseService.safeFrom('apartment_owners', tenantId)
         .update({'is_primary_billing': false})
         .eq('apartment_id', apartmentId)
         .isFilter('deleted_at', null);
-    await SupabaseService.client
-        .from('apartment_owners')
+    await SupabaseService.safeFrom('apartment_owners', tenantId)
         .update({'is_primary_billing': true})
         .eq('id', apartmentOwnersRecordId);
   }

@@ -1,3 +1,5 @@
+import 'package:falconest/core/utils/geo_json_point.dart';
+
 /// Model záznamu tabulky [tasks] – úkol (API/JSON DTO).
 ///
 /// Pro formuláře, API volání a konzistenci při práci s úkoly z Supabase.
@@ -12,6 +14,8 @@ class TaskModel {
     this.clientId,
     this.customLocation,
     this.customTitle,
+    this.latitude,
+    this.longitude,
     this.assignedTo,
     this.assignedUserIds = const [],
     required this.scheduledStart,
@@ -41,6 +45,8 @@ class TaskModel {
   final String? customLocation;
   /// Název úkolu, např. "Transfer letiště", když nemáme název bytu.
   final String? customTitle;
+  final double? latitude;
+  final double? longitude;
   final String? assignedTo;
   /// Další přiřazení pracovníci – pro sdílení úkolu a dělení odměny.
   final List<String> assignedUserIds;
@@ -96,6 +102,7 @@ class TaskModel {
     }
 
     final rawStart = json['scheduled_start'] ?? json['due_date'];
+    final geo = GeoJsonPoint.parseFromPostgrest(json['geo_location']);
 
     return TaskModel(
       id: json['id'] as String? ?? '',
@@ -105,6 +112,8 @@ class TaskModel {
       clientId: optString(json['client_id']),
       customLocation: optString(json['custom_location']),
       customTitle: optString(json['custom_title']),
+      latitude: geo?.latitude,
+      longitude: geo?.longitude,
       assignedTo: optString(json['assigned_to']),
       assignedUserIds: parseStringList(json['assigned_user_ids']),
       scheduledStart: parseRequiredDateTime(rawStart),
@@ -124,6 +133,7 @@ class TaskModel {
   }
 
   Map<String, dynamic> toMap() {
+    final geo = GeoJsonPoint.toPostgrestJson(latitude, longitude);
     return {
       'id': id,
       'tenant_id': tenantId,
@@ -132,6 +142,7 @@ class TaskModel {
       if (clientId != null) 'client_id': clientId,
       if (customLocation != null) 'custom_location': customLocation,
       if (customTitle != null) 'custom_title': customTitle,
+      if (geo != null) 'geo_location': geo,
       if (assignedTo != null) 'assigned_to': assignedTo,
       if (assignedUserIds.isNotEmpty) 'assigned_user_ids': assignedUserIds,
       'scheduled_start': scheduledStart.toIso8601String(),
@@ -168,6 +179,8 @@ class TaskModel {
     String? clientId,
     String? customLocation,
     String? customTitle,
+    double? latitude,
+    double? longitude,
     String? assignedTo,
     List<String>? assignedUserIds,
     DateTime? scheduledStart,
@@ -192,6 +205,8 @@ class TaskModel {
       clientId: clientId ?? this.clientId,
       customLocation: customLocation ?? this.customLocation,
       customTitle: customTitle ?? this.customTitle,
+      latitude: latitude ?? this.latitude,
+      longitude: longitude ?? this.longitude,
       assignedTo: assignedTo ?? this.assignedTo,
       assignedUserIds: assignedUserIds ?? this.assignedUserIds,
       scheduledStart: scheduledStart ?? this.scheduledStart,

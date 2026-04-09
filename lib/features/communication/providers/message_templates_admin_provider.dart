@@ -5,9 +5,6 @@ import 'package:falconest/features/communication/models/message_template_row.dar
 import 'package:falconest/features/communication/repositories/message_templates_repository.dart';
 
 /// Provider načítající seznam šablon zpráv pro aktuálního tenanta.
-///
-/// Používá se na Admin obrazovce Komunikace. Po create/update/delete
-/// voláme ref.invalidate(messageTemplatesAdminProvider) pro refresh.
 final messageTemplatesAdminProvider =
     FutureProvider<List<MessageTemplateRow>>((ref) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
@@ -24,9 +21,10 @@ class MessageTemplatesAdminNotifier extends StateNotifier<AsyncValue<void>> {
 
   Future<void> create({
     required String name,
-    required String body,
+    required String channel,
+    String? emailSubject,
+    required MessageTemplateTranslations translations,
     String? triggerContext,
-    String? languageCode,
     int orderIndex = 0,
   }) async {
     state = const AsyncValue.loading();
@@ -42,9 +40,10 @@ class MessageTemplatesAdminNotifier extends StateNotifier<AsyncValue<void>> {
       await MessageTemplatesRepository.createTemplate(
         tenantId,
         name: name,
-        body: body,
+        channel: channel,
+        emailSubject: emailSubject,
+        translations: translations,
         triggerContext: triggerContext,
-        languageCode: languageCode,
         orderIndex: orderIndex,
       );
       _ref.invalidate(messageTemplatesAdminProvider);

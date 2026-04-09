@@ -2,9 +2,11 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/core/repositories/settlements/settlement_repository.dart';
 import 'package:falconest/core/repositories/team/team_repository.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/features/admin/providers/admin_team_repository.dart';
 
 /// Bezpečně parsuje datum z ISO nebo evropského dd.MM.yyyy. Při selhání vrací null (nevyřazujeme uživatele).
 DateTime? _parseDateSafe(dynamic v) {
@@ -16,13 +18,19 @@ DateTime? _parseDateSafe(dynamic v) {
   try {
     final iso = DateTime.tryParse(s);
     if (iso != null) return iso;
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('admin_team_provider: parsování data (ISO krok) selhalo', e, st);
+  }
   try {
     return DateFormat('dd.MM.yyyy').parse(s);
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('admin_team_provider: parsování data (dd.MM.yyyy) selhalo', e, st);
+  }
   try {
     return DateFormat('yyyy-MM-dd').parse(s);
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('admin_team_provider: parsování data (yyyy-MM-dd) selhalo', e, st);
+  }
   return null;
 }
 
@@ -101,7 +109,8 @@ final staffAbsencesProvider = FutureProvider<List<StaffAbsence>>((ref) async {
     return list
         .map((e) => StaffAbsence.fromJson(Map<String, dynamic>.from(e as Map)))
         .toList();
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('staffAbsencesProvider: načtení staff_absences selhalo', e, st);
     return [];
   }
 });
@@ -324,7 +333,8 @@ TeamMember? _parseProfileMapToTeamMember(Map<String, dynamic> map) {
       lastSignInAt: lastSignInAt,
       systemRole: appRole.isNotEmpty ? appRole : systemRole,
     );
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('_parseProfileMapToTeamMember: parsování mapy profilu selhalo', e, st);
     return null;
   }
 }
@@ -406,17 +416,98 @@ class PaginatedTeamNotifier extends AsyncNotifier<List<TeamMember>> {
     state = const AsyncValue.loading();
     state = await AsyncValue.guard(() => build());
   }
+
+  // ---------------------------------------------------------------------------
+  // Mutace personálu – delegace na [AdminTeamRepository] (safeFrom na profiles)
+  // ---------------------------------------------------------------------------
+
+  /// Soft-delete člena týmu (audit + odpojení úkolů v repozitáři).
+  Future<void> deleteTeamMember(TeamMember member) async {
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return;
+    await AdminTeamRepository.softDeleteTeamMember(
+      ref: ref,
+      tenantId: tenantId,
+      isFromInvitation: member.isFromInvitation,
+      profileId: member.id,
+      memberName: member.name,
+      previousStateForAudit: member.toJson(),
+    );
+  }
+
+  /// Aktualizace řádku v `profiles` pod aktuálním tenantem.
+  Future<void> updateTeamMemberProfile({
+    required TeamMember member,
+    required Map<String, dynamic> profileUpdate,
+  }) async {
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return;
+    await AdminTeamRepository.updateTeamMemberProfile(
+      tenantId: tenantId,
+      profileId: member.id,
+      profileUpdate: profileUpdate,
+    );
+  }
+
+  /// Nová pozvánka: insert profilu + invitation (+ majitelé bytů). Vrací profile_id.
+  Future<String> inviteStaffMember({
+    required Map<String, dynamic> profilePayload,
+    required Map<String, dynamic> invitationPayload,
+    required List<String> propertyOwnerApartmentIds,
+  }) async {
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) {
+      throw StateError('tenantId je prázdný');
+    }
+    return AdminTeamRepository.inviteStaffMember(
+      tenantId: tenantId,
+      profilePayload: profilePayload,
+      invitationPayload: invitationPayload,
+      propertyOwnerApartmentIds: propertyOwnerApartmentIds,
+    );
+  }
+
+  /// Odpojení úkolů po změně smlouvy / nepřítomnosti – sdílená logika z repozitáře.
+  Future<void> unassignOpenTasksForMember({
+    required String memberId,
+    DateTime? fromDate,
+    DateTime? toDate,
+    String? memberName,
+  }) async {
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return;
+    await AdminTeamRepository.unassignOpenTasksForMember(
+      ref,
+      tenantId,
+      memberId,
+      fromDate: fromDate,
+      toDate: toDate,
+      memberName: memberName,
+    );
+  }
 }
 
 /// Provider stránkovaného seznamu personálu pro obrazovku Personál.
 ///
 /// Používá PaginatedTeamNotifier – build() načte první stránku, loadMore() a search()
-/// volá UI. ref.watch(adminTeamProvider) vrací AsyncValue<List<TeamMember>>.
+/// volá UI. ref.watch(adminTeamProvider) vrací `AsyncValue` se seznamem [TeamMember].
 /// Dropdowny (výběr řešitele úkolu, peněženky, reporty) používají [teamFullListProvider].
 final adminTeamProvider =
     AsyncNotifierProvider<PaginatedTeamNotifier, List<TeamMember>>(
   PaginatedTeamNotifier.new,
 );
+
+/// Horní limit pro `teamFullListProvider`.
+///
+/// PROČ: tento provider se používá pro dropdowny a ostatní moduly.
+/// U velkých tenantů nechceme potichu ořezávat seznam a tím pádem mít
+/// neúplný výběr personálu na Admin obrazovkách.
+const int teamFullListProviderLimit = 5000;
+
+/// Jestli se při načítání `teamFullListProvider` narazilo na limit.
+///
+/// UI pak zobrazí varování (data mohou být neúplná).
+final teamDataLimitReachedProvider = StateProvider<bool>((ref) => false);
 
 /// Plný seznam členů týmu (až 500) pro dropdowny a jiné moduly.
 ///
@@ -426,22 +517,32 @@ final adminTeamProvider =
 /// Po vložení/úpravě/smazání člena invalidovat i [adminTeamProvider].
 final teamFullListProvider = FutureProvider<List<TeamMember>>((ref) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
-  if (tenantId == null || tenantId.isEmpty) return [];
+  if (tenantId == null || tenantId.isEmpty) {
+    ref.read(teamDataLimitReachedProvider.notifier).state = false;
+    return [];
+  }
 
   try {
     final raw = await TeamRepository.getPaginatedTeamMembers(
       tenantId,
-      limit: 500,
+      limit: teamFullListProviderLimit,
       offset: 0,
       searchQuery: null,
     );
+
+    // PROČ: pokud backend/klient vrátí počet >= limit, pravděpodobně máme ořezané výsledky.
+    ref.read(teamDataLimitReachedProvider.notifier).state =
+        raw.length >= teamFullListProviderLimit;
+
     final list = raw
         .map((e) => _parseProfileMapToTeamMember(e))
         .whereType<TeamMember>()
         .toList();
     list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     return list;
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('teamFullListProvider: načtení plného seznamu týmu selhalo', e, st);
+    ref.read(teamDataLimitReachedProvider.notifier).state = false;
     return [];
   }
 });
@@ -531,10 +632,14 @@ final memberFinancesProvider =
     DateTime? bDate;
     if (aRaw is DateTime) {
       aDate = aRaw;
-    } else if (aRaw != null) aDate = DateTime.tryParse(aRaw.toString());
+    } else if (aRaw != null) {
+      aDate = DateTime.tryParse(aRaw.toString());
+    }
     if (bRaw is DateTime) {
       bDate = bRaw;
-    } else if (bRaw != null) bDate = DateTime.tryParse(bRaw.toString());
+    } else if (bRaw != null) {
+      bDate = DateTime.tryParse(bRaw.toString());
+    }
     if (aDate == null && bDate == null) return 0;
     if (aDate == null) return 1;
     if (bDate == null) return -1;

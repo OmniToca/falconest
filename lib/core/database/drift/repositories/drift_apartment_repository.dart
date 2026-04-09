@@ -43,6 +43,10 @@ class DriftApartmentRepository {
               keybox: apt.keybox,
               code: apt.code,
               ownerNotes: apt.ownerNotes,
+              checkInTime: apt.checkInTime,
+              checkOutTime: apt.checkOutTime,
+              zoneId: apt.zoneId,
+              parkingInstructions: apt.parkingInstructions,
               syncStatus: 0,
               localUpdatedAt: now,
               lastSyncedAt: now,
@@ -59,6 +63,10 @@ class DriftApartmentRepository {
               keybox: Value(apt.keybox),
               code: Value(apt.code),
               ownerNotes: Value(apt.ownerNotes),
+              checkInTime: Value(apt.checkInTime),
+              checkOutTime: Value(apt.checkOutTime),
+              zoneId: Value(apt.zoneId),
+              parkingInstructions: Value(apt.parkingInstructions),
               syncStatus: const Value(0),
               localUpdatedAt: now,
               lastSyncedAt: Value(now),
@@ -87,6 +95,22 @@ class DriftApartmentRepository {
       keybox: opt('keybox'),
       code: opt('code'),
       ownerNotes: opt('owner_notes'),
+      // Fáze 2: časy a zóna z Supabase pro worker kontext offline.
+      checkInTime: opt('check_in_time'),
+      checkOutTime: opt('check_out_time'),
+      zoneId: () {
+        final z = map['zone_id'];
+        if (z == null) return null;
+        final s = z.toString().trim();
+        return s.isEmpty ? null : s;
+      }(),
+      // Parkování: může být delší text – prázdný řetězec ukládáme jako null.
+      parkingInstructions: () {
+        final v = map['parking_instructions'];
+        if (v == null) return null;
+        final t = v.toString();
+        return t.trim().isEmpty ? null : t;
+      }(),
       syncStatus: 0,
       localUpdatedAt: now,
       lastSyncedAt: now,

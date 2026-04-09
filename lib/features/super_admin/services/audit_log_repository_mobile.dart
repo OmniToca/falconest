@@ -7,6 +7,7 @@ import 'package:falconest/core/database/drift/repositories/drift_pending_audit_a
 import 'package:falconest/core/database/drift/app_database.dart';
 import 'package:falconest/features/super_admin/services/audit_log_shared.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 
 class AuditLogRepository {
   AuditLogRepository._();
@@ -39,7 +40,8 @@ class AuditLogRepository {
         out[authId] = display;
       }
       return out;
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('AuditLogRepository (mobile): fetchActorNames selhal', e, st);
       return {};
     }
   }
@@ -62,7 +64,45 @@ class AuditLogRepository {
         if (entry != null) out.add(entry);
       }
       return out;
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('AuditLogRepository (mobile): fetchLogs selhal', e, st);
+      return [];
+    }
+  }
+
+  /// Viz [AuditLogRepository.fetchLogsForRecord] (web) – stejný dotaz přes Supabase klienta.
+  static Future<List<AuditLogEntry>> fetchLogsForRecord({
+    required String tenantId,
+    required String tableName,
+    required String recordId,
+    int limit = 150,
+  }) async {
+    final tid = tenantId.trim();
+    final tbl = tableName.trim();
+    final rid = recordId.trim();
+    if (tid.isEmpty || tbl.isEmpty || rid.isEmpty) return [];
+    try {
+      final res = await _client
+          .from('audit_logs')
+          .select(
+            'id, tenant_id, user_id, action_type, table_name, record_id, details, created_at',
+          )
+          .eq('tenant_id', tid)
+          .eq('table_name', tbl)
+          .eq('record_id', rid)
+          .order('created_at', ascending: true)
+          .limit(limit);
+      final list = List<dynamic>.from(res as List);
+      final out = <AuditLogEntry>[];
+      for (final e in list) {
+        final entry = AuditLogEntry.fromJson(
+          Map<String, dynamic>.from(e as Map),
+        );
+        if (entry != null) out.add(entry);
+      }
+      return out;
+    } catch (e, st) {
+      AppLogger.error('AuditLogRepository (mobile): fetchLogsForRecord selhal', e, st);
       return [];
     }
   }
@@ -82,8 +122,9 @@ class AuditLogRepository {
         tenantId: entry.tenantId,
       );
       await processPendingAuditActions();
-    } catch (_) {
-      await applyRestoreToSupabase(table, recordId);
+    } catch (e, st) {
+      AppLogger.error('AuditLogRepository (mobile): restore enqueue selhal, fallback na Supabase', e, st);
+      await applyRestoreToSupabase(table, recordId, entry.tenantId);
     }
   }
 
@@ -99,8 +140,9 @@ class AuditLogRepository {
         tenantId: entry.tenantId,
       );
       await processPendingAuditActions();
-    } catch (_) {
-      await applyHardDeleteToSupabase(table, recordId);
+    } catch (e, st) {
+      AppLogger.error('AuditLogRepository (mobile): hardDelete enqueue selhal, fallback na Supabase', e, st);
+      await applyHardDeleteToSupabase(table, recordId, entry.tenantId);
     }
   }
 
@@ -110,13 +152,17 @@ class AuditLogRepository {
       for (final p in pending) {
         try {
           if (p.actionType == 'restore') {
-            await applyRestoreToSupabase(p.targetTable, p.recordId);
+            await applyRestoreToSupabase(p.targetTable, p.recordId, p.tenantId);
           } else if (p.actionType == 'hard_delete') {
-            await applyHardDeleteToSupabase(p.targetTable, p.recordId);
+            await applyHardDeleteToSupabase(p.targetTable, p.recordId, p.tenantId);
           }
           await _pendingRepo.markSynced(p);
-        } catch (_) {}
+        } catch (e, st) {
+          AppLogger.error('AuditLogRepository (mobile): zpracování pending audit akce selhalo', e, st);
+        }
       }
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('AuditLogRepository (mobile): processPendingAuditActions selhal', e, st);
+    }
   }
 }

@@ -25,6 +25,7 @@ class ReservationServiceRow {
     required this.reservationId,
     required this.apartmentServiceId,
     this.chargedPrice,
+    this.transitCashToCollect,
     this.customNote,
     this.flightNumber,
     this.payerType,
@@ -36,6 +37,8 @@ class ReservationServiceRow {
   final String reservationId;
   final String apartmentServiceId;
   final num? chargedPrice;
+  /// Hotovost za ubytování (průtok majiteli), EUR – odděleně od [chargedPrice].
+  final num? transitCashToCollect;
   final String? customNote;
   /// Číslo letu – přednostně ze sloupce flight_number, zpětně z custom_note (prefix [FLIGHT:XXX]).
   final String? flightNumber;
@@ -61,12 +64,22 @@ class ReservationServiceRow {
     final rawTenantId = (json['tenant_id'] as String?)?.trim() ?? '';
     final rawReservationId = (json['reservation_id'] as String?)?.trim() ?? '';
     final rawApartmentServiceId = (json['apartment_service_id'] as String?)?.trim() ?? '';
+    final rawTransit = json['transit_cash_to_collect'];
+    num? transit;
+    if (rawTransit != null) {
+      if (rawTransit is num) {
+        transit = rawTransit;
+      } else {
+        transit = num.tryParse(rawTransit.toString());
+      }
+    }
     return ReservationServiceRow(
       id: rawId,
       tenantId: rawTenantId,
       reservationId: rawReservationId,
       apartmentServiceId: rawApartmentServiceId,
       chargedPrice: price,
+      transitCashToCollect: transit,
       customNote: (note != null && note.isNotEmpty) ? note : null,
       flightNumber: (flightNum != null && flightNum.isNotEmpty) ? flightNum : parsedFlight,
       payerType: () {
@@ -108,6 +121,10 @@ class ApartmentServiceOption {
     this.durationMinutes = 0,
     this.requiresPhotoFromApartment,
     this.requiresPhotoFromCatalog = false,
+    /// Spouštěč z [apartment_services.trigger_type] – pro read-only náhled v dialogu rezervace.
+    this.triggerType = 'on_demand',
+    /// Šablona checklistu z [apartment_services.checklist_template_id]; null = u bytu nepřiřazeno.
+    this.checklistTemplateId,
   });
 
   final String apartmentServiceId;
@@ -125,6 +142,10 @@ class ApartmentServiceOption {
   final bool? requiresPhotoFromApartment;
   /// Hodnota z tenant_services (fallback při null v bytu).
   final bool requiresPhotoFromCatalog;
+  /// Hodnota z apartment_services – zobrazí se dispečerovi v rezervaci bez prokliku do bytu.
+  final String triggerType;
+  /// ID šablony checklistu z apartment_services; název se v UI dopočítá ze seznamu šablon tenanta.
+  final String? checklistTemplateId;
 }
 
 /// Lokální stav jedné služby v dialogu rezervace – zaškrtnutí a účtovaná cena / poznámka.
@@ -137,6 +158,7 @@ class ReservationServiceEditState {
     this.defaultPriceEur = 0,
     this.enabled = false,
     this.chargedPriceEur,
+    this.transitCashToCollectEur,
     this.customNote,
     this.flightNumber,
     this.payerType = 'guest',
@@ -148,6 +170,8 @@ class ReservationServiceEditState {
   final double defaultPriceEur;
   final bool enabled;
   final double? chargedPriceEur;
+  /// Průtoková hotovost za ubytování (majitel), EUR – mimo příjem agentury za službu.
+  final double? transitCashToCollectEur;
   final String? customNote;
   /// Číslo letu pro transfery – v DB se ukládá do custom_note s prefixem, v UI samostatné pole.
   final String? flightNumber;
@@ -159,12 +183,14 @@ class ReservationServiceEditState {
   ReservationServiceEditState copyWith({
     bool? enabled,
     double? chargedPriceEur,
+    double? transitCashToCollectEur,
     String? customNote,
     String? flightNumber,
     String? payerType,
     bool? requiresPhoto,
     bool clearRequiresPhoto = false,
     bool clearFlightNumber = false,
+    bool clearTransitCashToCollect = false,
   }) {
     return ReservationServiceEditState(
       apartmentServiceId: apartmentServiceId,
@@ -172,6 +198,9 @@ class ReservationServiceEditState {
       defaultPriceEur: defaultPriceEur,
       enabled: enabled ?? this.enabled,
       chargedPriceEur: chargedPriceEur ?? this.chargedPriceEur,
+      transitCashToCollectEur: clearTransitCashToCollect
+          ? null
+          : (transitCashToCollectEur ?? this.transitCashToCollectEur),
       customNote: customNote ?? this.customNote,
       flightNumber: clearFlightNumber ? null : (flightNumber ?? this.flightNumber),
       payerType: payerType ?? this.payerType,

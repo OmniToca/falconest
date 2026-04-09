@@ -57,10 +57,12 @@ final ownerApartmentsProvider = FutureProvider<List<OwnerApartmentWithStatus>>((
 ) async {
   final profileId = ref.watch(authNotifierProvider).state.profileId;
   if (profileId == null || profileId.isEmpty) return [];
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return [];
 
   // Krok 1: Získat pouze ID apartmánů přiřazených majiteli v apartment_owners.
-  final ownersRes = await SupabaseService.client
-      .from('apartment_owners')
+  // PROČ safeFrom: stejná tenant vrstva jako v adminu (sloupec tenant_id na apartment_owners).
+  final ownersRes = await SupabaseService.safeFrom('apartment_owners', tenantId)
       .select('apartment_id')
       .eq('owner_id', profileId)
       .isFilter('deleted_at', null);
@@ -77,8 +79,7 @@ final ownerApartmentsProvider = FutureProvider<List<OwnerApartmentWithStatus>>((
   if (apartmentIds.isEmpty) return [];
 
   // Krok 2: Načíst apartmány s úkoly – pouze ty z výše získaného seznamu.
-  final response = await SupabaseService.client
-      .from('apartments')
+  final response = await SupabaseService.safeFrom('apartments', tenantId)
       .select('id, name, address, tasks(scheduled_start, status)')
       .inFilter('id', apartmentIds)
       .isFilter('deleted_at', null);

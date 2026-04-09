@@ -80,7 +80,7 @@ class _AddHqAbsenceDialogState extends ConsumerState<AddHqAbsenceDialog> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -110,7 +110,7 @@ class _AddHqAbsenceDialogState extends ConsumerState<AddHqAbsenceDialog> {
           ListTile(
             contentPadding: EdgeInsets.zero,
             title: Text('super_admin.hq_absence_from'.tr()),
-            subtitle: Text(_fromDate != null ? '${_fromDate!.day}.${_fromDate!.month}.${_fromDate!.year}' : '—'),
+            subtitle: Text(_fromDate != null ? '${_fromDate!.day}.${_fromDate!.month}.${_fromDate!.year}' : 'common.placeholder_dash'.tr()),
             trailing: TextButton(
               onPressed: () async {
                 final d = await showDatePicker(
@@ -127,7 +127,7 @@ class _AddHqAbsenceDialogState extends ConsumerState<AddHqAbsenceDialog> {
           ListTile(
             contentPadding: EdgeInsets.zero,
             title: Text('super_admin.hq_absence_to'.tr()),
-            subtitle: Text(_toDate != null ? '${_toDate!.day}.${_toDate!.month}.${_toDate!.year}' : '—'),
+            subtitle: Text(_toDate != null ? '${_toDate!.day}.${_toDate!.month}.${_toDate!.year}' : 'common.placeholder_dash'.tr()),
             trailing: TextButton(
               onPressed: () async {
                 final d = await showDatePicker(

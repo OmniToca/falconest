@@ -3,7 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/constants/app_languages.dart';
 import 'package:falconest/core/models/client_model.dart';
+import 'package:falconest/core/theme/theme_ext.dart';
+import 'package:falconest/core/utils/geo_json_point.dart';
 import 'package:falconest/features/admin/providers/clients_provider.dart';
 
 /// Hodnoty client_type v DB – mapování na lokalizované labely.
@@ -15,7 +18,7 @@ const _clientTypeOptions = [
 
 /// Dropdown výběr doporučující agentury – pouze klienti s typem agency.
 ///
-/// PROČ oddělený widget: Načítá clientsProvider a filtruje na agency. Zobrazuje se
+/// PROČ oddělený widget: Načítá clientsFullListProvider a filtruje na agency. Zobrazuje se
 /// pouze v formuláři při výběru typu "Externí" – externí klient může být evidován
 /// s odkazem na agenturu, která nám ho doporučila.
 class _AgencyDropdown extends ConsumerWidget {
@@ -65,8 +68,8 @@ class _AgencyDropdown extends ConsumerWidget {
       },
       loading: () => const LinearProgressIndicator(),
       error: (e, _) => Text(
-        'common.error_with_message'.tr(namedArgs: {'message': e.toString()}),
-        style: TextStyle(color: Colors.red.shade700),
+        'common.generic_error_user_friendly'.tr(),
+        style: TextStyle(color: context.colors.error),
       ),
     );
   }
@@ -76,7 +79,7 @@ class _AgencyDropdown extends ConsumerWidget {
 ///
 /// Pole: Jméno (povinné), Email, Telefon, Typ klienta (Majitel/Externí/Agentura).
 /// Pro typ Externí navíc: Doporučující agentura (dropdown). Validace: jméno nesmí
-/// být prázdné. Při úspěchu invaliduje clientsProvider.
+/// být prázdné. Při úspěchu volá onSaved (obrazovka invaliduje stránkované záložky a cache).
 class ClientFormDialog extends ConsumerStatefulWidget {
   const ClientFormDialog({
     super.key,
@@ -99,7 +102,9 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
   late TextEditingController _nameController;
   late TextEditingController _emailController;
   late TextEditingController _phoneController;
+  late TextEditingController _gpsController;
   String? _selectedClientType;
+  String _selectedLanguageCode = 'en';
   /// Doporučující agentura – pouze pro typ external. ID klienta (agency).
   String? _selectedAgencyId;
 
@@ -115,7 +120,15 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
     _phoneController = TextEditingController(
       text: widget.client?.phone ?? '',
     );
+    final c = widget.client;
+    final gpsInitial = (c?.latitude != null && c?.longitude != null)
+        ? '${c!.latitude}, ${c.longitude}'
+        : '';
+    _gpsController = TextEditingController(text: gpsInitial);
     _selectedClientType = widget.client?.clientType;
+    _selectedLanguageCode = widget.client?.languageCode?.trim().isNotEmpty == true
+        ? widget.client!.languageCode!.trim().toLowerCase()
+        : 'en';
     // PROČ: agency_id platí pouze pro external – při editaci předvyplníme.
     _selectedAgencyId = widget.client?.clientType?.toLowerCase() == 'external'
         ? widget.client?.agencyId
@@ -127,6 +140,7 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
     _nameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
+    _gpsController.dispose();
     super.dispose();
   }
 
@@ -184,6 +198,22 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
                   keyboardType: TextInputType.phone,
                 ),
                 const SizedBox(height: 16),
+                TextFormField(
+                  controller: _gpsController,
+                  decoration: InputDecoration(
+                    labelText: 'admin.geo_smart_gps_field'.tr(),
+                    hintText: 'admin.geo_smart_gps_hint'.tr(),
+                    border: const OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.explore_outlined),
+                  ),
+                  keyboardType: TextInputType.text,
+                  maxLines: 2,
+                  validator: (_) => GeoJsonPoint.validateOptionalSmartGpsText(
+                        _gpsController.text,
+                      )
+                      ?.tr(),
+                ),
+                const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
                   initialValue: _selectedClientType,
                   decoration: InputDecoration(
@@ -205,6 +235,27 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
                       } else if (widget.client?.agencyId != null) {
                         _selectedAgencyId = widget.client!.agencyId;
                       }
+                    });
+                  },
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<String>(
+                  initialValue: _selectedLanguageCode,
+                  decoration: InputDecoration(
+                    labelText: 'clients.communication_language'.tr(),
+                    border: const OutlineInputBorder(),
+                  ),
+                  items: SupportedLanguages.all
+                      .where((lang) => lang.code != null)
+                      .map((lang) => DropdownMenuItem<String>(
+                            value: lang.code,
+                            child: Text(lang.labelKey.tr()),
+                          ))
+                      .toList(),
+                  onChanged: (value) {
+                    if (value == null || value.trim().isEmpty) return;
+                    setState(() {
+                      _selectedLanguageCode = value.trim().toLowerCase();
                     });
                   },
                 ),
@@ -248,10 +299,10 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('common.error_with_message'.tr(
-              namedArgs: {'message': 'common.error_no_tenant'.tr()},
-            )),
-            backgroundColor: Colors.red.shade700,
+            // PROČ: Konkrétní lokalizovaná příčina – není potřeba obalovat do error_with_message.
+            content: Text('common.error_no_tenant'.tr()),
+            // PROČ: chybový snackbar musí být navázaný na centrální error barvu.
+            backgroundColor: context.colors.error,
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -264,6 +315,7 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
     final phone = _phoneController.text.trim();
     final emailOpt = email.isEmpty ? null : email;
     final phoneOpt = phone.isEmpty ? null : phone;
+    final geoPair = GeoJsonPoint.tryParseSmartGpsText(_gpsController.text);
 
     try {
       // PROČ: agency_id posíláme pouze u external – u owner/agency v DB má být NULL.
@@ -277,7 +329,10 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
           email: emailOpt,
           phone: phoneOpt,
           clientType: _selectedClientType,
+          languageCode: _selectedLanguageCode,
           agencyId: agencyIdOpt,
+          latitude: geoPair?.latitude,
+          longitude: geoPair?.longitude,
         );
         await ref.read(updateClientProvider)(updated);
       } else {
@@ -288,7 +343,10 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
           email: emailOpt,
           phone: phoneOpt,
           clientType: _selectedClientType,
+          languageCode: _selectedLanguageCode,
           agencyId: agencyIdOpt,
+          latitude: geoPair?.latitude,
+          longitude: geoPair?.longitude,
         );
         await ref.read(addClientProvider)(newClient);
       }
@@ -299,7 +357,7 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('common.saved'.tr()),
-            backgroundColor: Colors.green,
+            backgroundColor: context.customColors.success,
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -308,10 +366,8 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('common.error_with_message'.tr(
-              namedArgs: {'message': e.toString()},
-            )),
-            backgroundColor: Colors.red.shade700,
+            content: Text('common.generic_error_user_friendly'.tr()),
+            backgroundColor: context.colors.error,
             behavior: SnackBarBehavior.floating,
           ),
         );

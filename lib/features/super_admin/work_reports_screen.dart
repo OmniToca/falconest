@@ -131,7 +131,7 @@ class _WorkReportRow extends StatelessWidget {
     final started = DateFormat('d. M. yyyy HH:mm').format(entry.startedAt.toLocal());
     final duration = entry.durationMinutes(DateTime.now());
     final durationStr = _formatDuration(duration);
-    final note = entry.workReport?.trim() ?? '—';
+    final note = entry.workReport?.trim() ?? 'common.placeholder_dash'.tr();
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
@@ -161,7 +161,7 @@ class _WorkReportRow extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-                if (note != '—') ...[
+                if (note != 'common.placeholder_dash'.tr()) ...[
                   const SizedBox(height: 2),
                   Text(
                     note,

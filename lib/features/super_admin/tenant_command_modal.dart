@@ -14,6 +14,7 @@ import 'package:falconest/features/settings/pricing_type_label.dart';
 import 'package:falconest/features/super_admin/module_subscription_dialog.dart';
 import 'package:falconest/features/super_admin/providers/all_tenants_provider.dart';
 import 'package:falconest/features/super_admin/providers/tenant_detail_provider.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/core/utils/app_modal_utils.dart';
 import 'package:falconest/features/super_admin/tenant_detail_screen.dart';
 import 'package:falconest/features/super_admin/services/super_admin_service.dart';
@@ -386,7 +387,9 @@ class _TenantCommandModalState extends ConsumerState<TenantCommandModal> {
     if (ok != true || !mounted) return;
     try {
       await SupabaseService.client.from('invitations').delete().eq('tenant_id', widget.tenantId);
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('TenantCommandModal: mazání invitations před soft-delete tenanta selhalo', e, st);
+    }
     try {
       // Soft Delete: místo tvrdého DELETE nastavíme deleted_at – zachová Audit Log a historii dat.
       final deletedAt = DateTime.now().toUtc().toIso8601String();
@@ -634,7 +637,7 @@ class _TenantCommandModalState extends ConsumerState<TenantCommandModal> {
                         : null;
                     final priceStr = module.price != null && currencies.isNotEmpty
                         ? CurrencyService.formatPrice(module.price!.toDouble(), displayCurrency, currencies)
-                        : (module.price != null ? '${module.price} €' : '—');
+                        : (module.price != null ? '${module.price} €' : 'common.placeholder_dash'.tr());
                     return SizedBox(
                       width: width,
                       child: _ModuleCard(
@@ -655,7 +658,7 @@ class _TenantCommandModalState extends ConsumerState<TenantCommandModal> {
         );
       },
       loading: () => const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())),
-      error: (e, _) => Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+      error: (e, _) => Text('common.generic_error_user_friendly'.tr()),
     );
   }
 }

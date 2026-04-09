@@ -1,8 +1,10 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
+import 'package:falconest/core/presentation/widgets/task_guest_cash_summary.dart';
+import 'package:falconest/core/theme/theme_ext.dart';
 
 /// Sdílená read-only komponenta pro zobrazení JSONB metadat úkolu.
-/// Zobrazuje custom_note, amount_to_collect, service_price (+ payer_type), expected_audit_total, collection_breakdown.
+/// Zobrazuje custom_note, souhrn hotovosti od hosta (agentura + průtok), service_price (+ payer_type), expected_audit_total, collection_breakdown.
 /// Používá se v dialogu úpravy úkolu (admin tasks i plánovací kalendář).
 class TaskMetadataSection extends StatelessWidget {
   const TaskMetadataSection({
@@ -34,18 +36,22 @@ class TaskMetadataSection extends StatelessWidget {
       }
     }
 
-    if (meta.containsKey('amount_to_collect')) {
-      final v = meta['amount_to_collect'];
-      final amount = (v is num) ? v.toDouble() : (v != null ? double.tryParse(v.toString()) ?? 0.0 : 0.0);
-      if (amount > 0) {
-        rows.add(_MetadataRow(
-          icon: Icons.payments_outlined,
-          label: 'admin.task_metadata_amount_to_collect'.tr(),
-          value: _formatAmount(context, amount),
-          valueBold: true,
-          valueColor: Colors.orange.shade700,
-        ));
-      }
+    final amountCollect = taskMetadataAmountEur(meta, 'amount_to_collect');
+    final expectedAudit = taskMetadataAmountEur(meta, 'expected_audit_total');
+    final transitCash = taskMetadataAmountEur(meta, 'transit_amount_to_collect');
+    final agencyCash = amountCollect > 0 ? amountCollect : expectedAudit;
+    if (agencyCash + transitCash > 0) {
+      rows.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: TaskGuestCashSummary(
+            agencyEur: agencyCash,
+            transitEur: transitCash,
+            formatEurAmount: (e) => _formatAmount(context, e),
+            variant: TaskGuestCashSummaryVariant.compact,
+          ),
+        ),
+      );
     }
 
     // Cena služby k fakturaci (např. úklid platí majitel) – z metadata.service_price a metadata.payer_type.
@@ -71,10 +77,12 @@ class TaskMetadataSection extends StatelessWidget {
       }
     }
 
+    final coveredExpectedInGuestSummary =
+        expectedAudit > 0 && amountCollect <= 0 && agencyCash + transitCash > 0;
     if (meta.containsKey('expected_audit_total')) {
       final v = meta['expected_audit_total'];
       final amount = (v is num) ? v.toDouble() : (v != null ? double.tryParse(v.toString()) ?? 0.0 : 0.0);
-      if (amount > 0) {
+      if (amount > 0 && !coveredExpectedInGuestSummary) {
         rows.add(_MetadataRow(
           icon: Icons.receipt_long_outlined,
           label: 'admin.task_metadata_expected_audit'.tr(),
@@ -103,9 +111,10 @@ class TaskMetadataSection extends StatelessWidget {
       margin: const EdgeInsets.only(top: 12),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.grey.shade50,
+        // PROČ: metadata box je sekundární panel – používáme nejnižší surface vrstvu.
+        color: context.colors.surfaceContainerLowest,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey.shade300),
+        border: Border.all(color: context.colors.outlineVariant),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -116,7 +125,7 @@ class TaskMetadataSection extends StatelessWidget {
             style: TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w600,
-              color: Colors.grey.shade800,
+              color: context.colors.onSurface,
             ),
           ),
           const SizedBox(height: 10),
@@ -206,7 +215,7 @@ class _MetadataRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 18, color: Colors.grey.shade600),
+          Icon(icon, size: 18, color: context.colors.onSurfaceVariant),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
@@ -214,7 +223,7 @@ class _MetadataRow extends StatelessWidget {
               children: [
                 Text(
                   label,
-                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                  style: TextStyle(fontSize: 12, color: context.colors.onSurface),
                 ),
                 const SizedBox(height: 2),
                 Text(
@@ -222,7 +231,7 @@ class _MetadataRow extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 14,
                     fontWeight: valueBold ? FontWeight.bold : FontWeight.normal,
-                    color: valueColor ?? Colors.grey.shade800,
+                    color: valueColor ?? context.colors.onSurface,
                   ),
                 ),
               ],

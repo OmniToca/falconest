@@ -4,10 +4,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/core/models/client_address_model.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/core/models/client_model.dart';
 import 'package:falconest/core/repositories/client/client_repository.dart';
+import 'package:falconest/core/theme/app_spacing.dart';
+import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/features/admin/admin_apartments_screen.dart';
 import 'package:falconest/features/admin/admin_reservations_screen.dart';
 import 'package:falconest/features/admin/admin_tasks_screen.dart';
@@ -20,6 +23,37 @@ import 'package:falconest/features/admin/providers/clients_provider.dart';
 import 'package:falconest/features/admin/providers/finance_billing_provider.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
 import 'package:falconest/features/admin/widgets/client_form_dialog.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+/// `mailto:` pro CRM řádek – pouze pokud je neprázdný e-mail.
+Uri? _clientDetailMailtoUri(String? email) {
+  final t = email?.trim() ?? '';
+  if (t.isEmpty) return null;
+  return Uri(scheme: 'mailto', path: t);
+}
+
+/// `tel:` pro CRM – stejné čištění jako u rezervací (jen čísla a +).
+Uri? _clientDetailTelUri(String? phone) {
+  final raw = phone?.trim() ?? '';
+  if (raw.isEmpty) return null;
+  final cleanedAndPlus = raw.replaceAll(RegExp(r'[^0-9+]'), '');
+  if (cleanedAndPlus.isEmpty) return null;
+  final cleaned = cleanedAndPlus.contains('+')
+      ? '+${cleanedAndPlus.replaceAll('+', '')}'
+      : cleanedAndPlus.replaceAll('+', '');
+  return Uri(scheme: 'tel', path: cleaned);
+}
+
+Future<void> _launchClientContactUri(BuildContext context, Uri uri) async {
+  try {
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  } catch (e, st) {
+    // PROČ: Špatně formátovaný kontakt nebo chybějící handler (simulátor) nesmí shodit dialog.
+    AppLogger.error('_launchClientContactUri: otevření mailto/tel selhalo', e, st);
+  }
+}
 
 /// Mapování client_type na i18n klíč.
 String _clientTypeLabel(BuildContext context, String? clientType) {
@@ -42,10 +76,7 @@ String _clientTypeLabel(BuildContext context, String? clientType) {
 /// Adresář a Doporučení klienti; Externí jen Přehled a Úkoly. Zobrazení záložek
 /// podle client_type zjednodušuje UI a eliminuje prázdné nebo nesmyslné sekce.
 class ClientDetailDialog extends ConsumerWidget {
-  const ClientDetailDialog({
-    super.key,
-    required this.client,
-  });
+  const ClientDetailDialog({super.key, required this.client});
 
   final ClientModel client;
 
@@ -54,7 +85,7 @@ class ClientDetailDialog extends ConsumerWidget {
     final tabData = _buildTabData(client);
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      backgroundColor: Colors.white,
+      backgroundColor: context.colors.surface,
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 600, maxHeight: 560),
         child: Column(
@@ -90,30 +121,62 @@ class ClientDetailDialog extends ConsumerWidget {
 
   /// PROČ: Sestavení tabů podle client_type – owner má Apartmány+Rezervace+Finance,
   /// agency má Adresář+Doporučení+Finance, external Přehled+Úkoly+Finance. Finance je u všech.
-  static List<({String labelKey, Widget child})> _buildTabData(ClientModel client) {
+  static List<({String labelKey, Widget child})> _buildTabData(
+    ClientModel client,
+  ) {
     final type = client.clientType?.toLowerCase() ?? '';
     switch (type) {
       case 'owner':
         return [
-          (labelKey: 'clients.client_tab_overview', child: _OverviewTab(client: client)),
-          (labelKey: 'clients.client_tab_apartments', child: _ApartmentsTab(client: client)),
-          (labelKey: 'clients.client_tab_reservations', child: _ReservationsTab(client: client)),
-          (labelKey: 'clients.client_tab_tasks', child: _TasksTab(client: client)),
+          (
+            labelKey: 'clients.client_tab_overview',
+            child: _OverviewTab(client: client),
+          ),
+          (
+            labelKey: 'clients.client_tab_apartments',
+            child: _ApartmentsTab(client: client),
+          ),
+          (
+            labelKey: 'clients.client_tab_reservations',
+            child: _ReservationsTab(client: client),
+          ),
+          (
+            labelKey: 'clients.client_tab_tasks',
+            child: _TasksTab(client: client),
+          ),
           (labelKey: 'clients.tab_finance', child: _FinanceTab(client: client)),
         ];
       case 'agency':
         return [
-          (labelKey: 'clients.client_tab_overview', child: _OverviewTab(client: client)),
-          (labelKey: 'clients.client_tab_address_directory', child: _AddressDirectoryTab(client: client)),
-          (labelKey: 'clients.client_tab_recommended', child: _RecommendedClientsTab(client: client)),
-          (labelKey: 'clients.client_tab_tasks', child: _TasksTab(client: client)),
+          (
+            labelKey: 'clients.client_tab_overview',
+            child: _OverviewTab(client: client),
+          ),
+          (
+            labelKey: 'clients.client_tab_address_directory',
+            child: _AddressDirectoryTab(client: client),
+          ),
+          (
+            labelKey: 'clients.client_tab_recommended',
+            child: _RecommendedClientsTab(client: client),
+          ),
+          (
+            labelKey: 'clients.client_tab_tasks',
+            child: _TasksTab(client: client),
+          ),
           (labelKey: 'clients.tab_finance', child: _FinanceTab(client: client)),
         ];
       case 'external':
       default:
         return [
-          (labelKey: 'clients.client_tab_overview', child: _OverviewTab(client: client)),
-          (labelKey: 'clients.client_tab_tasks', child: _TasksTab(client: client)),
+          (
+            labelKey: 'clients.client_tab_overview',
+            child: _OverviewTab(client: client),
+          ),
+          (
+            labelKey: 'clients.client_tab_tasks',
+            child: _TasksTab(client: client),
+          ),
           (labelKey: 'clients.tab_finance', child: _FinanceTab(client: client)),
         ];
     }
@@ -129,15 +192,20 @@ class _DialogHeader extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 16, 8, 8),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        AppSpacing.md,
+        AppSpacing.sm,
+        AppSpacing.sm,
+      ),
       child: Row(
         children: [
           Expanded(
             child: Text(
               client.name,
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
             ),
           ),
           IconButton(
@@ -146,7 +214,7 @@ class _DialogHeader extends ConsumerWidget {
             onPressed: () => _showEditDialog(context, ref),
           ),
           IconButton(
-            icon: Icon(Icons.delete_outline, color: Colors.red.shade400),
+            icon: Icon(Icons.delete_outline, color: context.colors.error),
             tooltip: 'admin.apartments_delete'.tr(),
             onPressed: () => _showDeleteConfirm(context, ref),
           ),
@@ -167,8 +235,9 @@ class _DialogHeader extends ConsumerWidget {
         ref: ref,
         client: client,
         onSaved: () {
-          ref.invalidate(clientsProvider);
+          invalidatePaginatedClientTabs(ref);
           ref.invalidate(clientsFullListProvider);
+          ref.invalidate(agencyNamesMapProvider);
         },
       ),
     );
@@ -193,12 +262,23 @@ class _DialogHeader extends ConsumerWidget {
                 if (ctx.mounted) Navigator.of(ctx).pop();
                 if (context.mounted) {
                   Navigator.of(context).pop();
-                  ref.invalidate(clientsProvider);
+                  invalidatePaginatedClientTabs(ref);
                   ref.invalidate(clientsFullListProvider);
+                  ref.invalidate(agencyNamesMapProvider);
+                  final aid = client.agencyId?.trim();
+                  if (aid != null && aid.isNotEmpty) {
+                    ref.invalidate(recommendedClientsCountByAgencyProvider(aid));
+                  }
+                  if ((client.clientType?.toLowerCase() ?? '') == 'agency') {
+                    ref.invalidate(
+                        recommendedClientsCountByAgencyProvider(client.id));
+                    ref.invalidate(
+                        clientsRecommendedListByAgencyProvider(client.id));
+                  }
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('clients.deleted'.tr()),
-                      backgroundColor: Colors.green,
+                      backgroundColor: context.customColors.success,
                       behavior: SnackBarBehavior.floating,
                     ),
                   );
@@ -209,7 +289,7 @@ class _DialogHeader extends ConsumerWidget {
                   ScaffoldMessenger.of(ctx).showSnackBar(
                     SnackBar(
                       content: Text('${'common.error'.tr()}: $e'),
-                      backgroundColor: Colors.red.shade700,
+                      backgroundColor: context.colors.error,
                       behavior: SnackBarBehavior.floating,
                     ),
                   );
@@ -236,30 +316,39 @@ class _OverviewTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.lg,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             'clients.client_tab_overview'.tr(),
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
+              fontWeight: FontWeight.bold,
+              color: context.colors.onSurface,
+            ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.md),
           _DetailRow(
             icon: Icons.email_outlined,
             label: 'clients.email'.tr(),
             value: (client.email ?? '').trim().isEmpty ? '–' : client.email!,
+            linkUri: _clientDetailMailtoUri(client.email),
+            linkTooltipKey: 'admin.crm_contact_open_email',
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.md),
           _DetailRow(
             icon: Icons.phone_outlined,
             label: 'clients.phone'.tr(),
             value: (client.phone ?? '').trim().isEmpty ? '–' : client.phone!,
+            linkUri: _clientDetailTelUri(client.phone),
+            linkTooltipKey: 'admin.crm_contact_open_phone',
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.md),
           _DetailRow(
             icon: Icons.business_outlined,
             label: 'clients.type'.tr(),
@@ -268,20 +357,20 @@ class _OverviewTab extends ConsumerWidget {
           if ((client.clientType?.toLowerCase() ?? '') == 'owner' &&
               client.profileId != null &&
               client.profileId!.trim().isNotEmpty) ...[
-            const SizedBox(height: 16),
+            const SizedBox(height: AppSpacing.md),
             _PortalStatusSection(profileId: client.profileId!),
           ],
           if ((client.clientType?.toLowerCase() ?? '') == 'owner' &&
               client.profileId != null &&
               client.profileId!.trim().isNotEmpty) ...[
-            const SizedBox(height: 16),
+            const SizedBox(height: AppSpacing.md),
             _ApartmentsCountSection(profileId: client.profileId!),
           ],
           // PROČ: U externího klienta zobrazíme doporučující agenturu (pokud má agency_id).
           if ((client.clientType?.toLowerCase() ?? '') == 'external' &&
               client.agencyId != null &&
               client.agencyId!.trim().isNotEmpty) ...[
-            const SizedBox(height: 16),
+            const SizedBox(height: AppSpacing.md),
             _RecommendingAgencyRow(agencyId: client.agencyId!),
           ],
         ],
@@ -332,7 +421,12 @@ class _FinanceTab extends ConsumerWidget {
 
     if (!settlementsActive) {
       return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.md,
+          AppSpacing.md,
+          AppSpacing.md,
+          AppSpacing.lg,
+        ),
         child: GestureDetector(
           onTap: () => PremiumUpsellDialog.show(
             context,
@@ -344,57 +438,78 @@ class _FinanceTab extends ConsumerWidget {
             opacity: 0.85,
             child: Center(
               child: Padding(
-                padding: const EdgeInsets.all(32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.lock_outline, size: 56, color: Colors.grey.shade500),
-                  const SizedBox(height: 16),
-                  Text(
-                    'clients.finance_locked_message'.tr(),
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                          color: Colors.grey.shade600,
-                        ),
-                  ),
-                ],
+                padding: const EdgeInsets.all(AppSpacing.xl),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.lock_outline,
+                      size: 56,
+                      color: context.colors.outline,
+                    ),
+                    const SizedBox(height: AppSpacing.md),
+                    Text(
+                      'clients.finance_locked_message'.tr(),
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                        color: context.colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
-        ),
         ),
       );
     }
 
     if (billingAsync.isLoading && commissionsAsync.isLoading) {
       return const Padding(
-        padding: EdgeInsets.fromLTRB(16, 16, 16, 24),
+        padding: EdgeInsets.fromLTRB(
+          AppSpacing.md,
+          AppSpacing.md,
+          AppSpacing.md,
+          AppSpacing.lg,
+        ),
         child: Center(child: CircularProgressIndicator()),
       );
     }
 
     final billingError = billingAsync.hasError ? billingAsync.error : null;
-    final commissionsError = commissionsAsync.hasError ? commissionsAsync.error : null;
+    final commissionsError = commissionsAsync.hasError
+        ? commissionsAsync.error
+        : null;
     if (billingError != null || commissionsError != null) {
-      final err = billingError ?? commissionsError;
       return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.md,
+          AppSpacing.md,
+          AppSpacing.md,
+          AppSpacing.lg,
+        ),
         child: Center(
           child: Padding(
-            padding: const EdgeInsets.all(24),
+            padding: const EdgeInsets.all(AppSpacing.lg),
             child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
-              const SizedBox(height: 16),
-              Text(
-                'common.error_with_message'.tr(namedArgs: {'message': err.toString()}),
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.red.shade700, fontSize: 12),
-              ),
-            ],
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.error_outline,
+                  size: 48,
+                  color: context.colors.error,
+                ),
+                const SizedBox(height: AppSpacing.md),
+                Text(
+                  'common.generic_error_user_friendly'.tr(),
+                  textAlign: TextAlign.center,
+                  style: context.textTheme.bodySmall?.copyWith(
+                    color: context.colors.error,
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
         ),
       );
     }
@@ -404,146 +519,175 @@ class _FinanceTab extends ConsumerWidget {
 
     if (billingList.isEmpty && commissionsList.isEmpty) {
       return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.md,
+          AppSpacing.md,
+          AppSpacing.md,
+          AppSpacing.lg,
+        ),
         child: Center(
           child: Padding(
-            padding: const EdgeInsets.all(24),
+            padding: const EdgeInsets.all(AppSpacing.lg),
             child: Text(
               'clients.finance_empty'.tr(),
-            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  color: Colors.grey.shade600,
-                ),
-            textAlign: TextAlign.center,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                color: context.colors.onSurfaceVariant,
+              ),
+            ),
           ),
-        ),
         ),
       );
     }
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.lg,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
             'clients.tab_finance'.tr(),
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
+              fontWeight: FontWeight.bold,
+              color: context.colors.onSurface,
+            ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.md),
           Expanded(
             child: ListView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(AppSpacing.md),
               children: [
-        // Sekce A: Fakturace / K úhradě
-        Text(
-          'clients.finance_billing_title'.tr(),
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.bold,
-                color: Colors.black87,
-              ),
-        ),
-        const SizedBox(height: 8),
-        if (billingList.isEmpty)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 16),
-            child: Text(
-              'clients.finance_billing_empty'.tr(),
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.grey.shade600,
-                  ),
-            ),
-          )
-        else
-          ...billingList.map((item) {
-            final dateStr = item.date != null
-                ? DateFormat.yMd(context.locale.toString()).format(item.date!.toLocal())
-                : '–';
-            final statusLabel = item.isInvoiced
-                ? 'clients.finance_billing_status_invoiced'.tr()
-                : 'clients.finance_billing_status_pending'.tr();
-            final amountStr = formatWalletAmount(context, ref, item.chargedPrice);
-            return Card(
-              margin: const EdgeInsets.only(bottom: 8),
-              child: ListTile(
-                title: Text(item.title, overflow: TextOverflow.ellipsis),
-                subtitle: Text(
-                  '$dateStr • $statusLabel',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Colors.grey.shade600,
-                      ),
-                ),
-                trailing: Text(
-                  amountStr,
+                // Sekce A: Fakturace / K úhradě
+                Text(
+                  'clients.finance_billing_title'.tr(),
                   style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                        color: Colors.teal.shade700,
-                      ),
-                ),
-              ),
-            );
-          }),
-        const SizedBox(height: 16),
-        // Sekce B: Provize / Výplaty
-        Text(
-          'clients.finance_commissions_title'.tr(),
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.bold,
-                color: Colors.black87,
-              ),
-        ),
-        const SizedBox(height: 8),
-        if (commissionsList.isEmpty)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Text(
-              'clients.finance_commissions_empty'.tr(),
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.grey.shade600,
+                    fontWeight: FontWeight.bold,
+                    color: context.colors.onSurface,
                   ),
-            ),
-          )
-        else
-          ...commissionsList.map((row) {
-            final taskTitle = row['task_title'] as String? ?? '–';
-            final amount = (row['amount'] as num?)?.toDouble() ?? 0.0;
-            final status = (row['status'] as String?)?.trim().toLowerCase() ?? 'pending';
-            final createdAt = row['created_at'];
-            DateTime? date;
-            if (createdAt != null) {
-              if (createdAt is DateTime) {
-                date = createdAt;
-              } else if (createdAt is String) date = DateTime.tryParse(createdAt);
-            }
-            final statusLabel = status == 'paid'
-                ? 'clients.finance_status_paid'.tr()
-                : 'clients.finance_status_pending'.tr();
-            final dateStr = date != null
-                ? DateFormat.yMd(context.locale.toString()).format(date.toLocal())
-                : '–';
-            final amountStr = formatWalletAmount(context, ref, amount);
-            return Card(
-              margin: const EdgeInsets.only(bottom: 8),
-              child: ListTile(
-                title: Text(taskTitle, overflow: TextOverflow.ellipsis),
-                subtitle: Text(
-                  '$dateStr • $statusLabel',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Colors.grey.shade600,
-                      ),
                 ),
-                trailing: Text(
-                  amountStr,
+                const SizedBox(height: AppSpacing.sm),
+                if (billingList.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: AppSpacing.md),
+                    child: Text(
+                      'clients.finance_billing_empty'.tr(),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: context.colors.onSurfaceVariant,
+                      ),
+                    ),
+                  )
+                else
+                  ...billingList.map((item) {
+                    final dateStr = item.date != null
+                        ? DateFormat.yMd(
+                            context.locale.toString(),
+                          ).format(item.date!.toLocal())
+                        : '–';
+                    final statusLabel = item.isInvoiced
+                        ? 'clients.finance_billing_status_invoiced'.tr()
+                        : 'clients.finance_billing_status_pending'.tr();
+                    final amountStr = formatWalletAmount(
+                      context,
+                      ref,
+                      item.chargedPrice,
+                    );
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+                      child: ListTile(
+                        title: Text(
+                          item.title,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          '$dateStr • $statusLabel',
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(
+                                color: context.colors.onSurfaceVariant,
+                              ),
+                        ),
+                        trailing: Text(
+                          amountStr,
+                          style: Theme.of(context).textTheme.titleSmall
+                              ?.copyWith(
+                                fontWeight: FontWeight.w600,
+                                color: context.colors.tertiary,
+                              ),
+                        ),
+                      ),
+                    );
+                  }),
+                const SizedBox(height: AppSpacing.md),
+                // Sekce B: Provize / Výplaty
+                Text(
+                  'clients.finance_commissions_title'.tr(),
                   style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                        color: Colors.green.shade700,
-                      ),
+                    fontWeight: FontWeight.bold,
+                    color: context.colors.onSurface,
+                  ),
                 ),
-              ),
-            );
-          }),
+                const SizedBox(height: AppSpacing.sm),
+                if (commissionsList.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                    child: Text(
+                      'clients.finance_commissions_empty'.tr(),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: context.colors.onSurfaceVariant,
+                      ),
+                    ),
+                  )
+                else
+                  ...commissionsList.map((row) {
+                    final taskTitle = row['task_title'] as String? ?? '–';
+                    final amount = (row['amount'] as num?)?.toDouble() ?? 0.0;
+                    final status =
+                        (row['status'] as String?)?.trim().toLowerCase() ??
+                        'pending';
+                    final createdAt = row['created_at'];
+                    DateTime? date;
+                    if (createdAt != null) {
+                      if (createdAt is DateTime) {
+                        date = createdAt;
+                      } else if (createdAt is String) {
+                        date = DateTime.tryParse(createdAt);
+                      }
+                    }
+                    final statusLabel = status == 'paid'
+                        ? 'clients.finance_status_paid'.tr()
+                        : 'clients.finance_status_pending'.tr();
+                    final dateStr = date != null
+                        ? DateFormat.yMd(
+                            context.locale.toString(),
+                          ).format(date.toLocal())
+                        : '–';
+                    final amountStr = formatWalletAmount(context, ref, amount);
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+                      child: ListTile(
+                        title: Text(taskTitle, overflow: TextOverflow.ellipsis),
+                        subtitle: Text(
+                          '$dateStr • $statusLabel',
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(
+                                color: context.colors.onSurfaceVariant,
+                              ),
+                        ),
+                        trailing: Text(
+                          amountStr,
+                          style: Theme.of(context).textTheme.titleSmall
+                              ?.copyWith(
+                                fontWeight: FontWeight.w600,
+                                color: context.customColors.success,
+                              ),
+                        ),
+                      ),
+                    );
+                  }),
               ],
             ),
           ),
@@ -562,18 +706,23 @@ class _AddressDirectoryTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.lg,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
             'clients.client_tab_address_directory'.tr(),
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
+              fontWeight: FontWeight.bold,
+              color: context.colors.onSurface,
+            ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.md),
           Expanded(
             child: SingleChildScrollView(
               child: _AddressDirectorySection(client: client),
@@ -593,80 +742,96 @@ class _RecommendedClientsTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final recommendedAsync = ref.watch(clientsRecommendedByAgencyProvider(client.id));
+    final recommendedAsync = ref.watch(
+      clientsRecommendedListByAgencyProvider(client.id),
+    );
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.lg,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
             'clients.client_tab_recommended'.tr(),
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
+              fontWeight: FontWeight.bold,
+              color: context.colors.onSurface,
+            ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.md),
           Expanded(
             child: recommendedAsync.when(
               data: (clients) {
                 if (clients.isEmpty) {
                   return Center(
                     child: Padding(
-                      padding: const EdgeInsets.all(24),
+                      padding: const EdgeInsets.all(AppSpacing.lg),
                       child: Text(
                         'clients.recommended_empty'.tr(),
                         style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                              color: Colors.grey.shade600,
-                            ),
+                          color: context.colors.onSurfaceVariant,
+                        ),
                         textAlign: TextAlign.center,
                       ),
                     ),
                   );
                 }
                 return ListView.builder(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(AppSpacing.md),
                   itemCount: clients.length,
-          itemBuilder: (context, index) {
-            final c = clients[index];
-            return Card(
-              margin: const EdgeInsets.only(bottom: 8),
-              child: ListTile(
-                leading: Icon(Icons.person_outline, color: Colors.blue.shade700),
-                title: Text(c.name, overflow: TextOverflow.ellipsis),
-                subtitle: (c.email ?? '').trim().isNotEmpty
-                    ? Text(c.email!, overflow: TextOverflow.ellipsis)
-                    : null,
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () {
-                  showDialog<void>(
-                    context: context,
-                    builder: (ctx) => ClientDetailDialog(client: c),
-                  );
-                },
+                  itemBuilder: (context, index) {
+                    final c = clients[index];
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+                      child: ListTile(
+                        leading: Icon(
+                          Icons.person_outline,
+                          color: context.colors.primary,
+                        ),
+                        title: Text(c.name, overflow: TextOverflow.ellipsis),
+                        subtitle: (c.email ?? '').trim().isNotEmpty
+                            ? Text(c.email!, overflow: TextOverflow.ellipsis)
+                            : null,
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () {
+                          showDialog<void>(
+                            context: context,
+                            builder: (ctx) => ClientDetailDialog(client: c),
+                          );
+                        },
+                      ),
+                    );
+                  },
+                );
+              },
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (err, _) => Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(AppSpacing.lg),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.error_outline,
+                        size: 48,
+                        color: context.colors.error,
+                      ),
+                      const SizedBox(height: AppSpacing.md),
+                      Text(
+                        'common.generic_error_user_friendly'.tr(),
+                        textAlign: TextAlign.center,
+                        style: context.textTheme.bodySmall?.copyWith(
+                          color: context.colors.error,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
-            );
-          },
-        );
-      },
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (err, _) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
-              const SizedBox(height: 16),
-              Text(
-                'common.error_with_message'.tr(namedArgs: {'message': err.toString()}),
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.red.shade700, fontSize: 12),
-              ),
-            ],
-          ),
-        ),
-      ),
             ),
           ),
         ],
@@ -676,24 +841,63 @@ class _RecommendedClientsTab extends ConsumerWidget {
 }
 
 /// Jeden řádek v detailu – ikona, label, hodnota.
+///
+/// PROČ [linkUri]: E-mail a telefon mají být jedním klepnutím otevřitelné v systémové aplikaci;
+/// vizuálně odlišíme primary + podtržení, aby šlo o rozšíření bez změny layoutu ostatních řádků.
 class _DetailRow extends StatelessWidget {
   const _DetailRow({
     required this.icon,
     required this.label,
     required this.value,
+    this.linkUri,
+    this.linkTooltipKey,
   });
 
   final IconData icon;
   final String label;
   final String value;
+  final Uri? linkUri;
+  /// Volitelný klíč tooltipu (např. admin.crm_contact_open_email); výchozí obecný text.
+  final String? linkTooltipKey;
 
   @override
   Widget build(BuildContext context) {
+    final link = linkUri;
+    final canOpen = link != null && value != '–';
+
+    final baseStyle = Theme.of(context).textTheme.bodyLarge;
+    final linkStyle = baseStyle?.copyWith(
+      color: context.colors.primary,
+      decoration: TextDecoration.underline,
+      decorationColor: context.colors.primary,
+    );
+
+    Widget valueWidget = Text(
+      value,
+      style: canOpen ? linkStyle : baseStyle,
+    );
+
+    if (canOpen) {
+      valueWidget = Tooltip(
+        message: (linkTooltipKey ?? 'admin.crm_contact_tap_to_open').tr(),
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: Semantics(
+            button: true,
+            child: InkWell(
+              onTap: () => _launchClientContactUri(context, link),
+              child: valueWidget,
+            ),
+          ),
+        ),
+      );
+    }
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icon, size: 20, color: Colors.grey.shade600),
-        const SizedBox(width: 12),
+        Icon(icon, size: 20, color: context.colors.onSurfaceVariant),
+        const SizedBox(width: AppSpacing.sm + AppSpacing.xs),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -701,11 +905,11 @@ class _DetailRow extends StatelessWidget {
               Text(
                 label,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.grey.shade600,
-                    ),
+                  color: context.colors.onSurfaceVariant,
+                ),
               ),
               const SizedBox(height: 2),
-              Text(value, style: Theme.of(context).textTheme.bodyLarge),
+              valueWidget,
             ],
           ),
         ),
@@ -735,26 +939,34 @@ class _PortalStatusSection extends ConsumerWidget {
             Text(
               'clients.portal_status'.tr(),
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.grey.shade600,
-                  ),
+                color: context.colors.onSurfaceVariant,
+              ),
             ),
             const SizedBox(height: 2),
             Row(
               children: [
                 if (status == 'pending') ...[
-                  Icon(Icons.schedule, size: 18, color: Colors.orange.shade700),
-                  const SizedBox(width: 8),
+                  Icon(
+                    Icons.schedule,
+                    size: 18,
+                    color: context.customColors.warning,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
                   Text(
                     'clients.portal_pending'.tr(),
-                    style: TextStyle(
-                      color: Colors.orange.shade700,
+                    style: context.textTheme.titleSmall?.copyWith(
+                      color: context.customColors.warning,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
                   if (inviteLink != null && inviteLink.isNotEmpty) ...[
-                    const SizedBox(width: 8),
+                    const SizedBox(width: AppSpacing.sm),
                     IconButton(
-                      icon: Icon(Icons.copy, size: 18, color: Colors.teal.shade700),
+                      icon: Icon(
+                        Icons.copy,
+                        size: 18,
+                        color: context.colors.tertiary,
+                      ),
                       padding: EdgeInsets.zero,
                       constraints: const BoxConstraints(minWidth: 32),
                       tooltip: 'clients.copy_invite_link'.tr(),
@@ -769,28 +981,32 @@ class _PortalStatusSection extends ConsumerWidget {
                     ),
                   ],
                 ] else ...[
-                  Icon(Icons.check_circle, size: 18, color: Colors.green.shade700),
-                  const SizedBox(width: 8),
+                  Icon(
+                    Icons.check_circle,
+                    size: 18,
+                    color: context.customColors.success,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
                   Text(
                     'clients.portal_active'.tr(),
-                    style: TextStyle(
-                      color: Colors.green.shade700,
+                    style: context.textTheme.titleSmall?.copyWith(
+                      color: context.customColors.success,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
                   if (lastLogin != null) ...[
-                    const SizedBox(width: 12),
+                    const SizedBox(width: AppSpacing.sm + AppSpacing.xs),
                     Text(
                       'clients.portal_last_login'.tr(
                         namedArgs: {
-                          'date': DateFormat.yMd(context.locale.toString())
-                              .add_Hm()
-                              .format(lastLogin.toLocal()),
+                          'date': DateFormat.yMd(
+                            context.locale.toString(),
+                          ).add_Hm().format(lastLogin.toLocal()),
                         },
                       ),
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Colors.grey.shade600,
-                          ),
+                        color: context.colors.onSurfaceVariant,
+                      ),
                     ),
                   ],
                 ],
@@ -806,8 +1022,11 @@ class _PortalStatusSection extends ConsumerWidget {
             height: 16,
             child: CircularProgressIndicator(strokeWidth: 2),
           ),
-          const SizedBox(width: 8),
-          Text('common.loading'.tr(), style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(width: AppSpacing.sm),
+          Text(
+            'common.loading'.tr(),
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
         ],
       ),
       error: (_, _) => const SizedBox.shrink(),
@@ -857,10 +1076,10 @@ class _AddressDirectorySection extends ConsumerWidget {
         Text(
           'clients.address_directory'.tr(),
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Colors.grey.shade600,
-              ),
+            color: context.colors.onSurfaceVariant,
+          ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: AppSpacing.sm),
         addressesAsync.when(
           data: (addresses) {
             return Column(
@@ -871,13 +1090,16 @@ class _AddressDirectorySection extends ConsumerWidget {
                     title: Text(addr.label),
                     subtitle: Text(addr.address),
                     trailing: IconButton(
-                      icon: Icon(Icons.delete_outline, color: Colors.red.shade700),
+                      icon: Icon(
+                        Icons.delete_outline,
+                        color: context.colors.error,
+                      ),
                       tooltip: 'admin.apartments_delete'.tr(),
                       onPressed: () => _deleteAddress(context, ref, addr),
                     ),
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: AppSpacing.sm),
                 OutlinedButton.icon(
                   icon: const Icon(Icons.add, size: 18),
                   label: Text('clients.add_address'.tr()),
@@ -887,12 +1109,14 @@ class _AddressDirectorySection extends ConsumerWidget {
             );
           },
           loading: () => const Padding(
-            padding: EdgeInsets.symmetric(vertical: 8),
-            child: Center(child: SizedBox(
-              width: 24,
-              height: 24,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )),
+            padding: EdgeInsets.symmetric(vertical: AppSpacing.sm),
+            child: Center(
+              child: SizedBox(
+                width: AppSpacing.lg,
+                height: AppSpacing.lg,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
           ),
           error: (_, _) => const SizedBox.shrink(),
         ),
@@ -911,23 +1135,26 @@ class _AddressDirectorySection extends ConsumerWidget {
       await ClientRepository.deleteClientAddress(tenantId, addr.id);
       ref.invalidate(clientAddressesProvider(client.id));
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('clients.address_deleted'.tr())),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('clients.address_deleted'.tr())));
       }
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('${'common.error'.tr()}: $e'),
-            backgroundColor: Colors.red.shade700,
+            backgroundColor: context.colors.error,
           ),
         );
       }
     }
   }
 
-  Future<void> _showAddAddressDialog(BuildContext context, WidgetRef ref) async {
+  Future<void> _showAddAddressDialog(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
     final result = await showDialog<Map<String, String>>(
       context: context,
       builder: (ctx) => const _AddAddressDialog(),
@@ -952,7 +1179,7 @@ class _AddressDirectorySection extends ConsumerWidget {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('${'common.error'.tr()}: $e'),
-            backgroundColor: Colors.red.shade700,
+            backgroundColor: context.colors.error,
           ),
         );
       }
@@ -994,7 +1221,7 @@ class _AddAddressDialogState extends State<_AddAddressDialog> {
             ),
             textCapitalization: TextCapitalization.sentences,
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.md),
           TextField(
             controller: _addressController,
             decoration: InputDecoration(
@@ -1036,21 +1263,28 @@ class _ApartmentsTab extends ConsumerWidget {
     if (client.profileId == null || client.profileId!.trim().isEmpty) {
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(AppSpacing.lg),
           child: Text(
             'clients.no_owner_profile'.tr(),
             style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  color: Colors.grey.shade600,
-                ),
+              color: context.colors.onSurfaceVariant,
+            ),
             textAlign: TextAlign.center,
           ),
         ),
       );
     }
 
-    final apartmentsAsync = ref.watch(apartmentsForProfileProvider(client.profileId!));
+    final apartmentsAsync = ref.watch(
+      apartmentsForProfileProvider(client.profileId!),
+    );
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.lg,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1060,9 +1294,9 @@ class _ApartmentsTab extends ConsumerWidget {
               Text(
                 'clients.client_tab_apartments'.tr(),
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black87,
-                    ),
+                  fontWeight: FontWeight.bold,
+                  color: context.colors.onSurface,
+                ),
               ),
               ElevatedButton.icon(
                 icon: const Icon(Icons.add, size: 18),
@@ -1075,81 +1309,102 @@ class _ApartmentsTab extends ConsumerWidget {
                     onSaved: () {
                       ref.invalidate(apartmentsProvider);
                       ref.invalidate(apartmentsFullListProvider);
-                      ref.invalidate(apartmentsForProfileProvider(client.profileId!));
+                      ref.invalidate(
+                        apartmentsForProfileProvider(client.profileId!),
+                      );
                     },
                   );
                 },
               ),
             ],
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.md),
           Expanded(
-          child: apartmentsAsync.when(
-            data: (apartments) {
-              if (apartments.isEmpty) {
-                return Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Text(
-                      'clients.apartments_empty'.tr(),
-                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                            color: Colors.grey.shade600,
-                          ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                );
-              }
-              return ListView.builder(
-                padding: const EdgeInsets.all(16),
-                itemCount: apartments.length,
-                itemBuilder: (context, index) {
-                  final apt = apartments[index];
-                  return Card(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    child: ListTile(
-                      leading: Icon(Icons.apartment, color: Colors.teal.shade700),
-                      title: Text(apt.name),
-                      subtitle: apt.address != null && apt.address!.trim().isNotEmpty
-                          ? Text(apt.address!, overflow: TextOverflow.ellipsis)
-                          : null,
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () {
-                        showApartmentEditDialog(context, ref, apt, onSaved: () {
-                          ref.invalidate(apartmentsProvider);
-                          ref.invalidate(apartmentsFullListProvider);
-                          ref.invalidate(apartmentsForProfileProvider(client.profileId!));
-                        });
-                      },
+            child: apartmentsAsync.when(
+              data: (apartments) {
+                if (apartments.isEmpty) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(AppSpacing.lg),
+                      child: Text(
+                        'clients.apartments_empty'.tr(),
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          color: context.colors.onSurfaceVariant,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
                     ),
                   );
-                },
-              );
-            },
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error: (err, _) => Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
-                    const SizedBox(height: 16),
-                    Text(
-                      'common.error_with_message'.tr(
-                        namedArgs: {'message': err.toString()},
+                }
+                return ListView.builder(
+                  padding: const EdgeInsets.all(AppSpacing.md),
+                  itemCount: apartments.length,
+                  itemBuilder: (context, index) {
+                    final apt = apartments[index];
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+                      child: ListTile(
+                        leading: Icon(
+                          Icons.apartment,
+                          color: context.colors.tertiary,
+                        ),
+                        title: Text(apt.name),
+                        subtitle:
+                            apt.address != null &&
+                                apt.address!.trim().isNotEmpty
+                            ? Text(
+                                apt.address!,
+                                overflow: TextOverflow.ellipsis,
+                              )
+                            : null,
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () {
+                          showApartmentEditDialog(
+                            context,
+                            ref,
+                            apt,
+                            onSaved: () {
+                              ref.invalidate(apartmentsProvider);
+                              ref.invalidate(apartmentsFullListProvider);
+                              ref.invalidate(
+                                apartmentsForProfileProvider(client.profileId!),
+                              );
+                            },
+                          );
+                        },
                       ),
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.red.shade700, fontSize: 12),
-                    ),
-                  ],
+                    );
+                  },
+                );
+              },
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (err, _) => Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(AppSpacing.lg),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.error_outline,
+                        size: 48,
+                        color: context.colors.error,
+                      ),
+                      const SizedBox(height: AppSpacing.md),
+                      Text(
+                        'common.generic_error_user_friendly'.tr(),
+                        textAlign: TextAlign.center,
+                        style: context.textTheme.bodySmall?.copyWith(
+                          color: context.colors.error,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
-        ),
-      ],
-    ),
+        ],
+      ),
     );
   }
 }
@@ -1167,7 +1422,8 @@ DateTime? _parseReservationStartDate(String? checkIn) {
       int.parse(dParts[1]),
       int.parse(dParts[0]),
     );
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('_parseReservationStartDate: parsování check_in selhalo', e, st);
     return null;
   }
 }
@@ -1215,13 +1471,21 @@ class _ReservationsTabState extends ConsumerState<_ReservationsTab> {
   Widget build(BuildContext context) {
     final client = widget.client;
     final reservationsAsync = ref.watch(clientReservationsProvider(client.id));
-    final isOwner = (client.clientType?.toLowerCase() ?? '') == 'owner' &&
+    final isOwner =
+        (client.clientType?.toLowerCase() ?? '') == 'owner' &&
         client.profileId != null &&
         client.profileId!.trim().isNotEmpty;
-    final apartmentsAsync = isOwner ? ref.watch(apartmentsForProfileProvider(client.profileId!)) : null;
+    final apartmentsAsync = isOwner
+        ? ref.watch(apartmentsForProfileProvider(client.profileId!))
+        : null;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.lg,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1232,22 +1496,25 @@ class _ReservationsTabState extends ConsumerState<_ReservationsTab> {
                 Text(
                   'clients.client_tab_reservations'.tr(),
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black87,
-                      ),
+                    fontWeight: FontWeight.bold,
+                    color: context.colors.onSurface,
+                  ),
                 ),
                 ElevatedButton.icon(
                   icon: const Icon(Icons.add, size: 18),
                   label: Text('clients.btn_add_reservation_context'.tr()),
                   onPressed: () async {
                     final apartments = apartmentsAsync?.valueOrNull ?? [];
-                    final firstApartmentId = apartments.isNotEmpty ? apartments.first.id : null;
+                    final firstApartmentId = apartments.isNotEmpty
+                        ? apartments.first.id
+                        : null;
                     if (!context.mounted) return;
                     AdminReservationsScreen.showAddReservationDialog(
                       context,
                       ref,
                       initialApartmentId: firstApartmentId,
-                      onSaved: () => ref.invalidate(clientReservationsProvider(client.id)),
+                      onSaved: () =>
+                          ref.invalidate(clientReservationsProvider(client.id)),
                     );
                   },
                 ),
@@ -1257,128 +1524,158 @@ class _ReservationsTabState extends ConsumerState<_ReservationsTab> {
             Text(
               'clients.client_tab_reservations'.tr(),
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
-                  ),
+                fontWeight: FontWeight.bold,
+                color: context.colors.onSurface,
+              ),
             ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.md),
           Expanded(
-          child: reservationsAsync.when(
-            data: (reservations) {
-              if (reservations.isEmpty) {
-                return Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Text(
-                      'clients.client_no_reservations'.tr(),
-                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                            color: Colors.grey.shade600,
-                          ),
-                      textAlign: TextAlign.center,
+            child: reservationsAsync.when(
+              data: (reservations) {
+                if (reservations.isEmpty) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(AppSpacing.lg),
+                      child: Text(
+                        'clients.client_no_reservations'.tr(),
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          color: context.colors.onSurfaceVariant,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
                     ),
-                  ),
-                );
-              }
-              final sorted = _sortReservationsForClientTab(reservations);
-              final completed = sorted.where(_isReservationCompleted).toList();
-              final active = sorted.where((r) => !_isReservationCompleted(r)).toList();
-              final visible = _showHistory ? sorted : active;
+                  );
+                }
+                final sorted = _sortReservationsForClientTab(reservations);
+                final completed = sorted
+                    .where(_isReservationCompleted)
+                    .toList();
+                final active = sorted
+                    .where((r) => !_isReservationCompleted(r))
+                    .toList();
+                final visible = _showHistory ? sorted : active;
 
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(
-                    child: visible.isEmpty
-                        ? Center(
-                            child: Padding(
-                              padding: const EdgeInsets.all(24),
-                              child: Text(
-                                'clients.client_no_reservations'.tr(),
-                                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                                      color: Colors.grey.shade600,
-                                    ),
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
-                          )
-                        : ListView.builder(
-                            padding: const EdgeInsets.all(16),
-                            itemCount: visible.length,
-                            itemBuilder: (context, index) {
-                              final r = visible[index];
-                              final term = [
-                                r.checkIn ?? '–',
-                                r.checkOut ?? '–',
-                              ].join(' – ');
-                              return Card(
-                                margin: const EdgeInsets.only(bottom: 8),
-                                child: ListTile(
-                                  leading: Icon(Icons.calendar_month, color: Colors.teal.shade700),
-                                  title: Text(term),
-                                  subtitle: Text(
-                                    [
-                                      (r.guestName ?? '').trim().isNotEmpty ? r.guestName! : '–',
-                                      reservationStatusLabelKey(r.status).tr(),
-                                    ].join(' • '),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  trailing: const Icon(Icons.chevron_right),
-                                  onTap: () {
-                                    AdminReservationsScreen.showEditReservationDialog(
-                                      context,
-                                      ref,
-                                      r,
-                                      onSaved: () => ref.invalidate(clientReservationsProvider(client.id)),
-                                    );
-                                  },
-                                ),
-                              );
-                            },
-                          ),
-                  ),
-                  if (completed.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                      child: TextButton.icon(
-                        icon: Icon(
-                          _showHistory ? Icons.expand_less : Icons.expand_more,
-                          size: 20,
-                        ),
-                        label: Text(
-                          _showHistory
-                              ? 'common.hide_history'.tr()
-                              : 'common.show_history_count'.tr(namedArgs: {'count': '${completed.length}'}),
-                        ),
-                        onPressed: () => setState(() => _showHistory = !_showHistory),
-                      ),
-                    ),
-                ],
-              );
-            },
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error: (err, _) => Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
-                    const SizedBox(height: 16),
-                    Text(
-                      'common.error_with_message'.tr(
-                        namedArgs: {'message': err.toString()},
-                      ),
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.red.shade700, fontSize: 12),
+                    Expanded(
+                      child: visible.isEmpty
+                          ? Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(AppSpacing.lg),
+                                child: Text(
+                                  'clients.client_no_reservations'.tr(),
+                                  style: Theme.of(context).textTheme.bodyLarge
+                                      ?.copyWith(
+                                        color: context.colors.onSurfaceVariant,
+                                      ),
+                                  textAlign: TextAlign.center,
+                                ),
+                              ),
+                            )
+                          : ListView.builder(
+                              padding: const EdgeInsets.all(AppSpacing.md),
+                              itemCount: visible.length,
+                              itemBuilder: (context, index) {
+                                final r = visible[index];
+                                final term = [
+                                  r.checkIn ?? '–',
+                                  r.checkOut ?? '–',
+                                ].join(' – ');
+                                return Card(
+                                  margin: const EdgeInsets.only(
+                                    bottom: AppSpacing.sm,
+                                  ),
+                                  child: ListTile(
+                                    leading: Icon(
+                                      Icons.calendar_month,
+                                      color: context.colors.tertiary,
+                                    ),
+                                    title: Text(term),
+                                    subtitle: Text(
+                                      [
+                                        (r.guestName ?? '').trim().isNotEmpty
+                                            ? r.guestName!
+                                            : '–',
+                                        reservationStatusLabelKey(
+                                          r.status,
+                                        ).tr(),
+                                      ].join(' • '),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    trailing: const Icon(Icons.chevron_right),
+                                    onTap: () {
+                                      AdminReservationsScreen.showEditReservationDialog(
+                                        context,
+                                        ref,
+                                        r,
+                                        onSaved: () => ref.invalidate(
+                                          clientReservationsProvider(client.id),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                );
+                              },
+                            ),
                     ),
+                    if (completed.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(
+                          AppSpacing.md,
+                          AppSpacing.sm,
+                          AppSpacing.md,
+                          AppSpacing.md,
+                        ),
+                        child: TextButton.icon(
+                          icon: Icon(
+                            _showHistory
+                                ? Icons.expand_less
+                                : Icons.expand_more,
+                            size: 20,
+                          ),
+                          label: Text(
+                            _showHistory
+                                ? 'common.hide_history'.tr()
+                                : 'common.show_history_count'.tr(
+                                    namedArgs: {'count': '${completed.length}'},
+                                  ),
+                          ),
+                          onPressed: () =>
+                              setState(() => _showHistory = !_showHistory),
+                        ),
+                      ),
                   ],
+                );
+              },
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (err, _) => Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(AppSpacing.lg),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.error_outline,
+                        size: 48,
+                        color: context.colors.error,
+                      ),
+                      const SizedBox(height: AppSpacing.md),
+                      Text(
+                        'common.generic_error_user_friendly'.tr(),
+                        textAlign: TextAlign.center,
+                        style: context.textTheme.bodySmall?.copyWith(
+                          color: context.colors.error,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
-        ),
-      ],
-    ),
+        ],
+      ),
     );
   }
 }
@@ -1387,18 +1684,32 @@ class _ReservationsTabState extends ConsumerState<_ReservationsTab> {
 String _taskStatusKey(String? status) {
   if (status == null || status.trim().isEmpty) return 'task_status.pending';
   final s = status.trim().toLowerCase();
-  if (s == 'pending' || s == 'draft' || s == 'návrh') return 'task_status.pending';
-  if (s == 'assigned' || s == 'new' || s == 'nový' || s == 'zadáno') return 'task_status.assigned';
-  if (s == 'in_progress' || s == 'probíhá') return 'task_status.in_progress';
-  if (s == 'completed' || s == 'done' || s == 'hotovo' || s == 'dokončeno') return 'task_status.completed';
-  if (s == 'problém' || s == 'problem' || s == 'issue') return 'task_status.problem';
+  if (s == 'pending' || s == 'draft' || s == 'návrh') {
+    return 'task_status.pending';
+  }
+  if (s == 'assigned' || s == 'new' || s == 'nový' || s == 'zadáno') {
+    return 'task_status.assigned';
+  }
+  if (s == 'in_progress' || s == 'probíhá') {
+    return 'task_status.in_progress';
+  }
+  if (s == 'completed' || s == 'done' || s == 'hotovo' || s == 'dokončeno') {
+    return 'task_status.completed';
+  }
+  if (s == 'problém' || s == 'problem' || s == 'issue') {
+    return 'task_status.problem';
+  }
   return 'task_status.pending';
 }
 
 /// True, pokud je úkol v „dokončeném“ stavu (Hotovo / Zrušeno) – jde na konec seznamu.
 bool _isTaskCompletedOrCancelled(TaskRow t) {
   final s = t.status.trim().toLowerCase();
-  return s == 'completed' || s == 'done' || s == 'hotovo' || s == 'dokončeno' || s == 'cancelled';
+  return s == 'completed' ||
+      s == 'done' ||
+      s == 'hotovo' ||
+      s == 'dokončeno' ||
+      s == 'cancelled';
 }
 
 /// Vrací datum pro řazení úkolu (scheduled_start nebo due_date).
@@ -1440,13 +1751,21 @@ class _TasksTabState extends ConsumerState<_TasksTab> {
   Widget build(BuildContext context) {
     final client = widget.client;
     final tasksAsync = ref.watch(clientTasksProvider(client.id));
-    final isOwner = (client.clientType?.toLowerCase() ?? '') == 'owner' &&
+    final isOwner =
+        (client.clientType?.toLowerCase() ?? '') == 'owner' &&
         client.profileId != null &&
         client.profileId!.trim().isNotEmpty;
-    final apartmentsAsync = isOwner ? ref.watch(apartmentsForProfileProvider(client.profileId!)) : null;
+    final apartmentsAsync = isOwner
+        ? ref.watch(apartmentsForProfileProvider(client.profileId!))
+        : null;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.md,
+        AppSpacing.lg,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1456,9 +1775,9 @@ class _TasksTabState extends ConsumerState<_TasksTab> {
               Text(
                 'clients.client_tab_tasks'.tr(),
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black87,
-                    ),
+                  fontWeight: FontWeight.bold,
+                  color: context.colors.onSurface,
+                ),
               ),
               ElevatedButton.icon(
                 icon: const Icon(Icons.add, size: 18),
@@ -1466,139 +1785,173 @@ class _TasksTabState extends ConsumerState<_TasksTab> {
                 onPressed: () {
                   if (isOwner) {
                     final apartments = apartmentsAsync?.valueOrNull ?? [];
-                    final firstApartmentId = apartments.isNotEmpty ? apartments.first.id : null;
+                    final firstApartmentId = apartments.isNotEmpty
+                        ? apartments.first.id
+                        : null;
                     AdminTasksScreen.showAddTaskDialog(
                       context,
                       ref,
                       initialApartmentId: firstApartmentId,
-                      onSaved: () => ref.invalidate(clientTasksProvider(client.id)),
+                      onSaved: () =>
+                          ref.invalidate(clientTasksProvider(client.id)),
                     );
                   } else {
                     AdminTasksScreen.showAddTaskDialog(
                       context,
                       ref,
                       initialClientId: client.id,
-                      onSaved: () => ref.invalidate(clientTasksProvider(client.id)),
+                      onSaved: () =>
+                          ref.invalidate(clientTasksProvider(client.id)),
                     );
                   }
                 },
               ),
             ],
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.md),
           Expanded(
-          child: tasksAsync.when(
-            data: (tasks) {
-              if (tasks.isEmpty) {
-                return Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Text(
-                      'clients.client_no_tasks'.tr(),
-                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                            color: Colors.grey.shade600,
-                          ),
-                      textAlign: TextAlign.center,
+            child: tasksAsync.when(
+              data: (tasks) {
+                if (tasks.isEmpty) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(AppSpacing.lg),
+                      child: Text(
+                        'clients.client_no_tasks'.tr(),
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          color: context.colors.onSurfaceVariant,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
                     ),
-                  ),
-                );
-              }
-              final sorted = _sortTasksForClientTab(tasks);
-              final completed = sorted.where(_isTaskCompletedOrCancelled).toList();
-              final active = sorted.where((t) => !_isTaskCompletedOrCancelled(t)).toList();
-              final visible = _showHistory ? sorted : active;
+                  );
+                }
+                final sorted = _sortTasksForClientTab(tasks);
+                final completed = sorted
+                    .where(_isTaskCompletedOrCancelled)
+                    .toList();
+                final active = sorted
+                    .where((t) => !_isTaskCompletedOrCancelled(t))
+                    .toList();
+                final visible = _showHistory ? sorted : active;
 
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(
-                    child: visible.isEmpty
-                        ? Center(
-                            child: Padding(
-                              padding: const EdgeInsets.all(24),
-                              child: Text(
-                                'clients.client_no_tasks'.tr(),
-                                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                                      color: Colors.grey.shade600,
-                                    ),
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
-                          )
-                        : ListView.builder(
-                            padding: const EdgeInsets.all(16),
-                            itemCount: visible.length,
-                            itemBuilder: (context, index) {
-                              final t = visible[index];
-                              final displayTitle = (t.customTitle ?? t.title).trim().isNotEmpty
-                                  ? (t.customTitle ?? t.title)
-                                  : (t.apartmentName ?? t.apartmentId);
-                              return Card(
-                                margin: const EdgeInsets.only(bottom: 8),
-                                child: ListTile(
-                                  leading: Icon(Icons.task_alt, color: Colors.teal.shade700),
-                                  title: Text(displayTitle, overflow: TextOverflow.ellipsis),
-                                  subtitle: Text(
-                                    _taskStatusKey(t.status).tr(),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  trailing: const Icon(Icons.chevron_right),
-                                  onTap: () {
-                                    AdminTasksScreen.showEditTaskDialog(
-                                      context,
-                                      ref,
-                                      t,
-                                      onSaved: () => ref.invalidate(clientTasksProvider(client.id)),
-                                    );
-                                  },
-                                ),
-                              );
-                            },
-                          ),
-                  ),
-                  if (completed.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                      child: TextButton.icon(
-                        icon: Icon(
-                          _showHistory ? Icons.expand_less : Icons.expand_more,
-                          size: 20,
-                        ),
-                        label: Text(
-                          _showHistory
-                              ? 'common.hide_history'.tr()
-                              : 'common.show_history_count'.tr(namedArgs: {'count': '${completed.length}'}),
-                        ),
-                        onPressed: () => setState(() => _showHistory = !_showHistory),
-                      ),
-                    ),
-                ],
-              );
-            },
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error: (err, _) => Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
-                    const SizedBox(height: 16),
-                    Text(
-                      'common.error_with_message'.tr(
-                        namedArgs: {'message': err.toString()},
-                      ),
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.red.shade700, fontSize: 12),
+                    Expanded(
+                      child: visible.isEmpty
+                          ? Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(AppSpacing.lg),
+                                child: Text(
+                                  'clients.client_no_tasks'.tr(),
+                                  style: Theme.of(context).textTheme.bodyLarge
+                                      ?.copyWith(
+                                        color: context.colors.onSurfaceVariant,
+                                      ),
+                                  textAlign: TextAlign.center,
+                                ),
+                              ),
+                            )
+                          : ListView.builder(
+                              padding: const EdgeInsets.all(AppSpacing.md),
+                              itemCount: visible.length,
+                              itemBuilder: (context, index) {
+                                final t = visible[index];
+                                final displayTitle =
+                                    (t.customTitle ?? t.title).trim().isNotEmpty
+                                    ? (t.customTitle ?? t.title)
+                                    : (t.apartmentName ?? t.apartmentId);
+                                return Card(
+                                  margin: const EdgeInsets.only(
+                                    bottom: AppSpacing.sm,
+                                  ),
+                                  child: ListTile(
+                                    leading: Icon(
+                                      Icons.task_alt,
+                                      color: context.colors.tertiary,
+                                    ),
+                                    title: Text(
+                                      displayTitle,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    subtitle: Text(
+                                      _taskStatusKey(t.status).tr(),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    trailing: const Icon(Icons.chevron_right),
+                                    onTap: () {
+                                      AdminTasksScreen.showEditTaskDialog(
+                                        context,
+                                        ref,
+                                        t,
+                                        onSaved: () => ref.invalidate(
+                                          clientTasksProvider(client.id),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                );
+                              },
+                            ),
                     ),
+                    if (completed.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(
+                          AppSpacing.md,
+                          AppSpacing.sm,
+                          AppSpacing.md,
+                          AppSpacing.md,
+                        ),
+                        child: TextButton.icon(
+                          icon: Icon(
+                            _showHistory
+                                ? Icons.expand_less
+                                : Icons.expand_more,
+                            size: 20,
+                          ),
+                          label: Text(
+                            _showHistory
+                                ? 'common.hide_history'.tr()
+                                : 'common.show_history_count'.tr(
+                                    namedArgs: {'count': '${completed.length}'},
+                                  ),
+                          ),
+                          onPressed: () =>
+                              setState(() => _showHistory = !_showHistory),
+                        ),
+                      ),
                   ],
+                );
+              },
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (err, _) => Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(AppSpacing.lg),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.error_outline,
+                        size: 48,
+                        color: context.colors.error,
+                      ),
+                      const SizedBox(height: AppSpacing.md),
+                      Text(
+                        'common.generic_error_user_friendly'.tr(),
+                        textAlign: TextAlign.center,
+                        style: context.textTheme.bodySmall?.copyWith(
+                          color: context.colors.error,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
-        ),
-      ],
-    ),
+        ],
+      ),
     );
   }
 }

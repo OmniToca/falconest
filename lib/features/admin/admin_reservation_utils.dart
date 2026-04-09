@@ -1,6 +1,7 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 
 /// Typ kolize: koliduje začátek (check-in) nebo konec (check-out) rezervace.
@@ -49,6 +50,22 @@ int? reservationNights(String? checkIn, String? checkOut) {
   final startDate = DateTime(start.year, start.month, start.day);
   final endDate = DateTime(end.year, end.month, end.day);
   return endDate.difference(startDate).inDays;
+}
+
+/// Štítek „jak dlouho je rezervace v systému“ podle `created_at` (kalendářní dny v lokálním čase).
+///
+/// PROČ: Dispečer rychle pozná čerstvý záznam vs. starší import bez rozšiřování tabulky.
+String? reservationRecordAgeLabel(DateTime? createdAt) {
+  if (createdAt == null) return null;
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final created = createdAt.toLocal();
+  final createdDay = DateTime(created.year, created.month, created.day);
+  final diffDays = today.difference(createdDay).inDays;
+  if (diffDays < 0) return null;
+  if (diffDays == 0) return 'admin.reservation_age_today'.tr();
+  if (diffDays == 1) return 'admin.reservation_age_yesterday'.tr();
+  return 'admin.reservation_age_days_ago'.tr(namedArgs: {'days': '$diffDays'});
 }
 
 DateTime? parseReservationDateOnly(String s) {
@@ -202,7 +219,9 @@ DateTime? parseReservationDateTime(String? s) {
         );
       }
     }
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('admin_reservation_utils: parsování data/času z řetězce selhalo', e, st);
+  }
   return null;
 }
 

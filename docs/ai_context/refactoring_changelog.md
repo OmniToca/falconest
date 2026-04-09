@@ -4,6 +4,39 @@ Krátký deník změn v kódu iniciovaných refaktoringy (Fáze 1.1 Admin UI a d
 
 ---
 
+## 2026-04-07 – Admin nástěnka: čas úkolu (Dnešní plán / externí služby)
+
+**Problém:** Podtitulek ukazoval jen čas z `due_date` (např. „• 09:40“), bez začátku z `scheduled_start`.
+
+**Úprava:** `formatDashboardTaskTimeWindow` v `lib/features/admin/admin_dashboard_screen.dart` – lokální formát `HH:mm - HH:mm` z `scheduled_start` + `due_date`; při nekladném rozdílu konec–začátek `Od {time}`; bez `scheduled_start` a čas 00:00 → `admin.dashboard_task_all_day`; jinak jen konec. Režim „Nejbližší“ (`formatTaskDueForUpcoming`) používá stejné časové okno + datum. **i18n:** `admin.dashboard_task_from`, `admin.dashboard_task_all_day` (cs, en, es).
+
+---
+
+## 2026-04-07 – Krok 4 (+ Krok 2 a Krok 3): Admin Úkoly – vyčlenění Kanbanu z `admin_tasks_screen.dart`
+
+**Cíl:** Strukturální refaktoring „god object“ obrazovky – widgety Kanbanu a související pomocné funkce přesunuty do `lib/features/admin/widgets/kanban/` bez změny logiky, stavu ani vzhledu. Hlavní soubor zůstává u `lib/features/admin/admin_tasks_screen.dart` (ne podsložka `screens/`).
+
+**Krok 2 (sloupce):** `KanbanColumnDef`, `KanbanBoard`, `KanbanColumn` žijí v `kanban_column.dart` jako veřejné třídy; `KanbanBoard` skládá čtyři `KanbanColumn` instance. Hlavní obrazovka importuje `kanban_column.dart` a v `Scaffold` používá jen `KanbanBoard(...)`.
+
+**Krok 3 (karty):** `KanbanTaskTimePill`, `KanbanTaskCardContent`, `TaskCard` jsou v `kanban_task_card.dart` (veřejné názvy bez podtržítka). `kanban_column.dart` je importuje pro vykreslení karet a drag feedback; `admin_tasks_screen.dart` kartové widgety přímo neimportuje (stačí import sloupce).
+
+**Krok 4 (ostatní Kanban UI + sdílená logika):** lišty, filtr měsíce, sdílené funkce v `kanban_shared.dart` a další soubory níže.
+
+### Nové soubory (`lib/features/admin/widgets/kanban/`)
+
+- `kanban_shared.dart` – sdílené funkce (normalizace statusu, lokalizace statusu, časové okno karty, `taskTypeLabelKey`, `initialDurationMinutesForTask`, hotovost při dokončení, barvy statusů přes `kanbanTaskStatusColor`).
+- `kanban_bulk_selection_bar.dart` – `KanbanBulkSelectionBar`.
+- `kanban_filter_bar.dart` – `TasksMonthNavigator`, `RecalculateStaffButton`, `TasksFilterBar`.
+- `kanban_column.dart` – **Krok 2:** `KanbanColumnDef`, `KanbanBoard`, `KanbanColumn`.
+- `kanban_task_card.dart` – **Krok 3:** `KanbanTaskTimePill`, `KanbanTaskCardContent`, `TaskCard`.
+
+### Upravený soubor
+
+- `lib/features/admin/admin_tasks_screen.dart` – `Consumer` + `Scaffold` skládá `KanbanBoard`, lišty a legendu; stav Kanbanu (výběr, bulk akce) zůstává ve `_AdminTasksScreenState`. Dialogy přidání/úpravy úkolu (`_AddTaskDialog`, `_EditTaskDialog`) a související sekce záměrně zůstávají v tomto souboru (nejsou součástí Kanban boardu).
+- `_TopActionBar`, `_GenerateButton`, `RecalculateProposalsDialog` zůstávají v `admin_tasks_screen.dart` vedle scaffoldu.
+
+---
+
 ## 2026-04-07 – Krok 3: Edge Security – sdílený rate limiter + webhooky
 
 **Cíl:** In-memory limitace z `export_calendar` přesunuta do znovupoužitelného modulu; stejný mechanismus na veřejných webhookech (limit podle IP).

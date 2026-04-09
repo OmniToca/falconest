@@ -1,8 +1,9 @@
-import 'package:intl/intl.dart';
+import 'package:easy_localization/easy_localization.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/core/utils/download_helper/download_helper.dart';
 import 'package:falconest/features/admin/providers/finance_billing_provider.dart';
 
@@ -72,7 +73,9 @@ class BillingPdfService {
         try {
           final prov = await networkImage(url);
           list.add(prov);
-        } catch (_) {}
+        } catch (e, st) {
+          AppLogger.error('BillingPdfService: stažení obrázku výdaje do PDF selhalo', e, st);
+        }
       }
       if (list.isNotEmpty) expenseImageCache[exp.id] = list;
     }
@@ -356,7 +359,7 @@ class BillingPdfService {
   }) {
     final widgets = <pw.Widget>[];
     final dateFormat = DateFormat('dd.MM.yyyy HH:mm');
-    const emptyPlaceholder = '—';
+    final emptyPlaceholder = 'common.placeholder_dash'.tr();
     final scheduledStr = task.scheduledStart != null
         ? dateFormat.format(task.scheduledStart!)
         : emptyPlaceholder;

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/super_admin/providers/tenant_detail_provider.dart';
 
 /// Model záznamu z tabulky tenants.
@@ -336,9 +337,13 @@ Future<Set<String>> _loadTenantIdsWithAdmin(dynamic client) async {
             (role == 'admin' || role == 'manager')) {
           set.add(tenantId);
         }
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('_loadTenantIdsWithAdmin: parsování řádku profilu selhalo', e, st);
+      }
     }
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('_loadTenantIdsWithAdmin: dotaz na profiles selhal', e, st);
+  }
   return set;
 }
 
@@ -368,9 +373,13 @@ Future<Map<String, int>> _loadCountsByTenant(
         if (id != null && id.isNotEmpty) {
           counts[id] = (counts[id] ?? 0) + 1;
         }
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('_loadCountsByTenant($table): parsování řádku selhalo', e, st);
+      }
     }
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('_loadCountsByTenant($table): dotaz selhal', e, st);
+  }
   return counts;
 }
 
@@ -389,7 +398,8 @@ Future<int> _loadApartmentCountForTenant(dynamic client, String tenantId) async 
       print('DEBUG FETCH: Tenant $tenantId -> Apartments: $count');
     }
     return count;
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('_loadApartmentCountForTenant: dotaz apartments selhal', e, st);
     return 0;
   }
 }
@@ -437,10 +447,13 @@ Future<Map<String, DateTime?>> _loadLatestActivityByTenant(dynamic client) async
             result[tenantId] = at;
           }
         }
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('_loadLatestActivityByTenant: parsování řádku profilu selhalo', e, st);
+      }
     }
-  } catch (_) {
+  } catch (e, st) {
     // Sloupec last_sign_in_at může chybět dokud neběží migrace nebo sync z auth
+    AppLogger.error('_loadLatestActivityByTenant: dotaz na last_sign_in_at selhal', e, st);
   }
   return result;
 }
@@ -455,7 +468,9 @@ Future<(int total, Map<String, int> activeByTenant)> _loadModuleAdoption(
   try {
     final modRes = await client.from('modules').select('id');
     total = _toList(modRes).length;
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('_loadModuleAdoption: načtení katalogu modules selhalo', e, st);
+  }
   try {
     // Soft delete + platnost: pouze moduly s deleted_at IS NULL a platným valid_until/trial_ends_at.
     final res = await client
@@ -471,9 +486,13 @@ Future<(int total, Map<String, int> activeByTenant)> _loadModuleAdoption(
         if (tenantId != null && tenantId.isNotEmpty) {
           activeByTenant[tenantId] = (activeByTenant[tenantId] ?? 0) + 1;
         }
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('_loadModuleAdoption: parsování řádku tenant_modules selhalo', e, st);
+      }
     }
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('_loadModuleAdoption: dotaz tenant_modules selhal', e, st);
+  }
   return (total, activeByTenant);
 }
 
@@ -546,8 +565,9 @@ final tenantsWithStatusProvider =
           .from('invitations')
           .select('tenant_id, email, first_name, last_name')
           .filter('deleted_at', 'is', null);
-    } catch (_) {
+    } catch (e, st) {
       // Fallback: tabulka invitations nemá sloupec deleted_at – načti bez filtru.
+      AppLogger.error('tenantsWithStatusProvider: invitations s deleted_at filtrem selhal, použit fallback', e, st);
       invRes = await client
           .from('invitations')
           .select('tenant_id, email, first_name, last_name');
@@ -560,7 +580,9 @@ final tenantsWithStatusProvider =
     for (final e in invList) {
       try {
         invitations.add(_parseInvitation(Map<String, dynamic>.from(e as Map)));
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('tenantsWithStatusProvider: parsování řádku invitation selhalo', e, st);
+      }
     }
   } catch (e) {
     if (kDebugMode) {
@@ -572,26 +594,34 @@ final tenantsWithStatusProvider =
   Set<String> tenantIdsWithAdmin = {};
   try {
     tenantIdsWithAdmin = await _loadTenantIdsWithAdmin(client);
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('tenantsWithStatusProvider: _loadTenantIdsWithAdmin selhal', e, st);
+  }
 
   // Počet lidí v profiles (přiřazených k tenantovi)
   Map<String, int> profilesCountByTenant = {};
   try {
     profilesCountByTenant =
         await _loadCountsByTenant(client, 'profiles', 'tenant_id');
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('tenantsWithStatusProvider: počty profiles selhaly', e, st);
+  }
 
   // Počet bytů – per-tenant dotaz (select id, eq tenant_id) pro správné RLS
   Map<String, int> apartmentCounts = {};
   try {
     apartmentCounts = await _loadApartmentCountsByTenant(client, tenants);
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('tenantsWithStatusProvider: počty bytů selhaly', e, st);
+  }
 
   // Poslední aktivita (Health / Traffic Light): MAX(last_sign_in_at) per tenant
   Map<String, DateTime?> latestActivityByTenant = {};
   try {
     latestActivityByTenant = await _loadLatestActivityByTenant(client);
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('tenantsWithStatusProvider: poslední aktivita selhala', e, st);
+  }
 
   // Adoption Score: celkový počet modulů + počet aktivních modulů per tenant
   int moduleTotalCount = 0;
@@ -600,7 +630,9 @@ final tenantsWithStatusProvider =
     final adoption = await _loadModuleAdoption(client);
     moduleTotalCount = adoption.$1;
     moduleActiveByTenant = adoption.$2;
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('tenantsWithStatusProvider: adoption modulů selhala', e, st);
+  }
 
   // Počet pozvánek podle tenant_id (nevyřízené pozvánky = „lidé v týmu“)
   final invitationCountByTenant = <String, int>{};
@@ -673,10 +705,13 @@ final todayTaskCountByTenantProvider =
         if (tid != null && tid.isNotEmpty) {
           counts[tid] = (counts[tid] ?? 0) + 1;
         }
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('todayTaskCountByTenantProvider: parsování řádku úkolu selhalo', e, st);
+      }
     }
-  } catch (_) {
+  } catch (e, st) {
     // Tabulka může nemít created_at nebo RLS blokuje – vracíme prázdnou mapu
+    AppLogger.error('todayTaskCountByTenantProvider: dotaz na úkoly za dnešek selhal', e, st);
   }
   return counts;
 });

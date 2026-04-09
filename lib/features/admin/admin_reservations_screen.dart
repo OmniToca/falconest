@@ -1,56 +1,136 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:falconest/core/audit/enterprise_audit_payload.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
-import 'package:falconest/core/presentation/widgets/app_card.dart';
-import 'package:falconest/core/services/audit_log_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/theme/premium_card_decoration.dart';
+import 'package:falconest/features/admin/providers/admin_cross_nav_provider.dart';
+import 'package:falconest/features/admin/providers/admin_reservations_repository.dart';
 import 'package:falconest/features/admin/admin_reservation_forms.dart';
 import 'package:falconest/features/admin/admin_reservation_utils.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
+import 'package:falconest/core/theme/app_spacing.dart';
+import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/core/utils/download_helper/download_helper.dart';
 import 'package:falconest/core/utils/read_file_bytes/read_file_bytes.dart';
+import 'package:falconest/core/widgets/app_empty_state.dart';
 import 'package:falconest/features/admin/services/reservation_import_service.dart';
 import 'package:falconest/features/calendar/providers/planning_calendar_provider.dart';
+import 'package:falconest/utils/task_visuals.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-/// Barva Chipu podle životního cyklu: modrá, zelená, šedá, červená.
-Color reservationStatusColor(String status) {
+/// Obal karty rezervace (Kanban / případný seznam) – stejný vzor jako úkoly ([premiumCardDecoration]).
+Widget _reservationPremiumCardShell({
+  required BuildContext context,
+  VoidCallback? onTap,
+  required Widget child,
+}) {
+  final radius = BorderRadius.circular(AppSpacing.md);
+  final deco = premiumCardDecoration(context);
+  return ClipRRect(
+    borderRadius: radius,
+    child: Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: radius,
+        child: Ink(
+          decoration: deco,
+          child: child,
+        ),
+      ),
+    ),
+  );
+}
+
+/// Barva Chipu / štítku podle životního cyklu – z [ColorScheme] a [CustomColors].
+Color reservationStatusColor(BuildContext context, String status) {
+  final cs = context.colors;
+  final cc = context.customColors;
   switch (status) {
     case 'new':
-      return Colors.blue;
+      return cs.primary;
     case 'confirmed':
-      return Colors.green;
+      return cc.success;
     case 'checked_in':
-      return Colors.deepPurple;
+      return cs.tertiary;
     case 'checked_out':
-      return Colors.grey;
+      return cs.surfaceContainerHighest;
     case 'cancelled':
-      return Colors.red;
+      return cs.error;
     default:
-      return Colors.blue;
+      return cs.primary;
   }
 }
 
-/// Pastelové barvy bloků rezervace na Plachtě – svěží, čisté pastely pro Apple Vibe.
-Color _timelineBlockColor(String status) {
+/// Barva popředí textu na chipu se sémantickým pozadím [reservationStatusColor].
+Color _statusChipForegroundColor(BuildContext context, String status) {
+  final cs = context.colors;
+  final cc = context.customColors;
   switch (status) {
     case 'new':
-      return Colors.blue.shade100;
+      return cs.onPrimary;
     case 'confirmed':
-      return Colors.green.shade100;
+      return cc.onSuccess;
     case 'checked_in':
-      return Colors.orange.shade100;
+      return cs.onTertiary;
     case 'checked_out':
-      return Colors.grey.shade200;
+      return cs.onSurface;
     case 'cancelled':
-      return Colors.red.shade100;
+      return cs.onError;
     default:
-      return Colors.purple.shade100;
+      return cs.onPrimary;
+  }
+}
+
+/// Pastelové pozadí bloků rezervace na Plachtě – kontejnerové / blend barvy z tématu.
+Color _timelineBlockColor(BuildContext context, String status) {
+  final cs = context.colors;
+  final cc = context.customColors;
+  switch (status) {
+    case 'new':
+      return cs.primaryContainer;
+    case 'confirmed':
+      return Color.alphaBlend(cc.success.withValues(alpha: 0.2), cs.surface);
+    case 'checked_in':
+      return Color.alphaBlend(cc.warning.withValues(alpha: 0.22), cs.surface);
+    case 'checked_out':
+      return cs.surfaceContainerHighest;
+    case 'cancelled':
+      return cs.errorContainer;
+    default:
+      return cs.tertiaryContainer;
+  }
+}
+
+/// Legenda Plachty – dvojice (pozadí, text) pro konzistentní kontrast.
+(Color bg, Color fg) _legendPillColors(BuildContext context, String status) {
+  final cs = context.colors;
+  final cc = context.customColors;
+  switch (status) {
+    case 'new':
+      return (cs.primaryContainer, cs.onPrimaryContainer);
+    case 'confirmed':
+      return (
+        Color.alphaBlend(cc.success.withValues(alpha: 0.2), cs.surface),
+        cc.success,
+      );
+    case 'checked_in':
+      return (
+        Color.alphaBlend(cc.warning.withValues(alpha: 0.22), cs.surface),
+        cc.warning,
+      );
+    case 'checked_out':
+      return (cs.surfaceContainerHighest, cs.onSurfaceVariant);
+    case 'cancelled':
+      return (cs.errorContainer, cs.onErrorContainer);
+    default:
+      return (cs.tertiaryContainer, cs.onTertiaryContainer);
   }
 }
 
@@ -122,122 +202,186 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
     super.dispose();
   }
 
-  List<ReservationRow> _computeFiltered(List<ReservationRow> reservations) {
-    final query = _searchController.text.trim().toLowerCase();
-    if (query.isEmpty) return reservations;
-    return reservations.where((r) {
-      final guest = (r.guestName ?? '').toLowerCase();
-      final apt = (r.apartmentName ?? '').toLowerCase();
-      return guest.contains(query) || apt.contains(query);
-    }).toList();
-  }
-
   @override
   Widget build(BuildContext context) {
-    final reservationsAsync = ref.watch(adminReservationsProvider);
-
-    return Scaffold(
-      body: reservationsAsync.when(
-        data: (reservations) {
-          final filtered = _computeFiltered(reservations);
-          return DefaultTabController(
-            length: 2,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _TopActionBar(
-                  searchController: _searchController,
-                  onSearchChanged: () => setState(() {}),
-                  onAdd: () => _showAddDialog(context, ref),
-                  onDownloadTemplate: () => _downloadCsvTemplate(context),
-                  onImportCsv: () => _importCsv(context, ref),
-                ),
-                Material(
-                  color: Colors.white,
-                  child: TabBar(
-                    labelColor: Theme.of(context).colorScheme.primary,
-                    unselectedLabelColor: Colors.grey.shade700,
-                    indicatorColor: Theme.of(context).colorScheme.primary,
-                    tabs: [
-                      Tab(
-                        icon: const Icon(Icons.calendar_month, size: 20),
-                        text: 'admin.reservations_tab_timeline'.tr(),
-                      ),
-                      Tab(
-                        icon: const Icon(Icons.list, size: 20),
-                        text: 'admin.reservations_tab_list'.tr(),
-                      ),
-                    ],
-                  ),
-                ),
-                Expanded(
-                  child: TabBarView(
-                    children: [
-                      // Plachta vyplní dostupné místo (Expanded); vertikální scroll je uvnitř ReservationTimeline.
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-                        child: ReservationTimeline(
-                          visibleStartDate: _timelineVisibleStartDate,
-                          onPrevious: () => setState(() {
-                            _timelineVisibleStartDate = DateTime(_timelineVisibleStartDate.year, _timelineVisibleStartDate.month - 1, 1);
-                          }),
-                          onToday: () {
-                            final now = DateTime.now();
-                            setState(() {
-                              _timelineVisibleStartDate = DateTime(now.year, now.month, 1);
-                            });
-                          },
-                          onNext: () => setState(() {
-                            _timelineVisibleStartDate = DateTime(_timelineVisibleStartDate.year, _timelineVisibleStartDate.month + 1, 1);
-                          }),
-                          onReservationTap: (r) => _showEditDialog(context, ref, r),
-                          onEmptyCellTap: (apartmentId, date) {
-                            final d = date;
-                            final checkInStr = '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}.${d.year}';
-                            _showAddDialog(context, ref, initialApartmentId: apartmentId, initialCheckIn: checkInStr);
-                          },
-                        ),
-                      ),
-                      filtered.isEmpty
-                          ? Center(
-                              child: Text(
-                                _searchController.text.trim().isEmpty
-                                    ? 'admin.reservations_empty'.tr()
-                                    : 'admin.reservations_search_no_results'.tr(),
-                                style: Theme.of(context).textTheme.titleMedium,
-                              ),
-                            )
-                          : _ReservationsKanbanBoard(
-                              reservations: filtered,
-                              onEdit: (r) => _showEditDialog(context, ref, r),
-                              onDelete: (r) => _showDeleteConfirm(context, ref, r),
-                            ),
-                    ],
-                  ),
-                ),
-              ],
+    // PROČ: Po křížové navigaci z úkolu otevřeme stejný dialog úpravy rezervace jako z řádku v seznamu.
+    ref.listen<AdminCrossNavPending>(adminCrossNavPendingProvider, (previous, next) {
+      final id = next.reservationId;
+      if (id == null || id.isEmpty) return;
+      final list = ref.read(adminReservationsProvider).valueOrNull;
+      ReservationRow? row;
+      if (list != null) {
+        for (final r in list) {
+          if (r.id == id) {
+            row = r;
+            break;
+          }
+        }
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!context.mounted) return;
+        ref.read(adminCrossNavPendingProvider.notifier).clear();
+        if (row != null) {
+          _showEditDialog(context, ref, row);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('admin.cross_nav_reservation_not_found'.tr()),
+              behavior: SnackBarBehavior.floating,
             ),
           );
-        },
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (err, _) => Center(
+        }
+      });
+    });
+    // PROČ select: při realtime změně rezervace zůstane fáze „data“ – horní lišta a záložky se nepřestavují celé.
+    final loadPhase = ref.watch(
+      adminReservationsProvider.select((async) {
+        if (async.isLoading) return 0;
+        if (async.hasError) return 1;
+        return 2;
+      }),
+    );
+
+    if (loadPhase == 0) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (loadPhase == 1) {
+      final err = ref.read(adminReservationsProvider).error;
+      if (kDebugMode) debugPrint('adminReservationsProvider error: $err');
+      return Scaffold(
+        body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
-              const SizedBox(height: 16),
+              Icon(Icons.error_outline, size: AppSpacing.xxl, color: context.colors.error),
+              SizedBox(height: AppSpacing.md),
               Text(
                 'admin.reservations_load_error'.tr(),
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.red.shade700),
+                style: context.textTheme.bodyLarge?.copyWith(color: context.colors.error),
               ),
-              const SizedBox(height: 16),
+              SizedBox(height: AppSpacing.md),
               FilledButton(
                 onPressed: () => ref.invalidate(adminReservationsProvider),
                 child: Text('admin.tasks_retry'.tr()),
               ),
             ],
           ),
+        ),
+      );
+    }
+
+    return Scaffold(
+      body: DefaultTabController(
+        length: 2,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _TopActionBar(
+              searchController: _searchController,
+              onSearchChanged: () {
+                ref.read(kanbanReservationsSearchQueryProvider.notifier).state =
+                    _searchController.text.trim().toLowerCase();
+              },
+              onAdd: () => _showAddDialog(context, ref),
+              onDownloadTemplate: () => _downloadCsvTemplate(context),
+              onImportCsv: () => _importCsv(context, ref),
+            ),
+            Material(
+              color: context.colors.surface,
+              child: TabBar(
+                labelColor: context.colors.primary,
+                unselectedLabelColor: context.colors.onSurfaceVariant,
+                indicatorColor: context.colors.primary,
+                tabs: [
+                  Tab(
+                    icon: const Icon(Icons.calendar_month, size: 20),
+                    text: 'admin.reservations_tab_timeline'.tr(),
+                  ),
+                  Tab(
+                    icon: const Icon(Icons.list, size: 20),
+                    text: 'admin.reservations_tab_list'.tr(),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: TabBarView(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(
+                      AppSpacing.lg,
+                      AppSpacing.md,
+                      AppSpacing.lg,
+                      AppSpacing.lg,
+                    ),
+                    child: ReservationTimeline(
+                      visibleStartDate: _timelineVisibleStartDate,
+                      onPrevious: () => setState(() {
+                        _timelineVisibleStartDate = DateTime(
+                          _timelineVisibleStartDate.year,
+                          _timelineVisibleStartDate.month - 1,
+                          1,
+                        );
+                      }),
+                      onToday: () {
+                        final now = DateTime.now();
+                        setState(() {
+                          _timelineVisibleStartDate = DateTime(now.year, now.month, 1);
+                        });
+                      },
+                      onNext: () => setState(() {
+                        _timelineVisibleStartDate = DateTime(
+                          _timelineVisibleStartDate.year,
+                          _timelineVisibleStartDate.month + 1,
+                          1,
+                        );
+                      }),
+                      onReservationTap: (r) => _showEditDialog(context, ref, r),
+                      onReservationWhatsApp: (r) => _openWhatsAppForReservation(context, r),
+                      onEmptyCellTap: (apartmentId, date) {
+                        final d = date;
+                        final checkInStr =
+                            '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}.${d.year}';
+                        _showAddDialog(
+                          context,
+                          ref,
+                          initialApartmentId: apartmentId,
+                          initialCheckIn: checkInStr,
+                        );
+                      },
+                    ),
+                  ),
+                  Consumer(
+                    builder: (context, ref, _) {
+                      final hasVisible = ref.watch(kanbanHasVisibleReservationsProvider);
+                      final qEmpty = ref.watch(kanbanReservationsSearchQueryProvider).isEmpty;
+                      if (!hasVisible) {
+                        return Center(
+                          child: AppEmptyState(
+                            icon: Icons.event_available_outlined,
+                            title: qEmpty
+                                ? 'admin.reservations_empty'.tr()
+                                : 'admin.reservations_search_no_results'.tr(),
+                            subtitle: qEmpty
+                                ? null
+                                : 'admin.general.search_empty_subtitle'.tr(),
+                          ),
+                        );
+                      }
+                      return _ReservationsKanbanBoard(
+                        onEdit: (r) => _showEditDialog(context, ref, r),
+                        onDelete: (r) => _showDeleteConfirm(context, ref, r),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -273,6 +417,56 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
         onSaved: () => ref.invalidate(adminReservationsProvider),
       ),
     );
+  }
+
+  /// Otevře Smart Template Selector pro rezervaci (Plachta → WhatsApp ikona). Načte byt a sestaví kontext.
+  void _openWhatsAppForReservation(
+    BuildContext context,
+    ReservationRow r,
+  ) {
+    // Timeline UX musí být identické jako Kanban: otevřít čisté WhatsApp `wa.me`
+    // bez bottom sheetu a bez parametrů `?text=...`.
+    () async {
+      final phoneRaw = r.guestPhone?.trim() ?? '';
+      if (phoneRaw.isEmpty) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('communication.template_selector_missing_phone'.tr()),
+            backgroundColor: context.colors.error,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      // Očištění: necháváme jen čísla a případně '+'.
+      final cleanedAndPlus = phoneRaw.replaceAll(RegExp(r'[^0-9+]'), '');
+      final cleaned = cleanedAndPlus.contains('+')
+          ? '+${cleanedAndPlus.replaceAll('+', '')}'
+          : cleanedAndPlus.replaceAll('+', '');
+
+      if (cleaned.isEmpty) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('communication.template_selector_missing_phone'.tr()),
+            backgroundColor: context.colors.error,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      final url = Uri.parse('https://wa.me/$cleaned');
+      try {
+        if (await canLaunchUrl(url)) {
+          await launchUrl(url, mode: LaunchMode.externalApplication);
+        }
+      } catch (_) {
+        // Záměrně tiché: pokud WA není dostupný, uživatel může zprávu otevřít ručně.
+      }
+    }();
   }
 
   void _showDeleteConfirm(
@@ -313,64 +507,30 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
           ScaffoldMessenger.of(dialogContext).showSnackBar(
             SnackBar(
               content: Text('common.error'.tr()),
-              backgroundColor: Colors.red.shade700,
+              backgroundColor: dialogContext.colors.error,
               behavior: SnackBarBehavior.floating,
             ),
           );
         }
         return;
       }
-      final deletedAt = DateTime.now().toUtc().toIso8601String();
-      await SupabaseService.safeFrom('reservations', tenantId)
-          .update({'deleted_at': deletedAt})
-          .eq('id', id);
       final userId = SupabaseService.client.auth.currentUser?.id;
       final previousState = Map<String, dynamic>.from(reservation.toMap())
         ..['id'] = reservation.id
         ..['apartment_id'] = reservation.apartmentId;
-      final shortId = reservation.id.length >= 8 ? reservation.id.substring(0, 8) : reservation.id;
-      final recordName = reservation.guestName?.trim().isNotEmpty == true
-          ? reservation.guestName!.trim()
-          : 'super_admin.audit_log_reservation_fallback'.tr(namedArgs: {'id': shortId});
-      await AuditLogService.logEnterprise(
+      final recordName = AdminReservationsRepository.auditRecordNameForReservation(
+        reservationId: reservation.id,
+        guestName: reservation.guestName,
+      );
+      await AdminReservationsRepository.softDeleteReservationWithLinkedTasks(
         tenantId: tenantId,
         userId: userId,
-        actionType: 'SOFT_DELETE',
-        tableName: 'reservations',
-        recordId: id,
-        recordName: recordName,
+        reservationId: id,
         previousState: previousState,
-        triggeredBy: AuditTriggeredBy.manual,
+        recordName: recordName,
       );
 
-      // Bezpečné soft-delete úkolů explicitně navázaných na tuto rezervaci (reservation_id).
-      // Nahrazeno hádání podle apartment_id + data – mažeme pouze úkoly s přímou vazbou.
       if (tenantId.isNotEmpty) {
-        try {
-          final tasksRes = await SupabaseService.safeFrom('tasks', tenantId)
-              .select('id')
-              .eq('reservation_id', id)
-              .isFilter('deleted_at', null);
-          final taskList = tasksRes as List<dynamic>?;
-          if (taskList != null && taskList.isNotEmpty) {
-            for (final t in taskList) {
-              final taskId = (t is Map ? t['id'] : null)?.toString();
-              if (taskId == null || taskId.isEmpty) continue;
-              await SupabaseService.safeFrom('tasks', tenantId)
-                  .update({'deleted_at': deletedAt})
-                  .eq('id', taskId);
-              await AuditLogService.logEnterprise(
-                tenantId: tenantId,
-                userId: userId,
-                actionType: 'SOFT_DELETE_CASCADE',
-                tableName: 'tasks',
-                recordId: taskId,
-                triggeredBy: AuditTriggeredBy.cascade,
-                extra: {'triggered_by': 'reservation', 'reservation_id': id},
-              );
-            }
-          }
-        } catch (_) {}
         ref.invalidate(adminTasksProvider);
         ref.invalidate(planningCalendarAllTasksProvider);
         ref.invalidate(planningCalendarAllTasksForMonthProvider);
@@ -382,7 +542,7 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
       ScaffoldMessenger.of(dialogContext).showSnackBar(
         SnackBar(
           content: Text('common.saved'.tr()),
-          backgroundColor: Colors.green,
+          backgroundColor: dialogContext.customColors.success,
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -393,8 +553,8 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
       print('--- CHYBA MAZÁNÍ REZERVACE: $e');
       ScaffoldMessenger.of(dialogContext).showSnackBar(
         SnackBar(
-          content: Text('admin.reservations_save_error'.tr(namedArgs: {'error': e.toString()})),
-          backgroundColor: Colors.red.shade700,
+          content: Text('common.generic_error_user_friendly'.tr()),
+          backgroundColor: dialogContext.colors.error,
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
         ),
@@ -425,7 +585,7 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('admin.import_error'.tr(namedArgs: {'error': e.toString()}))),
+          SnackBar(content: Text('common.generic_error_user_friendly'.tr())),
         );
       }
     }
@@ -478,19 +638,19 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
         showDialog<void>(
           context: context,
           barrierDismissible: false,
-          barrierColor: Colors.black54,
+          barrierColor: context.colors.scrim.withValues(alpha: 0.5),
           builder: (ctx) => PopScope(
             canPop: false,
             child: Center(
               child: Card(
-                margin: const EdgeInsets.symmetric(horizontal: 48),
+                margin: const EdgeInsets.symmetric(horizontal: AppSpacing.xxl),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
+                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl, vertical: AppSpacing.lg),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       const CircularProgressIndicator(),
-                      const SizedBox(height: 20),
+                      SizedBox(height: AppSpacing.md),
                       Text(
                         'admin.import_processing_message'.tr(),
                         textAlign: TextAlign.center,
@@ -520,16 +680,20 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
     } on ArgumentError catch (e) {
       if (context.mounted) {
         if (loadingShown) Navigator.of(context, rootNavigator: true).pop();
-        final key = e.message?.toString() ?? 'admin.import_error';
+        final key = e.message?.toString();
+        if (kDebugMode) debugPrint('Reservation import ArgumentError: $key');
+        final text = (key != null && key.startsWith('admin.'))
+            ? key.tr()
+            : 'common.generic_error_user_friendly'.tr();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(key.startsWith('admin.') ? key.tr() : key)),
+          SnackBar(content: Text(text)),
         );
       }
     } catch (e) {
       if (context.mounted) {
         if (loadingShown) Navigator.of(context, rootNavigator: true).pop();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('admin.import_error'.tr(namedArgs: {'error': e.toString()}))),
+          SnackBar(content: Text('common.generic_error_user_friendly'.tr())),
         );
       }
     }
@@ -549,29 +713,29 @@ class _AdminReservationsScreenState extends ConsumerState<AdminReservationsScree
               _ImportResultRow(
                 label: 'admin.import_dialog_success'.tr(),
                 count: result.successCount,
-                color: Colors.green.shade700,
+                color: ctx.customColors.success,
                 icon: Icons.check_circle_outline,
               ),
-              const SizedBox(height: 12),
+              SizedBox(height: AppSpacing.sm),
               _ImportResultRow(
                 label: 'admin.import_dialog_services_error'.tr(),
                 count: result.warningCount,
-                color: Colors.orange.shade700,
+                color: ctx.customColors.warning,
                 icon: Icons.warning_amber_outlined,
               ),
-              const SizedBox(height: 12),
+              SizedBox(height: AppSpacing.sm),
               _ImportResultRow(
                 label: 'admin.import_dialog_failed_rows'.tr(),
                 count: result.errorCount,
-                color: Colors.red.shade700,
+                color: ctx.colors.error,
                 icon: Icons.error_outline,
               ),
               if (result.errorCount > 0) ...[
-                const SizedBox(height: 16),
+                SizedBox(height: AppSpacing.md),
                 Text(
                   'admin.import_dialog_some_rows_failed'.tr(),
-                  style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
-                        color: Colors.grey.shade700,
+                  style: ctx.textTheme.bodySmall?.copyWith(
+                        color: ctx.colors.onSurfaceVariant,
                         fontStyle: FontStyle.italic,
                       ),
                 ),
@@ -608,24 +772,22 @@ class _ImportResultRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Icon(icon, color: color, size: 24),
-        const SizedBox(width: 12),
+        Icon(icon, color: color, size: AppSpacing.lg),
+        SizedBox(width: AppSpacing.sm),
         Expanded(
           child: Text(
             label,
-            style: TextStyle(
+            style: context.textTheme.titleSmall?.copyWith(
               fontWeight: FontWeight.w600,
               color: color,
-              fontSize: 15,
             ),
           ),
         ),
         Text(
           '$count',
-          style: TextStyle(
+          style: context.textTheme.titleMedium?.copyWith(
             fontWeight: FontWeight.bold,
             color: color,
-            fontSize: 16,
           ),
         ),
       ],
@@ -652,16 +814,16 @@ class _TopActionBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+      padding: const EdgeInsets.fromLTRB(AppSpacing.lg, AppSpacing.lg, AppSpacing.lg, AppSpacing.md),
       child: Row(
         children: [
           Text(
             'admin.reservations_title'.tr(),
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+            style: context.textTheme.headlineSmall?.copyWith(
                   fontWeight: FontWeight.bold,
                 ),
           ),
-          const SizedBox(width: 32),
+          SizedBox(width: AppSpacing.xl),
           Expanded(
             child: TextField(
               controller: searchController,
@@ -673,15 +835,15 @@ class _TopActionBar extends StatelessWidget {
                   borderRadius: BorderRadius.circular(8),
                 ),
                 filled: true,
-                fillColor: Colors.white,
+                fillColor: context.colors.surface,
                 contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
+                  horizontal: AppSpacing.md,
+                  vertical: AppSpacing.sm,
                 ),
               ),
             ),
           ),
-          const SizedBox(width: 16),
+          SizedBox(width: AppSpacing.md),
           PopupMenuButton<String>(
             icon: const Icon(Icons.upload_file),
             tooltip: 'admin.import_reservations'.tr(),
@@ -712,7 +874,7 @@ class _TopActionBar extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(width: 8),
+          SizedBox(width: AppSpacing.sm),
           FilledButton.icon(
             onPressed: onAdd,
             icon: const Icon(Icons.add, size: 20),
@@ -727,6 +889,10 @@ class _TopActionBar extends StatelessWidget {
 /// Rezervační plachta (Gantt chart) – souvislé pruhy rezervací v mřížce dnů × apartmány.
 /// [visibleStartDate] – 1. den zobrazeného měsíce; šipky posunují o celý měsíc, hlavička zobrazuje „Měsíc rok“.
 /// [onEmptyCellTap] – tap na prázdnou buňku → nová rezervace s předvyplněním bytu a data.
+///
+/// Detekce „kolizí“ na plachtě: lokální funkce `isCellEmpty` v `_ReservationTimelineState.build` porovnává každou buňku (byt + kalendářní den)
+/// se všemi rezervacemi v paměti – pokud se interval [check_in, check_out] překrývá s daným dnem, buňka není prázdná.
+/// To slouží jen k vizuálnímu rozlišení volného slotu a k povolení tapu; neukládá se tím nic do DB.
 class ReservationTimeline extends ConsumerStatefulWidget {
   const ReservationTimeline({
     super.key,
@@ -735,6 +901,7 @@ class ReservationTimeline extends ConsumerStatefulWidget {
     this.onToday,
     this.onNext,
     this.onReservationTap,
+    this.onReservationWhatsApp,
     this.onEmptyCellTap,
   });
 
@@ -743,6 +910,8 @@ class ReservationTimeline extends ConsumerStatefulWidget {
   final VoidCallback? onToday;
   final VoidCallback? onNext;
   final ValueChanged<ReservationRow>? onReservationTap;
+  /// Callback pro otevření WhatsApp výběru šablony z bloku rezervace na Plachtě.
+  final ValueChanged<ReservationRow>? onReservationWhatsApp;
   final void Function(String apartmentId, DateTime date)? onEmptyCellTap;
 
   static const double dayWidth = 85.0;
@@ -792,6 +961,9 @@ class _ReservationTimelineState extends ConsumerState<ReservationTimeline> {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
 
+    // PROČ: Jednoduchá detekce překryvu pobytů v jednom bytě po dnech (stejná logika jako „je tento den obsazený?“).
+    // Porovnáváme kalendářní dny check-in až check-out včetně krajů – host „drží“ buňku po celou délku pobytu.
+    // Složitější validace (čas příjezdu/odjezdu, hranice mezi dvěma rezervacemi) zůstává u formuláře při uložení.
     bool isCellEmpty(int rowIndex, int colIndex) {
       if (rowIndex >= apartments.length || colIndex >= days.length) return false;
       final apartmentId = apartments[rowIndex].id;
@@ -822,7 +994,7 @@ class _ReservationTimelineState extends ConsumerState<ReservationTimeline> {
       children: [
         // Horní ovládací lišta – navigace po měsících, název měsíce + rok, legenda.
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+          padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.xs, AppSpacing.md, AppSpacing.sm),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
@@ -834,47 +1006,46 @@ class _ReservationTimelineState extends ConsumerState<ReservationTimeline> {
                     onPressed: widget.onPrevious,
                     tooltip: 'admin.reservations_timeline_prev'.tr(),
                   ),
-                  const SizedBox(width: 8),
+                  SizedBox(width: AppSpacing.sm),
                   Text(
                     monthYearLabel,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
                   ),
-                  const SizedBox(width: 8),
+                  SizedBox(width: AppSpacing.sm),
                   IconButton(
                     icon: const Icon(Icons.chevron_right),
                     onPressed: widget.onNext,
                     tooltip: 'admin.reservations_timeline_next'.tr(),
                   ),
-                  const SizedBox(width: 24),
+                  SizedBox(width: AppSpacing.lg),
                   OutlinedButton(
                       onPressed: widget.onToday,
                     style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
                     child: Text('admin.reservations_timeline_today'.tr()),
                   ),
                 ],
               ),
-              const SizedBox(width: 24),
+              SizedBox(width: AppSpacing.lg),
               Expanded(
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      _ReservationLegendPill(status: 'new', bg: Colors.blue.shade100, text: Colors.blue.shade900),
-                      const SizedBox(width: 8),
-                      _ReservationLegendPill(status: 'confirmed', bg: Colors.green.shade100, text: Colors.green.shade900),
-                      const SizedBox(width: 8),
-                      _ReservationLegendPill(status: 'checked_in', bg: Colors.orange.shade100, text: Colors.orange.shade900),
-                      const SizedBox(width: 8),
-                      _ReservationLegendPill(status: 'checked_out', bg: Colors.grey.shade200, text: Colors.grey.shade800),
-                      const SizedBox(width: 8),
-                      _ReservationLegendPill(status: 'cancelled', bg: Colors.red.shade100, text: Colors.red.shade900),
+                      const _ReservationLegendPill(status: 'new'),
+                      SizedBox(width: AppSpacing.sm),
+                      const _ReservationLegendPill(status: 'confirmed'),
+                      SizedBox(width: AppSpacing.sm),
+                      const _ReservationLegendPill(status: 'checked_in'),
+                      SizedBox(width: AppSpacing.sm),
+                      const _ReservationLegendPill(status: 'checked_out'),
+                      SizedBox(width: AppSpacing.sm),
+                      const _ReservationLegendPill(status: 'cancelled'),
                     ],
                   ),
                 ),
@@ -885,14 +1056,14 @@ class _ReservationTimelineState extends ConsumerState<ReservationTimeline> {
         // Kontejner „papír na stole“ – bílý box; uvnitř vertikální scroll, aby levý sloupec i mřížka rolovály společně.
         Expanded(
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            padding: const EdgeInsets.fromLTRB(AppSpacing.md, 0, AppSpacing.md, AppSpacing.md),
             child: Container(
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: Theme.of(context).colorScheme.surface,
                 borderRadius: BorderRadius.circular(12),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.06),
+                    color: Theme.of(context).colorScheme.shadow.withValues(alpha: 0.08),
                     blurRadius: 8,
                     offset: const Offset(0, 2),
                   ),
@@ -917,6 +1088,7 @@ class _ReservationTimelineState extends ConsumerState<ReservationTimeline> {
                     apartmentIndexById: apartmentIndexById,
                     isCellEmpty: isCellEmpty,
                     onReservationTap: widget.onReservationTap,
+                    onReservationWhatsApp: widget.onReservationWhatsApp,
                     onEmptyCellTap: widget.onEmptyCellTap,
                     horizontalScrollController: _horizontalScrollController,
                   ),
@@ -932,30 +1104,24 @@ class _ReservationTimelineState extends ConsumerState<ReservationTimeline> {
 
 /// Pilulka v legendě Plachty – stav rezervace s pastelovým pozadím a tmavým textem.
 class _ReservationLegendPill extends StatelessWidget {
-  const _ReservationLegendPill({
-    required this.status,
-    required this.bg,
-    required this.text,
-  });
+  const _ReservationLegendPill({required this.status});
 
   final String status;
-  final Color bg;
-  final Color text;
 
   @override
   Widget build(BuildContext context) {
+    final (bg, fg) = _legendPillColors(context, status);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: AppSpacing.xs),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(12),
       ),
       child: Text(
         reservationStatusLabelKey(status).tr(),
-        style: TextStyle(
-          fontSize: 11,
+        style: context.textTheme.labelSmall?.copyWith(
           fontWeight: FontWeight.w600,
-          color: text,
+          color: fg,
         ),
       ),
     );
@@ -978,6 +1144,7 @@ class _ReservationTimelineGrid extends StatelessWidget {
     required this.apartmentIndexById,
     required this.isCellEmpty,
     required this.onReservationTap,
+    this.onReservationWhatsApp,
     required this.onEmptyCellTap,
     required this.horizontalScrollController,
   });
@@ -995,6 +1162,7 @@ class _ReservationTimelineGrid extends StatelessWidget {
   final Map<String, int> apartmentIndexById;
   final bool Function(int rowIndex, int colIndex) isCellEmpty;
   final ValueChanged<ReservationRow>? onReservationTap;
+  final ValueChanged<ReservationRow>? onReservationWhatsApp;
   final void Function(String apartmentId, DateTime date)? onEmptyCellTap;
   final ScrollController horizontalScrollController;
 
@@ -1034,7 +1202,7 @@ class _ReservationTimelineGrid extends StatelessWidget {
                     // Hlavička dnů s dolní hranicí (oddělení od mřížky)
                     Container(
                     decoration: BoxDecoration(
-                      border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
+                      border: Border(bottom: BorderSide(color: context.colors.outlineVariant)),
                     ),
                     child: _ReservationTimelineHeader(
                       days: days,
@@ -1055,6 +1223,7 @@ class _ReservationTimelineGrid extends StatelessWidget {
                           rowCount: apartments.length,
                           dayWidth: dayWidth,
                           rowHeight: rowHeight,
+                          gridLineColor: context.colors.outline.withValues(alpha: 0.12),
                         ),
                         if (onEmptyCellTap != null)
                           ...List.generate(apartments.length * days.length, (i) {
@@ -1081,6 +1250,7 @@ class _ReservationTimelineGrid extends StatelessWidget {
                               rowHeight: rowHeight,
                               apartmentIndexById: apartmentIndexById,
                               onTap: () => onReservationTap?.call(r),
+                              onWhatsAppTap: onReservationWhatsApp != null ? () => onReservationWhatsApp!(r) : null,
                             )),
                       ],
                     ),
@@ -1113,11 +1283,11 @@ class _ReservationTimelineLeftColumn extends StatelessWidget {
     return Container(
       width: leftColumnWidth,
       decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border(right: BorderSide(color: Colors.grey.shade200)),
+        color: context.colors.surface,
+        border: Border(right: BorderSide(color: context.colors.outlineVariant)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
+            color: context.colors.shadow.withValues(alpha: 0.06),
             offset: const Offset(2, 0),
             blurRadius: 4,
           ),
@@ -1134,14 +1304,13 @@ class _ReservationTimelineLeftColumn extends StatelessWidget {
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Padding(
-                  padding: const EdgeInsets.only(left: 12, right: 8),
+                  padding: const EdgeInsets.only(left: AppSpacing.sm, right: AppSpacing.sm),
                   child: Text(
                     a.name,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12,
+                    style: context.textTheme.labelLarge?.copyWith(
                       fontWeight: FontWeight.w600,
-                      color: Colors.grey.shade700,
+                      color: context.colors.onSurfaceVariant,
                     ),
                   ),
                 ),
@@ -1183,10 +1352,12 @@ class _ReservationTimelineHeader extends StatelessWidget {
           height: rowHeight,
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: isToday ? Colors.blue.shade50 : (isWeekend ? Colors.grey.shade50 : Colors.white),
+            color: isToday
+                ? context.colors.primaryContainer
+                : (isWeekend ? context.colors.surfaceContainerHighest : context.colors.surface),
             border: Border(
-              right: BorderSide(color: Colors.grey.withValues(alpha: 0.15)),
-              bottom: BorderSide(color: Colors.grey.withValues(alpha: 0.2)),
+              right: BorderSide(color: context.colors.outline.withValues(alpha: 0.2)),
+              bottom: BorderSide(color: context.colors.outline.withValues(alpha: 0.25)),
             ),
           ),
           child: isToday
@@ -1199,23 +1370,25 @@ class _ReservationTimelineHeader extends StatelessWidget {
                       height: 22,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: Colors.blue.shade600,
+                        color: context.colors.primary,
                       ),
                       alignment: Alignment.center,
                       child: Text(
                         '${d.day}',
-                        style: const TextStyle(
-                          fontSize: 11,
+                        style: context.textTheme.labelSmall?.copyWith(
                           fontWeight: FontWeight.bold,
-                          color: Colors.white,
+                          color: context.colors.onPrimary,
                         ),
                       ),
                     ),
-                    const SizedBox(width: 6),
+                    SizedBox(width: AppSpacing.sm),
                     Flexible(
                       child: Text(
                         '${_ReservationTimelineGrid._dayKeys[d.weekday - 1].tr()} ${dateFormat.format(d)}',
-                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.blue.shade800),
+                        style: context.textTheme.labelSmall?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: context.colors.onPrimaryContainer,
+                        ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -1224,10 +1397,9 @@ class _ReservationTimelineHeader extends StatelessWidget {
                 )
               : Text(
                   '${_ReservationTimelineGrid._dayKeys[d.weekday - 1].tr()} ${dateFormat.format(d)}',
-                  style: TextStyle(
-                    fontSize: 11,
+                  style: context.textTheme.labelSmall?.copyWith(
                     fontWeight: FontWeight.w500,
-                    color: Colors.grey.shade700,
+                    color: context.colors.onSurfaceVariant,
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -1247,6 +1419,7 @@ class _ReservationTimelineBlock extends StatelessWidget {
     required this.rowHeight,
     required this.apartmentIndexById,
     required this.onTap,
+    this.onWhatsAppTap,
   });
 
   final ReservationRow reservation;
@@ -1255,6 +1428,8 @@ class _ReservationTimelineBlock extends StatelessWidget {
   final double rowHeight;
   final Map<String, int> apartmentIndexById;
   final VoidCallback onTap;
+  /// Volá se při kliku na ikonu WhatsApp (bez otevření edit dialogu).
+  final VoidCallback? onWhatsAppTap;
 
   @override
   Widget build(BuildContext context) {
@@ -1273,8 +1448,10 @@ class _ReservationTimelineBlock extends StatelessWidget {
     final aptIndex = apartmentIndexById[reservation.apartmentId] ?? 0;
     final top = aptIndex * rowHeight;
     final guestName = (reservation.guestName ?? '').trim().isEmpty ? 'admin.dashboard_guest_unknown'.tr() : reservation.guestName!;
+    final phoneRaw = (reservation.guestPhone ?? '').trim();
+    final hasPhone = phoneRaw.isNotEmpty;
     final totalGuests = reservation.guestAdults + reservation.guestChildren;
-    final blockColor = _timelineBlockColor(reservation.status);
+    final blockColor = _timelineBlockColor(context, reservation.status);
 
     return Positioned(
       left: left + 3,
@@ -1288,13 +1465,13 @@ class _ReservationTimelineBlock extends StatelessWidget {
             onTap: onTap,
             borderRadius: BorderRadius.circular(10),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: AppSpacing.xs),
               decoration: BoxDecoration(
                 color: blockColor,
                 borderRadius: BorderRadius.circular(10),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.1),
+                    color: context.colors.shadow.withValues(alpha: 0.12),
                     blurRadius: 4,
                     offset: const Offset(0, 2),
                   ),
@@ -1315,10 +1492,9 @@ class _ReservationTimelineBlock extends StatelessWidget {
                               guestName,
                               overflow: TextOverflow.ellipsis,
                               maxLines: 1,
-                              style: const TextStyle(
-                                fontSize: 14,
+                              style: context.textTheme.titleSmall?.copyWith(
                                 fontWeight: FontWeight.w700,
-                                color: Colors.black87,
+                                color: context.colors.onSurface,
                               ),
                             ),
                           ),
@@ -1328,7 +1504,9 @@ class _ReservationTimelineBlock extends StatelessWidget {
                                 '#${reservation.referenceNumber!.trim()}',
                                 overflow: TextOverflow.ellipsis,
                                 maxLines: 1,
-                                style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
+                                style: context.textTheme.labelSmall?.copyWith(
+                                  color: context.colors.onSurfaceVariant,
+                                ),
                               ),
                             ),
                         ],
@@ -1349,20 +1527,68 @@ class _ReservationTimelineBlock extends StatelessWidget {
                                         '👥 $totalGuests',
                                         overflow: TextOverflow.ellipsis,
                                         maxLines: 1,
-                                        style: TextStyle(
-                                          fontSize: 12,
+                                        style: context.textTheme.bodySmall?.copyWith(
                                           fontWeight: FontWeight.w600,
-                                          color: Colors.black54,
+                                          color: context.colors.onSurfaceVariant,
                                         ),
                                       ),
                                     ),
+                                    if (onWhatsAppTap != null) ...[
+                                      const SizedBox(width: 6),
+                                      Tooltip(
+                                        message: hasPhone
+                                            ? 'communication.template_selector_whatsapp_tooltip'.tr()
+                                            : 'communication.template_selector_missing_phone'.tr(),
+                                        child: Material(
+                                          color: Colors.transparent,
+                                          child: InkWell(
+                                            borderRadius: BorderRadius.circular(14),
+                                            onTap: hasPhone ? onWhatsAppTap : null,
+                                            child: Icon(
+                                              Icons.chat,
+                                              size: 14,
+                                              color: hasPhone
+                                                  ? context.customColors.success
+                                                  : context.colors.outlineVariant,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                     if (reservation.needsTransfer == true) ...[
                                       const SizedBox(width: 6),
-                                      Icon(Icons.flight_land, size: 14, color: Colors.black54),
+                                      Icon(Icons.flight_land, size: 14, color: context.colors.onSurfaceVariant),
                                     ],
                                     if (reservation.internalNote != null && reservation.internalNote!.trim().isNotEmpty) ...[
                                       const SizedBox(width: 6),
-                                      Icon(Icons.notes, size: 14, color: Colors.black54),
+                                      Icon(Icons.notes, size: 14, color: context.colors.onSurfaceVariant),
+                                    ],
+                                    if (reservation.lastCommunicationAt != null) ...[
+                                      const SizedBox(width: 6),
+                                      Tooltip(
+                                        message: _lastCommunicationTooltip(reservation),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: TaskVisuals.getBackgroundColor(
+                                              reservation.lastCommunicationTemplateContext,
+                                              categoriesByCode: null,
+                                            ),
+                                            borderRadius: BorderRadius.circular(6),
+                                          ),
+                                          child: Icon(
+                                            TaskVisuals.getIcon(
+                                              reservation.lastCommunicationTemplateContext,
+                                              categoriesByCode: null,
+                                            ),
+                                            size: 12,
+                                            color: TaskVisuals.getBorderColor(
+                                              reservation.lastCommunicationTemplateContext,
+                                              categoriesByCode: null,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
                                     ],
                                   ],
                                 ),
@@ -1380,6 +1606,17 @@ class _ReservationTimelineBlock extends StatelessWidget {
       ),
     );
   }
+
+  /// Text tooltipu pro indikátor „zpráva připravena“ (datum + typ šablony).
+  static String _lastCommunicationTooltip(ReservationRow r) {
+    final ctx = (r.lastCommunicationTemplateContext ?? '').trim().isEmpty
+        ? '–'
+        : 'admin.task_type_${r.lastCommunicationTemplateContext}'.tr();
+    final date = r.lastCommunicationAt != null
+        ? DateFormat('d.M.y HH:mm').format(r.lastCommunicationAt!.toLocal())
+        : '–';
+    return 'communication.last_communication_tooltip'.tr(namedArgs: {'context': ctx, 'date': date});
+  }
 }
 
 /// Jemná mřížka na pozadí Plachty – extrémně jemné čáry (alpha 0.1).
@@ -1389,12 +1626,15 @@ class _ReservationTimelineGridBackground extends StatelessWidget {
     required this.rowCount,
     required this.dayWidth,
     required this.rowHeight,
+    required this.gridLineColor,
   });
 
   final int dayCount;
   final int rowCount;
   final double dayWidth;
   final double rowHeight;
+  /// Barva čar mřížky – z [ColorScheme.outline], aby odpovídala aktuálnímu tématu.
+  final Color gridLineColor;
 
   @override
   Widget build(BuildContext context) {
@@ -1405,6 +1645,7 @@ class _ReservationTimelineGridBackground extends StatelessWidget {
         rowCount: rowCount,
         dayWidth: dayWidth,
         rowHeight: rowHeight,
+        gridLineColor: gridLineColor,
       ),
     );
   }
@@ -1416,17 +1657,19 @@ class _ReservationTimelineGridPainter extends CustomPainter {
     required this.rowCount,
     required this.dayWidth,
     required this.rowHeight,
+    required this.gridLineColor,
   });
 
   final int dayCount;
   final int rowCount;
   final double dayWidth;
   final double rowHeight;
+  final Color gridLineColor;
 
   @override
   void paint(Canvas canvas, Size size) {
     final linePaint = Paint()
-      ..color = Colors.grey.withValues(alpha: 0.1)
+      ..color = gridLineColor
       ..strokeWidth = 1;
     for (var i = 0; i <= dayCount; i++) {
       final x = i * dayWidth;
@@ -1477,15 +1720,99 @@ const _kanbanColumns = [
   ),
 ];
 
+/// Jeden sloupec Kanbanu rezervací – odebírá jen [reservationsBySystemStatusProvider] pro svůj [targetStatus].
+class _ReservationsKanbanColumn extends ConsumerWidget {
+  const _ReservationsKanbanColumn({
+    required this.config,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onWhatsApp,
+    required this.onAcceptDrop,
+  });
+
+  final _KanbanColumnConfig config;
+  final ValueChanged<ReservationRow> onEdit;
+  final ValueChanged<ReservationRow> onDelete;
+  final void Function(BuildContext context, ReservationRow r) onWhatsApp;
+  final Future<void> Function(ReservationRow r) onAcceptDrop;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final column = ref.watch(reservationsBySystemStatusProvider(config.targetStatus));
+    final columnReservations = column.reservations;
+    return DragTarget<ReservationRow>(
+      onAcceptWithDetails: (d) async {
+        final reservation = d.data;
+        if (reservation.status != config.targetStatus) {
+          await onAcceptDrop(reservation);
+        }
+      },
+      builder: (context, candidateData, rejectedData) {
+        final isHighlight = candidateData.isNotEmpty;
+        return Container(
+          decoration: BoxDecoration(
+            color: isHighlight
+                ? Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3)
+                : context.colors.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  vertical: AppSpacing.sm,
+                  horizontal: AppSpacing.sm,
+                ),
+                child: Text(
+                  '${config.labelKey.tr()} (${columnReservations.length})',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+              ),
+              Expanded(
+                child: ListView.builder(
+                  padding: const EdgeInsets.only(
+                    left: AppSpacing.sm,
+                    right: AppSpacing.sm,
+                    bottom: AppSpacing.sm,
+                  ),
+                  itemCount: columnReservations.length,
+                  itemBuilder: (context, index) {
+                    final r = columnReservations[index];
+                    return _KanbanReservationCard(
+                      key: ValueKey<String>(r.id),
+                      reservation: r,
+                      onEdit: onEdit,
+                      onDelete: onDelete,
+                      onWhatsApp: () => onWhatsApp(context, r),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
 /// Kanban board rezervací – 4 sloupce podle stavu, drag & drop s aktualizací v Supabase.
+///
+/// DŮLEŽITÉ: Drag zde mění pouze **workflow stav** rezervace (new → confirmed → checked_in → …), nikoli check-in/check-out
+/// ani apartmán. „Collision detection“ termínů a změna dat pobytu nejsou součástí Kanbanu – řeší je úprava rezervace
+/// v dialozích a backend / validace formuláře.
+///
+/// Data sloupců: [reservationsBySystemStatusProvider] – bez předávání celého seznamu z nadřazeného widgetu.
 class _ReservationsKanbanBoard extends ConsumerStatefulWidget {
   const _ReservationsKanbanBoard({
-    required this.reservations,
     required this.onEdit,
     required this.onDelete,
   });
 
-  final List<ReservationRow> reservations;
   final ValueChanged<ReservationRow> onEdit;
   final ValueChanged<ReservationRow> onDelete;
 
@@ -1495,21 +1822,72 @@ class _ReservationsKanbanBoard extends ConsumerStatefulWidget {
 }
 
 class _ReservationsKanbanBoardState extends ConsumerState<_ReservationsKanbanBoard> {
+  /// Kanban-only: přímé otevření prázdného WhatsApp chatu (bez bottom sheetu).
+  ///
+  /// PROČ: na Webu chceme WhatsApp v Kanbanu jednoduchý a rychlý, šablony se editují uvnitř
+  /// detailu rezervace (ne přes MessageTemplateSelectorBottomSheet).
+  Future<void> _openWhatsAppDirectForKanbanReservation(
+    BuildContext context,
+    ReservationRow r,
+  ) async {
+    final phoneRaw = r.guestPhone?.trim() ?? '';
+    if (phoneRaw.isEmpty) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('communication.template_selector_missing_phone'.tr()),
+          backgroundColor: context.colors.error,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    // Očištění: necháváme jen čísla a případné '+'.
+    final cleanedAndPlus = phoneRaw.replaceAll(RegExp(r'[^0-9+]'), '');
+    final cleaned = cleanedAndPlus.contains('+')
+        ? '+${cleanedAndPlus.replaceAll('+', '')}'
+        : cleanedAndPlus.replaceAll('+', '');
+
+    if (cleaned.isEmpty) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('communication.template_selector_missing_phone'.tr()),
+          backgroundColor: context.colors.error,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    final url = Uri.parse('https://wa.me/$cleaned');
+    try {
+      if (await canLaunchUrl(url)) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      }
+    } catch (_) {
+      // Záměrně tiché: uživatel se může případně přepnout do WhatsApp manuálně.
+    }
+  }
+
   Future<void> _updateReservationStatus(ReservationRow r, String newStatus) async {
     try {
       final tenantId = ref.read(authNotifierProvider).tenantIdForData;
       if (tenantId == null || tenantId.isEmpty) return;
-      await SupabaseService.safeFrom('reservations', tenantId)
-          .update({'status': newStatus})
-          .eq('id', r.id);
+      await AdminReservationsRepository.updateReservationStatus(
+        tenantId: tenantId,
+        reservationId: r.id,
+        newStatus: newStatus,
+      );
       if (!mounted) return;
       ref.invalidate(adminReservationsProvider);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('admin.reservations_save_error'.tr(namedArgs: {'error': e.toString()})),
-          backgroundColor: Colors.red.shade700,
+          content: Text('common.generic_error_user_friendly'.tr()),
+          backgroundColor: context.colors.error,
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -1519,64 +1897,24 @@ class _ReservationsKanbanBoardState extends ConsumerState<_ReservationsKanbanBoa
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.md,
+        AppSpacing.sm,
+        AppSpacing.md,
+        AppSpacing.lg,
+      ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: _kanbanColumns.asMap().entries.map((entry) {
-          final col = entry.value;
-          final columnReservations = widget.reservations
-              .where((r) => col.displayStatuses.contains(r.status))
-              .toList();
+        children: _kanbanColumns.map((col) {
           return Expanded(
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              child: DragTarget<ReservationRow>(
-                onAcceptWithDetails: (d) {
-                  final reservation = d.data;
-                  if (reservation.status != col.targetStatus) {
-                    _updateReservationStatus(reservation, col.targetStatus);
-                  }
-                },
-                builder: (context, candidateData, rejectedData) {
-                  final isHighlight = candidateData.isNotEmpty;
-                  return Container(
-                    decoration: BoxDecoration(
-                      color: isHighlight
-                          ? Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3)
-                          : Colors.grey.shade200,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-                          child: Text(
-                            col.labelKey.tr(),
-                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                ),
-                          ),
-                        ),
-                        Expanded(
-                          child: ListView.builder(
-                            padding: const EdgeInsets.only(left: 8, right: 8, bottom: 12),
-                            itemCount: columnReservations.length,
-                            itemBuilder: (context, index) {
-                              final r = columnReservations[index];
-                              return _KanbanReservationCard(
-                                reservation: r,
-                                onEdit: widget.onEdit,
-                                onDelete: widget.onDelete,
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
+              child: _ReservationsKanbanColumn(
+                config: col,
+                onEdit: widget.onEdit,
+                onDelete: widget.onDelete,
+                onWhatsApp: _openWhatsAppDirectForKanbanReservation,
+                onAcceptDrop: (r) => _updateReservationStatus(r, col.targetStatus),
               ),
             ),
           );
@@ -1590,50 +1928,67 @@ class _ReservationsKanbanBoardState extends ConsumerState<_ReservationsKanbanBoa
 /// Draggable, celá karta klikatelná pro editaci, ikona koše vpravo.
 class _KanbanReservationCard extends StatelessWidget {
   const _KanbanReservationCard({
+    super.key,
     required this.reservation,
     required this.onEdit,
     required this.onDelete,
+    required this.onWhatsApp,
   });
 
   final ReservationRow reservation;
   final ValueChanged<ReservationRow> onEdit;
   final ValueChanged<ReservationRow> onDelete;
+  final VoidCallback onWhatsApp;
 
   @override
   Widget build(BuildContext context) {
+    final id = reservation.id;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
       child: Draggable<ReservationRow>(
+        key: ValueKey<String>('res_kanban_drag_$id'),
         data: reservation,
         feedback: Material(
-          elevation: 0,
-          borderRadius: BorderRadius.circular(12),
-          color: Colors.grey.shade100,
+          elevation: 6,
+          color: Colors.transparent,
           child: SizedBox(
             width: 260,
-            child: _KanbanCardContent(
-              reservation: reservation,
-              showDelete: false,
-              onDelete: () {},
+            child: _reservationPremiumCardShell(
+              context: context,
+              onTap: null,
+              child: _KanbanCardContent(
+                key: ValueKey<String>(id),
+                reservation: reservation,
+                showDelete: false,
+                onDelete: () {},
+                onWhatsApp: onWhatsApp,
+              ),
             ),
           ),
         ),
         childWhenDragging: Opacity(
           opacity: 0.5,
-          child: AppCard(
+          child: _reservationPremiumCardShell(
+            context: context,
+            onTap: null,
             child: _KanbanCardContent(
+              key: ValueKey<String>('res_kanban_ghost_$id'),
               reservation: reservation,
               showDelete: true,
               onDelete: () => onDelete(reservation),
+              onWhatsApp: onWhatsApp,
             ),
           ),
         ),
-        child: AppCard(
+        child: _reservationPremiumCardShell(
+          context: context,
           onTap: () => onEdit(reservation),
           child: _KanbanCardContent(
+            key: ValueKey<String>('res_kanban_card_$id'),
             reservation: reservation,
             showDelete: true,
             onDelete: () => onDelete(reservation),
+            onWhatsApp: onWhatsApp,
           ),
         ),
       ),
@@ -1644,22 +1999,27 @@ class _KanbanReservationCard extends StatelessWidget {
 /// Obsah Kanban karty rezervace – struktura shodná s _TaskCard. Data z reservation modelu.
 class _KanbanCardContent extends StatelessWidget {
   const _KanbanCardContent({
+    super.key,
     required this.reservation,
     required this.showDelete,
     required this.onDelete,
+    required this.onWhatsApp,
   });
 
   final ReservationRow reservation;
   final bool showDelete;
   final VoidCallback onDelete;
+  final VoidCallback onWhatsApp;
 
-  /// Barva ikony podle zdroje rezervace – Airbnb červená, Booking modrá, Direct zelená.
-  static Color _sourceColor(String? source) {
+  /// Barva ikony podle zdroje rezervace – mapováno na téma (error / primary / success).
+  static Color _sourceColor(BuildContext context, String? source) {
+    final cs = context.colors;
+    final cc = context.customColors;
     final s = (source ?? '').trim();
-    if (s == 'Airbnb') return Colors.red.shade600;
-    if (s == 'Booking') return Colors.blue.shade800;
-    if (s == 'Direct') return Colors.green.shade700;
-    return Colors.grey.shade600;
+    if (s == 'Airbnb') return cs.error;
+    if (s == 'Booking') return cs.primary;
+    if (s == 'Direct') return cc.success;
+    return cs.onSurfaceVariant;
   }
 
   /// Ikona podle zdroje rezervace – Airbnb air, Booking language, Direct home.
@@ -1669,6 +2029,17 @@ class _KanbanCardContent extends StatelessWidget {
     if (s == 'Booking') return Icons.language;
     if (s == 'Direct') return Icons.home;
     return Icons.book_online;
+  }
+
+  /// Tooltip pro indikátor „zpráva připravena“ (datum + typ šablony) – používáno v Kanban kartě.
+  static String lastCommunicationTooltip(ReservationRow r) {
+    final ctx = (r.lastCommunicationTemplateContext ?? '').trim().isEmpty
+        ? '–'
+        : 'admin.task_type_${r.lastCommunicationTemplateContext}'.tr();
+    final date = r.lastCommunicationAt != null
+        ? DateFormat('d.M.y HH:mm').format(r.lastCommunicationAt!.toLocal())
+        : '–';
+    return 'communication.last_communication_tooltip'.tr(namedArgs: {'context': ctx, 'date': date});
   }
 
   /// Formátuje termín s volitelným časem z arrival_time/departure_time (např. "13.03. 14:00 → 17.03. 10:00").
@@ -1689,16 +2060,18 @@ class _KanbanCardContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final guestName = (reservation.guestName ?? '').trim().isEmpty ? '–' : reservation.guestName!;
+    final phoneRaw = (reservation.guestPhone ?? '').trim();
+    final hasPhone = phoneRaw.isNotEmpty;
     final apartmentName = (reservation.apartmentName ?? '').trim().isEmpty ? '–' : reservation.apartmentName!;
     // Celkový počet osob = dospělí + děti (pro at-a-glance přehled dispečera).
     final totalGuests = reservation.guestAdults + reservation.guestChildren;
     final contextLabel = reservation.reservationSource != null
         ? 'admin.reservation_source_${reservation.reservationSource}'.tr()
         : 'admin.menu_reservations'.tr();
-    final statusColor = reservationStatusColor(reservation.status);
+    final statusColor = reservationStatusColor(context, reservation.status);
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1713,21 +2086,47 @@ class _KanbanCardContent extends StatelessWidget {
                     Icon(
                       _sourceIcon(reservation.reservationSource),
                       size: 16,
-                      color: _sourceColor(reservation.reservationSource),
+                      color: _sourceColor(context, reservation.reservationSource),
                     ),
-                    const SizedBox(width: 6),
+                    SizedBox(width: AppSpacing.sm),
                     Expanded(
                       child: Text(
                         contextLabel,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: _sourceColor(reservation.reservationSource),
+                        style: context.textTheme.labelLarge?.copyWith(
+                          color: _sourceColor(context, reservation.reservationSource),
                         ),
                       ),
                     ),
+                    Builder(
+                      builder: (context) {
+                        final ageLabel =
+                            reservationRecordAgeLabel(reservation.createdAt);
+                        if (ageLabel == null) return const SizedBox.shrink();
+                        return Padding(
+                          padding: const EdgeInsets.only(left: AppSpacing.xs),
+                          child: Material(
+                            color: context.colors.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(8),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
+                              child: Text(
+                                ageLabel,
+                                style: context.textTheme.labelSmall?.copyWith(
+                                  color: context.colors.onSurfaceVariant,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
                   ],
                 ),
-                const SizedBox(height: 4),
+                SizedBox(height: AppSpacing.xs),
                 // 2. řádek – hlavní nadpis: jméno hosta + referenční číslo + drobné ikony (transfer, poznámka)
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
@@ -1735,61 +2134,121 @@ class _KanbanCardContent extends StatelessWidget {
                     Flexible(
                       child: Text(
                         guestName,
-                        style: const TextStyle(
-                          fontSize: 15,
+                        style: context.textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.bold,
-                          color: Colors.black87,
+                          color: context.colors.onSurface,
                         ),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
                     if (reservation.referenceNumber != null && reservation.referenceNumber!.trim().isNotEmpty) ...[
-                      const SizedBox(width: 6),
+                      SizedBox(width: AppSpacing.sm),
                       Text(
                         '#${reservation.referenceNumber!.trim()}',
-                        style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                        style: context.textTheme.labelSmall?.copyWith(
+                          color: context.colors.onSurfaceVariant,
+                        ),
                       ),
                     ],
                     if (reservation.needsTransfer == true) ...[
-                      const SizedBox(width: 6),
-                      Icon(Icons.flight_land, size: 14, color: Colors.blue.shade600),
+                      SizedBox(width: AppSpacing.sm),
+                      Icon(Icons.flight_land, size: 14, color: context.colors.primary),
                     ],
                     if (reservation.internalNote != null && reservation.internalNote!.trim().isNotEmpty) ...[
-                      const SizedBox(width: 4),
-                      Icon(Icons.notes, size: 14, color: Colors.orange.shade700),
+                      SizedBox(width: AppSpacing.xs),
+                      Icon(Icons.notes, size: 14, color: context.customColors.warning),
                     ],
                   ],
                 ),
                 // Telefon na hosta – kritický pro dispečera
-                if (reservation.guestPhone != null && reservation.guestPhone!.trim().isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      Icon(Icons.phone_outlined, size: 14, color: Colors.grey.shade600),
-                      const SizedBox(width: 4),
-                      Text(
-                        reservation.guestPhone!,
-                        style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Icon(Icons.phone_outlined, size: 14, color: context.colors.onSurfaceVariant),
+                          SizedBox(width: AppSpacing.xs),
+                          Expanded(
+                            child: Text(
+                              hasPhone ? phoneRaw : 'communication.template_selector_missing_phone'.tr(),
+                              style: context.textTheme.bodySmall?.copyWith(
+                                color: hasPhone
+                                    ? context.colors.onSurfaceVariant
+                                    : context.colors.outline,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
                       ),
-                    ],
+                    ),
+                    Tooltip(
+                      message: hasPhone
+                          ? 'communication.template_selector_whatsapp_tooltip'.tr()
+                          : 'communication.template_selector_missing_phone'.tr(),
+                      child: IconButton(
+                        visualDensity: VisualDensity.compact,
+                        icon: Icon(
+                          Icons.chat,
+                          size: 18,
+                          color: hasPhone
+                              ? context.customColors.success
+                              : context.colors.outline,
+                        ),
+                        onPressed: hasPhone ? onWhatsApp : null,
+                      ),
+                    ),
+                  ],
+                ),
+                if (reservation.lastCommunicationAt != null) ...[
+                  const SizedBox(height: 2),
+                  Tooltip(
+                    message: _KanbanCardContent.lastCommunicationTooltip(reservation),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          TaskVisuals.getIcon(
+                            reservation.lastCommunicationTemplateContext,
+                            categoriesByCode: null,
+                          ),
+                          size: 12,
+                          color: TaskVisuals.getBorderColor(
+                            reservation.lastCommunicationTemplateContext,
+                            categoriesByCode: null,
+                          ),
+                        ),
+                        SizedBox(width: AppSpacing.xs),
+                        Text(
+                          'communication.message_prepared_short'.tr(),
+                          style: context.textTheme.labelSmall?.copyWith(
+                            color: context.colors.onSurfaceVariant,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
                   ),
                 ],
-                const SizedBox(height: 4),
+                SizedBox(height: AppSpacing.xs),
                 // 3. řádek – podnadpis: apartmán + počet osob
                 Text(
                   totalGuests > 0 ? '$apartmentName • 👥 $totalGuests' : apartmentName,
-                  style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+                  style: context.textTheme.bodyMedium?.copyWith(
+                    color: context.colors.onSurfaceVariant,
+                  ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 6),
                 // 4. řádek – pilulky: stav a termín (s časem při příjezdu/odjezdu)
                 Wrap(
-                  spacing: 4,
-                  runSpacing: 4,
+                  spacing: AppSpacing.xs,
+                  runSpacing: AppSpacing.xs,
                   children: [
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -1799,8 +2258,7 @@ class _KanbanCardContent extends StatelessWidget {
                       ),
                       child: Text(
                         reservationStatusLabelKey(reservation.status).tr(),
-                        style: TextStyle(
-                          fontSize: 11,
+                        style: context.textTheme.labelSmall?.copyWith(
                           fontWeight: FontWeight.bold,
                           color: statusColor,
                         ),
@@ -1809,15 +2267,14 @@ class _KanbanCardContent extends StatelessWidget {
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                        color: Colors.grey.shade200,
+                        color: context.colors.surfaceContainerHighest,
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
                         _formatDateRange(reservation),
-                        style: TextStyle(
-                          fontSize: 11,
+                        style: context.textTheme.labelSmall?.copyWith(
                           fontWeight: FontWeight.w500,
-                          color: Colors.grey.shade800,
+                          color: context.colors.onSurface,
                         ),
                       ),
                     ),
@@ -1828,12 +2285,16 @@ class _KanbanCardContent extends StatelessWidget {
           ),
           // Konzistence s Úkoly: u Odhlášeno zámeček místo koše (nelze mazat historické záznamy).
           if (reservation.status == 'checked_out') ...[
-            const SizedBox(width: 4),
-            Icon(Icons.lock, size: 16, color: Colors.grey),
+            SizedBox(width: AppSpacing.xs),
+            Icon(Icons.lock, size: 16, color: context.colors.outline),
           ] else if (showDelete) ...[
-            const SizedBox(width: 4),
+            SizedBox(width: AppSpacing.xs),
             IconButton(
-              icon: Icon(Icons.delete_outline, size: 20, color: Colors.red.shade300),
+              icon: Icon(
+                Icons.delete_outline,
+                size: 20,
+                color: context.colors.error.withValues(alpha: 0.75),
+              ),
               onPressed: onDelete,
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
@@ -1873,16 +2334,19 @@ class _ReservationCard extends StatelessWidget {
         : reservation.apartmentName!;
     final needsTransfer = reservation.needsTransfer == true;
     final statusLabel = reservationStatusLabelKey(reservation.status).tr();
-    final statusColor = reservationStatusColor(reservation.status);
+    final statusColor = reservationStatusColor(context, reservation.status);
+    final statusFg = _statusChipForegroundColor(context, reservation.status);
     final nights = reservationNights(reservation.checkIn, reservation.checkOut);
     final nightsText = nights != null && nights >= 0
         ? 'admin.reservations_nights'.tr(namedArgs: {'count': nights.toString()})
         : null;
 
-    return AppCard(
+    return _reservationPremiumCardShell(
+      context: context,
       onTap: () => onEdit(reservation),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: Row(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+        child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Expanded(
@@ -1896,25 +2360,23 @@ class _ReservationCard extends StatelessWidget {
                         Flexible(
                           child: Text(
                             guestName,
-                            style: const TextStyle(
+                            style: context.textTheme.titleMedium?.copyWith(
                               fontWeight: FontWeight.bold,
-                              fontSize: 16,
                             ),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
                         if (needsTransfer) ...[
-                          const SizedBox(width: 6),
-                          Icon(Icons.flight_land, size: 18, color: Colors.amber.shade700),
+                          SizedBox(width: AppSpacing.sm),
+                          Icon(Icons.flight_land, size: 18, color: context.customColors.warning),
                         ],
                       ],
                     ),
                     const SizedBox(height: 2),
                     Text(
                       apartmentName,
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: Colors.grey.shade600,
+                      style: context.textTheme.bodyMedium?.copyWith(
+                        color: context.colors.onSurfaceVariant,
                       ),
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -1928,11 +2390,13 @@ class _ReservationCard extends StatelessWidget {
                   children: [
                     Text(
                       checkIn,
-                      style: TextStyle(fontSize: 13, color: Colors.grey.shade800),
+                      style: context.textTheme.bodyMedium?.copyWith(
+                        color: context.colors.onSurface,
+                      ),
                     ),
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 6),
-                      child: Icon(Icons.arrow_forward, size: 16, color: Colors.grey.shade600),
+                      child: Icon(Icons.arrow_forward, size: 16, color: context.colors.onSurfaceVariant),
                     ),
                     Flexible(
                       child: Column(
@@ -1941,13 +2405,17 @@ class _ReservationCard extends StatelessWidget {
                         children: [
                           Text(
                             checkOut,
-                            style: TextStyle(fontSize: 13, color: Colors.grey.shade800),
+                            style: context.textTheme.bodyMedium?.copyWith(
+                              color: context.colors.onSurface,
+                            ),
                             overflow: TextOverflow.ellipsis,
                           ),
                           if (nightsText != null)
                             Text(
                               nightsText,
-                              style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                              style: context.textTheme.labelSmall?.copyWith(
+                                color: context.colors.onSurfaceVariant,
+                              ),
                             ),
                         ],
                       ),
@@ -1955,11 +2423,11 @@ class _ReservationCard extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
+              SizedBox(width: AppSpacing.sm),
               Chip(
                 label: Text(
                   statusLabel,
-                  style: const TextStyle(fontSize: 11, color: Colors.white),
+                  style: context.textTheme.labelSmall?.copyWith(color: statusFg),
                 ),
                 backgroundColor: statusColor,
                 padding: EdgeInsets.zero,
@@ -1968,10 +2436,10 @@ class _ReservationCard extends StatelessWidget {
               ),
               // Konzistence s Úkoly: u Odhlášeno zámeček místo koše.
               reservation.status == 'checked_out'
-                  ? Icon(Icons.lock, size: 16, color: Colors.grey)
+                  ? Icon(Icons.lock, size: 16, color: context.colors.outline)
                   : IconButton(
                       icon: const Icon(Icons.delete, size: 22),
-                      color: Colors.red,
+                      color: context.colors.error,
                       tooltip: 'admin.reservations_delete_reservation'.tr(),
                       onPressed: () => onDelete(reservation),
                       style: IconButton.styleFrom(
@@ -1981,6 +2449,7 @@ class _ReservationCard extends StatelessWidget {
                     ),
             ],
           ),
+        ),
     );
   }
 }

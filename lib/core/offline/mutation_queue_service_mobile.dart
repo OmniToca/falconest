@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/database/drift/database_provider.dart';
 import 'package:falconest/core/offline/drift_mutation_queue_service.dart';
 import 'package:falconest/core/offline/mutation_queue_interface.dart';
+import 'package:falconest/core/offline/pending_mutation_list_item.dart';
 
 /// Globální instance – nastaví provider při prvním read. Používá se z CashWalletRepository atd.
 MutationQueueServiceInterface? _mutationQueueInstance;
@@ -48,6 +49,10 @@ class MutationQueueService implements MutationQueueServiceInterface {
   @override
   Future<int> getPendingCount() => instance.getPendingCount();
 
+  @override
+  Future<List<PendingMutationListItem>> getPendingMutations() =>
+      instance.getPendingMutations();
+
   /// Rozpozná síťovou chybu – používá se z CashWalletRepository.
   static bool isNetworkError(Object e) {
     final type = e.runtimeType.toString();
@@ -69,9 +74,11 @@ class MutationQueueService implements MutationQueueServiceInterface {
 /// Provider pro frontu mutací – Drift (SQLite), Isar odstraněn.
 final mutationQueueServiceProvider = Provider<MutationQueueServiceInterface>((ref) {
   final taskRepo = ref.watch(driftTaskRepositoryProvider);
+  final checklistRepo = ref.watch(driftTaskChecklistRepositoryProvider);
   final service = DriftMutationQueueService(
     ref.watch(driftPendingMutationRepositoryProvider),
     taskRepo,
+    checklistRepo,
   );
   setMutationQueueInstance(service);
   return service;

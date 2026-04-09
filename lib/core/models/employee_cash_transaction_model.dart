@@ -8,6 +8,7 @@ class EmployeeCashTransactionModel {
     required this.tenantId,
     required this.walletId,
     this.taskId,
+    this.reservationId,
     this.apartmentId,
     this.clientId,
     this.expectedAmount,
@@ -23,6 +24,8 @@ class EmployeeCashTransactionModel {
   final String tenantId;
   final String walletId;
   final String? taskId;
+  /// Vazba na rezervaci (průtoková hotovost za ubytování).
+  final String? reservationId;
   /// Vazba na apartmán u firemních výdajů – pro stržení nákladů ve faktuře majitele.
   final String? apartmentId;
   /// Vazba na klienta – pro platby nesouvisející s apartmánem (např. externí transfer).
@@ -66,6 +69,9 @@ class EmployeeCashTransactionModel {
       taskId: (json['task_id'] as String?)?.trim().isNotEmpty == true
           ? (json['task_id'] as String).trim()
           : null,
+      reservationId: (json['reservation_id'] as String?)?.trim().isNotEmpty == true
+          ? (json['reservation_id'] as String).trim()
+          : null,
       apartmentId: (json['apartment_id'] as String?)?.trim().isNotEmpty == true
           ? (json['apartment_id'] as String).trim()
           : null,
@@ -92,6 +98,7 @@ class EmployeeCashTransactionModel {
       'tenant_id': tenantId,
       'wallet_id': walletId,
       if (taskId != null) 'task_id': taskId,
+      if (reservationId != null) 'reservation_id': reservationId,
       if (apartmentId != null) 'apartment_id': apartmentId,
       if (clientId != null) 'client_id': clientId,
       if (expectedAmount != null) 'expected_amount': expectedAmount,
@@ -109,6 +116,7 @@ class EmployeeCashTransactionModel {
     String? tenantId,
     String? walletId,
     String? taskId,
+    String? reservationId,
     String? apartmentId,
     String? clientId,
     double? expectedAmount,
@@ -124,6 +132,7 @@ class EmployeeCashTransactionModel {
       tenantId: tenantId ?? this.tenantId,
       walletId: walletId ?? this.walletId,
       taskId: taskId ?? this.taskId,
+      reservationId: reservationId ?? this.reservationId,
       apartmentId: apartmentId ?? this.apartmentId,
       clientId: clientId ?? this.clientId,
       expectedAmount: expectedAmount ?? this.expectedAmount,

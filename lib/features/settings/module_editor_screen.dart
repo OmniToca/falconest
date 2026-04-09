@@ -402,7 +402,7 @@ class _ModuleEditorScreenState extends ConsumerState<ModuleEditorScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'settings.module_save_error'.tr(namedArgs: {'error': e.toString()}),
+            'common.generic_error_user_friendly'.tr(),
           ),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,

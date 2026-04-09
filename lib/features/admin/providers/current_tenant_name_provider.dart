@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 
 /// Model aktuálního tenanta včetně is_active – pro real-time vyhazovač (Kill-Switch).
 class CurrentTenantDetail {
@@ -32,7 +33,8 @@ Future<CurrentTenantDetail?> _fetchCurrentTenant(String tenantId) async {
     final isActive = map['is_active'] == true || map['is_active'] == 'true';
     if (id.isEmpty) return null;
     return CurrentTenantDetail(id: id, name: name, isActive: isActive);
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('_fetchCurrentTenant: načtení záznamu tenants selhalo', e, st);
     return null;
   }
 }
@@ -100,7 +102,9 @@ final currentTenantNameProvider = FutureProvider<String>((ref) async {
     if (res != null) {
       return (res['name'] as String? ?? '').trim();
     }
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('currentTenantNameProvider: načtení názvu tenanta selhalo', e, st);
+  }
   return '';
 });
 
@@ -120,6 +124,8 @@ final currentTenantAnnouncementProvider = FutureProvider<String?>((ref) async {
       final v = res['system_announcement'] as String?;
       if (v != null && v.trim().isNotEmpty) return v.trim();
     }
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('currentTenantAnnouncementProvider: načtení system_announcement selhalo', e, st);
+  }
   return null;
 });

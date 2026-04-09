@@ -57,9 +57,10 @@ class IcalSyncService {
   final _client = SupabaseService.client;
 
   /// Načte uložené iCal zdroje pro daný apartmán.
-  Future<List<IcalSourceRow>> getSources(String apartmentId) async {
-    final res = await _client
-        .from('apartment_ical_sources')
+  /// [tenantId] – [safeFrom] zúží řádky na agenturu (Super Admin bypass).
+  Future<List<IcalSourceRow>> getSources(String apartmentId, String tenantId) async {
+    if (tenantId.trim().isEmpty) return [];
+    final res = await SupabaseService.safeFrom('apartment_ical_sources', tenantId)
         .select('id, ical_url, source_label, last_synced_at')
         .eq('apartment_id', apartmentId)
         .order('source_label');
@@ -84,8 +85,9 @@ class IcalSyncService {
   }
 
   /// Odstraní iCal zdroj.
-  Future<void> removeSource(String sourceId) async {
-    await _client.from('apartment_ical_sources').delete().eq('id', sourceId);
+  Future<void> removeSource(String sourceId, String tenantId) async {
+    if (tenantId.trim().isEmpty) return;
+    await SupabaseService.safeFrom('apartment_ical_sources', tenantId).delete().eq('id', sourceId);
   }
 
   /// Synchronizuje jeden iCal URL: volá Edge Function, filtruje duplicity, vkládá nové rezervace.
@@ -244,7 +246,11 @@ class IcalSyncService {
         );
       }
 
-      await SupabaseService.safeFrom('reservations', tenantId).insert(toInsert);
+      // Batch insert neprojde přes [SafeTenantTable.insert] – každý řádek [safeInsertPayload].
+      final safeRows = toInsert
+          .map((r) => SupabaseService.safeInsertPayload(tenantId, Map<String, dynamic>.from(r)))
+          .toList();
+      await SupabaseService.safeFrom('reservations', tenantId).insert(safeRows);
       return IcalSyncResult(
         insertedCount: toInsert.length,
         skippedDuplicates: skippedDuplicates,
@@ -260,10 +266,10 @@ class IcalSyncService {
   }
 
   /// Aktualizuje last_synced_at u zdroje po úspěšném syncu.
-  Future<void> updateLastSyncedAt(String sourceId) async {
-    await _client
-        .from('apartment_ical_sources')
-        .update({'last_synced_at': DateTime.now().toUtc().toIso8601String()})
-        .eq('id', sourceId);
+  Future<void> updateLastSyncedAt(String sourceId, String tenantId) async {
+    if (tenantId.trim().isEmpty) return;
+    await SupabaseService.safeFrom('apartment_ical_sources', tenantId).update({
+      'last_synced_at': DateTime.now().toUtc().toIso8601String(),
+    }).eq('id', sourceId);
   }
 }

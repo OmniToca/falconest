@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="push_daily_summary_title">Ranní souhrn úkolů</string>
+    <string name="push_daily_summary_body_singular">Dnes tě čeká %1$s úkol. Přejeme úspěšný den!</string>
+    <string name="push_daily_summary_body_few">Dnes tě čekají %1$s úkoly. Přejeme úspěšný den!</string>
+    <string name="push_daily_summary_body_many">Dnes tě čeká %1$s úkolů. Přejeme úspěšný den!</string>
+    <string name="fcm_template_reminder_title">📱 Čas na zprávu: %1$s</string>
+    <string name="fcm_template_reminder_body">%1$s — let v %2$s — pošlete šablonu (krok %3$s: 1=48h, 2=24h, 3=1h).</string>
+</resources>

@@ -1,8 +1,9 @@
-import 'package:intl/intl.dart';
+import 'package:easy_localization/easy_localization.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/core/utils/download_helper/download_helper.dart';
 import 'package:falconest/features/admin/providers/settlements_provider.dart';
 
@@ -61,7 +62,9 @@ class SettlementExportService {
     pw.Font? font;
     try {
       font = await PdfGoogleFonts.robotoRegular();
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('SettlementExportService: načtení PdfGoogleFonts.robotoRegular selhalo', e, st);
+    }
 
     final textStyle = pw.TextStyle(font: font, fontSize: 9);
     final boldStyle =
@@ -190,13 +193,13 @@ class SettlementExportService {
         final detailRows = g.items.map((item) {
           final dateStr = item.date != null
               ? DateFormat('dd.MM.yyyy', loc).format(item.date!)
-              : '—';
+              : 'common.placeholder_dash'.tr();
           final timeFromTo = _formatTimeFromTo(item.scheduledStart, item.scheduledEnd, loc);
           final durationStr = _formatDuration(item.durationMinutes);
           final amountStr = '${_formatPrice(item.amount)} $tenantCurrency';
           final tipStr = item.tipAmount > 0
               ? '${_formatPrice(item.tipAmount)} $tenantCurrency'
-              : '—';
+              : 'common.placeholder_dash'.tr();
           return pw.TableRow(
             children: [
               pw.Padding(
@@ -205,7 +208,7 @@ class SettlementExportService {
               pw.Padding(
                   padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 4),
                   child: pw.Text(
-                      item.taskTitle.isEmpty ? '—' : item.taskTitle,
+                      item.taskTitle.isEmpty ? 'common.placeholder_dash'.tr() : item.taskTitle,
                       style: textStyle,
                       maxLines: 2)),
               pw.Padding(
@@ -246,7 +249,7 @@ class SettlementExportService {
         final payStr = '${_formatPrice(totalPay)} $tenantCurrency';
         final rateStr = totalHours > 0
             ? '${_formatPrice(hourlyRate)} $tenantCurrency/h'
-            : '—';
+            : 'common.placeholder_dash'.tr();
 
         pageChildren.add(pw.SizedBox(height: 12));
         pageChildren.add(
@@ -293,7 +296,7 @@ class SettlementExportService {
   static String _pad(int n) => n.toString().padLeft(2, '0');
 
   static String _formatTimeFromTo(DateTime? start, DateTime? end, String locale) {
-    if (start == null && end == null) return '—';
+    if (start == null && end == null) return 'common.placeholder_dash'.tr();
     final timeFormat = DateFormat('HH:mm', locale);
     if (start != null && end != null) {
       return '${timeFormat.format(start)} – ${timeFormat.format(end)}';
@@ -303,7 +306,7 @@ class SettlementExportService {
   }
 
   static String _formatDuration(int durationMinutes) {
-    if (durationMinutes <= 0) return '—';
+    if (durationMinutes <= 0) return 'common.placeholder_dash'.tr();
     final h = durationMinutes ~/ 60;
     final m = durationMinutes % 60;
     if (h > 0 && m > 0) return '${h}h ${m}m';

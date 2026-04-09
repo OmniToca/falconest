@@ -53,6 +53,10 @@ String auditLogActionToTranslationKey(String actionType) {
       return 'super_admin.audit_log_action_module_deactivated';
     case 'TRIAL_UPDATED':
       return 'super_admin.audit_log_action_trial_updated';
+    case 'MODULE_PURCHASED':
+      return 'super_admin.audit_log_action_module_purchased';
+    case AuditActionType.whatsappLinkOpened:
+      return 'super_admin.audit_log_action_whatsapp_link_opened';
     default:
       return 'super_admin.audit_log_action_unknown';
   }
@@ -79,10 +83,37 @@ String? getAuditLogDisplayNameFromDetails(AuditLogEntry entry) {
 ///
 /// PROČ: details obsahuje kontext (triggered_by, module_key, price, trial …). Všechny
 /// výstupy jdou přes i18n – žádné hardcoded řetězce. Neznámé klíče se přeskakují.
-/// Příklad: triggered_by: "reservation" → „Kaskádové smazání kvůli rezervaci“;
-/// module_key: "automatic" → „Modul: automatic“.
-String? formatAuditLogDetailsForDisplay(Map<String, dynamic>? details) {
+/// [actionType] volitelně určí formát (např. WHATSAPP_LINK_OPENED → šablona, náhled, zdroj).
+String? formatAuditLogDetailsForDisplay(
+  Map<String, dynamic>? details, {
+  String? actionType,
+}) {
   if (details == null || details.isEmpty) return null;
+
+  // WhatsApp odkaz: Šablona · Náhled · Zdroj (přeložený).
+  if (actionType == AuditActionType.whatsappLinkOpened) {
+    final template = details['template_name']?.toString().trim() ?? '';
+    final preview = details['message_preview']?.toString().trim() ?? '';
+    final sourceRaw = details['source']?.toString().trim() ?? '';
+    String sourceLabel;
+    switch (sourceRaw) {
+      case 'worker_task':
+        sourceLabel = 'super_admin.audit_log_whatsapp_source_worker_task'.tr();
+        break;
+      case 'reservation':
+        sourceLabel = 'super_admin.audit_log_whatsapp_source_reservation'.tr();
+        break;
+      case 'admin_task':
+        sourceLabel = 'super_admin.audit_log_whatsapp_source_admin_task'.tr();
+        break;
+      default:
+        sourceLabel = sourceRaw.isNotEmpty ? sourceRaw : 'common.placeholder_dash'.tr();
+    }
+    return 'super_admin.audit_log_whatsapp_detail'.tr(
+      namedArgs: {'template': template, 'preview': preview, 'source': sourceLabel},
+    );
+  }
+
   final parts = <String>[];
 
   // Kaskádové smazání – důvod (triggered_by z DB)
@@ -140,7 +171,7 @@ String? formatAuditLogDetailsForDisplay(Map<String, dynamic>? details) {
 
 /// Zkrátí UUID na prvních 8 znaků pro kompaktní zobrazení, když nemáme display name.
 String shortRecordId(String? recordId) {
-  if (recordId == null || recordId.isEmpty) return '—';
+  if (recordId == null || recordId.isEmpty) return 'common.placeholder_dash'.tr();
   if (recordId.length <= 8) return recordId;
   return '${recordId.substring(0, 8)}…';
 }
@@ -164,4 +195,10 @@ IconData getAuditLogIconForTable(String? tableName) {
     default:
       return Icons.description_outlined;
   }
+}
+
+/// Vrátí ikonu podle typu akce nebo tabulky. Pro WHATSAPP_LINK_OPENED vrací Icons.chat.
+IconData getAuditLogIconForAction(String? actionType, String? tableName) {
+  if (actionType == AuditActionType.whatsappLinkOpened) return Icons.chat;
+  return getAuditLogIconForTable(tableName);
 }

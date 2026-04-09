@@ -35,10 +35,10 @@ class TeamRepository {
         'weekly_hours, start_date, end_date, zone_preferences, last_sign_in_at';
     const selectMinimal = 'id, name, first_name, last_name, email, role, roles, status';
 
-    dynamic query = SupabaseService.client
-        .from('profiles')
+    // PROČ safeFrom: stejná ochrana jako u mutací – super admin impersonace nesmí
+    // omylem načíst profily bez vynuceného tenant filtru na aplikační vrstvě.
+    dynamic query = SupabaseService.safeFrom('profiles', tenantId)
         .select(selectFull)
-        .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
         .neq('role', 'super_admin');
     if (q.isNotEmpty) {
@@ -56,10 +56,8 @@ class TeamRepository {
         (response as List).map((e) => Map<String, dynamic>.from(e as Map)),
       );
     } on Object catch (_) {
-      dynamic queryMin = SupabaseService.client
-          .from('profiles')
+      dynamic queryMin = SupabaseService.safeFrom('profiles', tenantId)
           .select(selectMinimal)
-          .eq('tenant_id', tenantId)
           .isFilter('deleted_at', null)
           .neq('role', 'super_admin');
       if (q.isNotEmpty) {

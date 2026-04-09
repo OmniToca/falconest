@@ -77,7 +77,7 @@ class _AddHqContractDialogState extends ConsumerState<AddHqContractDialog> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),

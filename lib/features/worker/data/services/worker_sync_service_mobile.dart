@@ -5,10 +5,12 @@
 library;
 import 'dart:convert';
 
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 
 import 'package:falconest/core/database/drift/database_provider.dart' show DriftSyncRepos;
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 
 class WorkerSyncService {
   WorkerSyncService._();
@@ -18,11 +20,17 @@ class WorkerSyncService {
     String tenantId, {
     void Function(String)? onSyncError,
     DriftSyncRepos? driftRepos,
+    void Function()? onSmartMergeApplied,
   }) async {
     try {
       if (workerId.isEmpty || tenantId.isEmpty) return;
 
-      await pushPendingUpdates(tenantId, onSyncError: onSyncError, driftRepos: driftRepos);
+      await pushPendingUpdates(
+        tenantId,
+        onSyncError: onSyncError,
+        driftRepos: driftRepos,
+        onSmartMergeApplied: onSmartMergeApplied,
+      );
 
       if (driftRepos == null) return;
 
@@ -32,13 +40,16 @@ class WorkerSyncService {
       // PROČ: Modul Communication – šablony zpráv pro řidiče. Full Replace.
       await _syncMessageTemplates(tenantId, driftRepos);
 
+      // PROČ: Vizitka v draweru čte Drift – bez tohoto kroku by offline chybělo jméno/e-mail z profiles.
+      await _syncUserProfileCache(tenantId, driftRepos, onSyncError: onSyncError);
+
       final now = DateTime.now().toUtc();
       final pastLimit = now.subtract(const Duration(days: 7)).toIso8601String();
       final futureLimit = now.add(const Duration(days: 14)).toIso8601String();
 
       // PROČ: Worker vidí úkol, pokud je v assigned_to NEBO v assigned_user_ids.
       final tasksData = await SupabaseService.safeFrom('tasks', tenantId)
-          .select('id, tenant_id, apartment_id, client_id, custom_location, custom_title, reference_number, reservation_id, assigned_to, assigned_user_ids, title, description, task_type, scheduled_start, status, photo_url, metadata, started_at, completed_at, invoiced_at')
+          .select('id, tenant_id, apartment_id, client_id, custom_location, custom_title, reference_number, reservation_id, assigned_to, assigned_user_ids, title, description, task_type, scheduled_start, due_date, unassigned_info, service_id, status, photo_url, metadata, media_urls, started_at, completed_at, invoiced_at')
           .or('assigned_to.eq.$workerId,assigned_user_ids.cs.{$workerId}')
           .neq('status', 'pending')
           .isFilter('deleted_at', null)
@@ -49,7 +60,11 @@ class WorkerSyncService {
 
       final tasksList = tasksData is List ? List<dynamic>.from(tasksData) : <dynamic>[];
       if (tasksList.isEmpty) {
-        await _clearAndWrite(tenantId, workerId, [], [], [], [], driftRepos);
+        await _clearAndWrite(tenantId, workerId, [], [], [], [], driftRepos, onSyncError: onSyncError);
+        // PROČ: Výdělky nezávisí na otevřených úkolech – musí se stáhnout i při prázdném seznamu úkolů.
+        await _syncWorkerEarnings(tenantId, workerId, driftRepos, onSyncError: onSyncError);
+        await _syncStaffAbsences(tenantId, workerId, driftRepos, onSyncError: onSyncError);
+        await _syncEmployeeCash(tenantId, workerId, driftRepos, onSyncError: onSyncError);
         return;
       }
 
@@ -69,7 +84,7 @@ class WorkerSyncService {
       List<dynamic> apartmentsData = [];
       if (apartmentIds.isNotEmpty) {
         apartmentsData = await SupabaseService.safeFrom('apartments', tenantId)
-            .select('id, tenant_id, name, address, code, keybox, owner_notes')
+            .select('id, tenant_id, name, address, code, keybox, owner_notes, check_in_time, check_out_time, zone_id, parking_instructions')
             .inFilter('id', apartmentIds.toList())
             .isFilter('deleted_at', null);
         apartmentsData = List<dynamic>.from(apartmentsData);
@@ -78,7 +93,10 @@ class WorkerSyncService {
       List<dynamic> reservationsData = [];
       if (reservationIds.isNotEmpty) {
         reservationsData = await SupabaseService.safeFrom('reservations', tenantId)
-            .select('id, tenant_id, reference_number, status, guest_name, guest_phone')
+            .select(
+              'id, tenant_id, updated_at, reference_number, status, guest_name, guest_phone, '
+              'special_requests, guest_language, start_date, end_date',
+            )
             .inFilter('id', reservationIds.toList())
             .isFilter('deleted_at', null);
         reservationsData = List<dynamic>.from(reservationsData);
@@ -101,7 +119,11 @@ class WorkerSyncService {
         reservationsData,
         clientsData,
         driftRepos,
+        onSyncError: onSyncError,
       );
+      await _syncWorkerEarnings(tenantId, workerId, driftRepos, onSyncError: onSyncError);
+      await _syncStaffAbsences(tenantId, workerId, driftRepos, onSyncError: onSyncError);
+      await _syncEmployeeCash(tenantId, workerId, driftRepos, onSyncError: onSyncError);
     } catch (e, st) {
       onSyncError?.call(e.toString());
       if (kDebugMode) {
@@ -125,16 +147,18 @@ class WorkerSyncService {
       final map = Map<String, dynamic>.from(tenantRes as Map);
       if (map.isEmpty) return;
       await driftRepos.tenant.upsertFromSupabaseMap(map);
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('WorkerSyncService: zápis tenanta do Driftu po stažení z Supabase selhal', e, st);
+    }
   }
 
   static Future<void> _syncMessageTemplates(String tenantId, DriftSyncRepos driftRepos) async {
     if (tenantId.isEmpty) return;
     try {
-      final templatesData = await SupabaseService.client
-          .from('tenant_message_templates')
-          .select('id, tenant_id, key, name, body, channel, language_code, trigger_context, order_index')
-          .eq('tenant_id', tenantId)
+      final templatesData = await SupabaseService.safeFrom('tenant_message_templates', tenantId)
+          .select(
+            'id, tenant_id, key, name, channel, email_subject, translations, trigger_context, order_index',
+          )
           .isFilter('deleted_at', null)
           .order('order_index', ascending: true);
 
@@ -148,7 +172,232 @@ class WorkerSyncService {
         if (supabaseId == null || supabaseId.isEmpty) continue;
         await driftRepos.messageTemplate.upsertFromSupabaseMap(map);
       }
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('WorkerSyncService: synchronizace šablon zpráv (tenant_message_templates) do Driftu selhala', e, st);
+    }
+  }
+
+  /// Stejný výběr sloupců jako hlavní worker sync úkolů – pro doplnění řádků jen kvůli JOIN ve výdělcích.
+  static const String _payoutRelatedTasksSelect =
+      'id, tenant_id, apartment_id, client_id, custom_location, custom_title, reference_number, reservation_id, assigned_to, assigned_user_ids, title, description, task_type, scheduled_start, due_date, unassigned_info, service_id, status, photo_url, metadata, media_urls, started_at, completed_at, invoiced_at';
+
+  /// Doplní do Driftu úkoly odkazované z výplat/provizí, které nejsou v hlavním okně syncu (dokončené / mimo rozsah).
+  ///
+  /// PROČ: Hlavní dotaz na úkoly filtruje časové okno a stav; výplata může odkazovat na starší úkol.
+  /// Bez tohoto kroku JOIN v [DriftTaskPayoutRepository] vrací null a UI ukazuje prázdný název.
+  static Future<void> _upsertTasksForPayoutReferences(
+    String tenantId,
+    List<dynamic> payoutsRaw,
+    List<dynamic> commissionsRaw,
+    DriftSyncRepos driftRepos,
+  ) async {
+    if (tenantId.isEmpty) return;
+    final ids = <String>{};
+    void collect(List<dynamic> list) {
+      for (final raw in list) {
+        final map = raw is Map<String, dynamic> ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+        final tid = map['task_id']?.toString().trim();
+        if (tid != null && tid.isNotEmpty) ids.add(tid);
+      }
+    }
+    collect(payoutsRaw);
+    collect(commissionsRaw);
+    if (ids.isEmpty) return;
+    final idList = ids.toList();
+    for (var i = 0; i < idList.length; i += _syncInFilterChunkSize) {
+      final end = i + _syncInFilterChunkSize > idList.length ? idList.length : i + _syncInFilterChunkSize;
+      final chunk = idList.sublist(i, end);
+      try {
+        final data = await SupabaseService.safeFrom('tasks', tenantId)
+            .select(_payoutRelatedTasksSelect)
+            .inFilter('id', chunk)
+            .isFilter('deleted_at', null);
+        final fetched = data is List ? List<dynamic>.from(data) : <dynamic>[];
+        for (final t in fetched) {
+          final map = t is Map<String, dynamic> ? Map<String, dynamic>.from(t) : <String, dynamic>{};
+          if (map.isEmpty) continue;
+          await driftRepos.task.upsertTaskFromSupabaseMap(map);
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          // ignore: avoid_print
+          print('WorkerSyncService._upsertTasksForPayoutReferences: $e');
+        }
+      }
+    }
+  }
+
+  /// Stáhne `task_payouts` a `task_commissions` pro přihlášeného pracovníka a uloží je do Driftu.
+  ///
+  /// PROČ: Obrazovka „Moje výdělky“ je offline-first – UI nikdy nevolá Supabase, jen čte SQLite.
+  /// Data se obnovují společně se sync úkolů (stejná session v terénu).
+  static Future<void> _syncWorkerEarnings(
+    String tenantId,
+    String workerId,
+    DriftSyncRepos driftRepos, {
+    void Function(String)? onSyncError,
+  }) async {
+    if (tenantId.isEmpty || workerId.isEmpty) return;
+    try {
+      final payoutsRaw = await SupabaseService.safeFrom('task_payouts', tenantId)
+          .select('id, tenant_id, task_id, profile_id, amount, status, created_at, updated_at')
+          .eq('profile_id', workerId)
+          .order('created_at', ascending: false);
+
+      final commissionsRaw = await SupabaseService.safeFrom('task_commissions', tenantId)
+          .select('id, tenant_id, task_id, profile_id, client_id, amount, status, created_at, updated_at')
+          .eq('profile_id', workerId)
+          .order('created_at', ascending: false);
+
+      final listP = payoutsRaw is List ? List<dynamic>.from(payoutsRaw) : <dynamic>[];
+      final listC = commissionsRaw is List ? List<dynamic>.from(commissionsRaw) : <dynamic>[];
+
+      await driftRepos.taskPayout.replaceFromSupabaseForProfile(tenantId, workerId, listP, listC);
+      await _upsertTasksForPayoutReferences(tenantId, listP, listC, driftRepos);
+    } catch (e, st) {
+      onSyncError?.call('Earnings sync: $e');
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('WorkerSyncService._syncWorkerEarnings ERROR: $e');
+        // ignore: avoid_print
+        print(st);
+      }
+    }
+  }
+
+  /// Stáhne řádek `profiles` pro aktuální `auth.uid()` a uloží ho do Drift cache.
+  ///
+  /// PROČ: Stejný zdroj jako webový provider, ale zápis jen při synci – UI čte výhradně SQLite.
+  /// Dotaz přes globální klienta jako dříve (RLS podle přihlášení); [tenantId] slouží k validaci tenantu.
+  static Future<void> _syncUserProfileCache(
+    String tenantId,
+    DriftSyncRepos driftRepos, {
+    void Function(String)? onSyncError,
+  }) async {
+    final sessionUser = SupabaseService.client.auth.currentUser;
+    final uid = sessionUser == null ? '' : sessionUser.id.trim();
+    if (uid.isEmpty) return;
+    try {
+      final res = await SupabaseService.client
+          .from('profiles')
+          .select('tenant_id, name, first_name, last_name, email, role, updated_at')
+          .eq('auth_id', uid)
+          .isFilter('deleted_at', null)
+          .maybeSingle();
+
+      if (res == null) return;
+      final map = Map<String, dynamic>.from(res as Map);
+      await driftRepos.userProfile.upsertFromProfileMap(
+        authUserId: uid,
+        map: map,
+        expectedTenantId: tenantId,
+      );
+    } catch (e, st) {
+      onSyncError?.call('User profile cache sync: $e');
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('WorkerSyncService._syncUserProfileCache ERROR: $e');
+        // ignore: avoid_print
+        print(st);
+      }
+    }
+  }
+
+  /// Stáhne vlastní `staff_absences` přihlášeného pracovníka a uloží je do Driftu.
+  ///
+  /// PROČ: Seznam v „Moje nepřítomnost“ čte výhradně SQLite; tento krok dorovná stav se serverem po úkolech.
+  /// Sloupce `created_at` / `updated_at` musí existovat v PostgreSQL – viz migrace
+  /// `20260401100000_staff_absences_created_updated_at.sql` v repozitáři.
+  static Future<void> _syncStaffAbsences(
+    String tenantId,
+    String workerId,
+    DriftSyncRepos driftRepos, {
+    void Function(String)? onSyncError,
+  }) async {
+    if (tenantId.isEmpty || workerId.isEmpty) return;
+    try {
+      final raw = await SupabaseService.safeFrom('staff_absences', tenantId)
+          .select(
+            'id, tenant_id, profile_id, invitation_id, start_date, end_date, reason, status, created_at, updated_at',
+          )
+          .eq('profile_id', workerId)
+          .order('start_date', ascending: false);
+
+      final list = raw is List ? List<dynamic>.from(raw) : <dynamic>[];
+      await driftRepos.staffAbsence.replaceFromSupabaseForProfile(tenantId, workerId, list);
+    } catch (e, st) {
+      // PROČ: Uživatel nesmí vidět PostgREST ani stack – jedna obecná věta; technické detaily jen v debug konzoli.
+      onSyncError?.call('worker.sync.absences_sync_failed_generic_user_friendly'.tr());
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('WorkerSyncService._syncStaffAbsences ERROR: $e');
+        // ignore: avoid_print
+        print(st);
+      }
+    }
+  }
+
+  /// Stáhne `employee_cash_wallets` + transakce pro přihlášeného workera a uloží do Driftu.
+  ///
+  /// PROČ: Peněženka v aplikaci čte výhradně SQLite; měnu doplníme z již staženého záznamu tenanta v Driftu.
+  static Future<void> _syncEmployeeCash(
+    String tenantId,
+    String workerId,
+    DriftSyncRepos driftRepos, {
+    void Function(String)? onSyncError,
+  }) async {
+    if (tenantId.isEmpty || workerId.isEmpty) return;
+    try {
+      final walletRaw = await SupabaseService.safeFrom('employee_cash_wallets', tenantId)
+          .select('id, tenant_id, profile_id, balance, updated_at')
+          .eq('profile_id', workerId)
+          .maybeSingle();
+
+      Map<String, dynamic>? walletMap;
+      if (walletRaw != null) {
+        walletMap = Map<String, dynamic>.from(walletRaw as Map);
+      }
+
+      var txList = <dynamic>[];
+      final wid = walletMap?['id']?.toString().trim();
+      if (wid != null && wid.isNotEmpty) {
+        final txData = await SupabaseService.safeFrom('employee_cash_transactions', tenantId)
+            .select(
+              'id, tenant_id, wallet_id, task_id, amount, transaction_type, created_by, created_at, note, receipt_image_url, expected_amount, apartment_id, client_id, is_shortfall_resolved, shortfall_resolution_type, shortfall_resolution_note',
+            )
+            .eq('wallet_id', wid)
+            .order('created_at', ascending: false)
+            .limit(200);
+        txList = txData is List ? List<dynamic>.from(txData) : <dynamic>[];
+      }
+
+      final tenantRow = await driftRepos.tenant.getBySupabaseId(tenantId);
+
+      await driftRepos.employeeCash.replaceFromSupabaseForProfile(
+        tenantId: tenantId,
+        profileId: workerId,
+        walletRow: walletMap,
+        transactionRows: txList,
+        currencyCode: tenantRow?.currency,
+      );
+    } catch (e, st) {
+      onSyncError?.call('Employee cash sync: $e');
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('WorkerSyncService._syncEmployeeCash ERROR: $e');
+        // ignore: avoid_print
+        print(st);
+      }
+    }
+  }
+
+  /// Veřejné znovunačtení peněženky po online zápisu (dialog nemá spouštět celý task sync).
+  static Future<void> pullEmployeeCashToDrift(
+    String tenantId,
+    String workerId,
+    DriftSyncRepos driftRepos,
+  ) async {
+    await _syncEmployeeCash(tenantId, workerId, driftRepos, onSyncError: null);
   }
 
   static Future<void> _clearAndWrite(
@@ -158,9 +407,12 @@ class WorkerSyncService {
     List<dynamic> apartmentsData,
     List<dynamic> reservationsData,
     List<dynamic> clientsData,
-    DriftSyncRepos driftRepos,
-  ) async {
+    DriftSyncRepos driftRepos, {
+    void Function(String)? onSyncError,
+  }) async {
     await driftRepos.task.clearTasksForWorker(tenantId, workerId);
+    // PROČ: Staré instance checklistů musí zmizet dřív, než zapíšeme nové úkoly (UUID se nemíchají).
+    await driftRepos.taskChecklist.clearForTenant(tenantId);
 
     for (final a in apartmentsData) {
       final map = a is Map<String, dynamic> ? Map<String, dynamic>.from(a) : <String, dynamic>{};
@@ -189,6 +441,130 @@ class WorkerSyncService {
       if (map.isEmpty) continue;
       await driftRepos.task.upsertTaskFromSupabaseMap(map);
     }
+
+    await _syncTaskChecklistsFromSupabase(tenantId, tasksList, driftRepos, onSyncError: onSyncError);
+  }
+
+  /// PostgREST: hlavička `task_checklists` + vnořené `task_checklist_items` v jednom roundtripu.
+  ///
+  /// PROČ: Dříve stažené hlavičky bez položek (nebo chyba druhého dotazu) zanechávaly Drift bez řádků
+  /// pro UI (`watchItemsForTask` joinuje obě tabulky). Embed zajistí konzistenci hlavička + položky.
+  static const String _taskChecklistsSelectWithNestedItems =
+      'id, tenant_id, task_id, template_id, created_at, updated_at, '
+      'task_checklist_items('
+      'id, tenant_id, task_checklist_id, title, is_photo_required, sort_order, '
+      'is_completed, completed_at, completed_by, photo_url, created_at, updated_at'
+      ')';
+
+  /// Maximální počet UUID v jednom `.inFilter` – předejde příliš dlouhým URL / limitům PostgREST.
+  static const int _syncInFilterChunkSize = 80;
+
+  /// Stáhne instance checklistů a jejich položky pro úkoly worker rozhraní (RLS: přiřazený úkol).
+  ///
+  /// PROČ: Worker detail potřebuje lokální kopii pro offline odškrtávání; volá se po zápisu `tasks` do Driftu.
+  /// [_clearAndWrite] předtím zavolal [DriftTaskChecklistRepository.clearForTenant] – „duchové“ z minulého
+  /// sync se smažou celým tenantem; sem zapisujeme jen aktuální stav ze serveru.
+  static Future<void> _syncTaskChecklistsFromSupabase(
+    String tenantId,
+    List<dynamic> tasksList,
+    DriftSyncRepos driftRepos, {
+    void Function(String)? onSyncError,
+  }) async {
+    if (tenantId.isEmpty) return;
+    final taskIds = <String>[];
+    for (final t in tasksList) {
+      final m = t is Map<String, dynamic> ? Map<String, dynamic>.from(t) : <String, dynamic>{};
+      final id = m['id']?.toString().trim();
+      if (id != null && id.isNotEmpty) taskIds.add(id);
+    }
+    if (taskIds.isEmpty) return;
+    try {
+      for (var i = 0; i < taskIds.length; i += _syncInFilterChunkSize) {
+        final end = i + _syncInFilterChunkSize > taskIds.length ? taskIds.length : i + _syncInFilterChunkSize;
+        final chunk = taskIds.sublist(i, end);
+        var usedNested = false;
+        try {
+          final nestedRaw = await SupabaseService.safeFrom('task_checklists', tenantId)
+              .select(_taskChecklistsSelectWithNestedItems)
+              .inFilter('task_id', chunk);
+          final nestedList = nestedRaw is List ? List<dynamic>.from(nestedRaw) : <dynamic>[];
+          for (final raw in nestedList) {
+            final map = raw is Map<String, dynamic> ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+            if (map.isEmpty) continue;
+            final nestedItems = map['task_checklist_items'];
+            map.remove('task_checklist_items');
+            await driftRepos.taskChecklist.upsertChecklistFromSupabaseMap(map);
+            if (nestedItems is List) {
+              for (final itemRaw in nestedItems) {
+                final imap = itemRaw is Map<String, dynamic>
+                    ? Map<String, dynamic>.from(itemRaw)
+                    : Map<String, dynamic>.from(itemRaw as Map);
+                if (imap.isEmpty) continue;
+                await driftRepos.taskChecklist.upsertItemFromSupabaseMap(imap);
+              }
+            }
+          }
+          usedNested = true;
+        } catch (e, st) {
+          if (kDebugMode) {
+            // ignore: avoid_print
+            print('WorkerSyncService: embed task_checklists selhal, zkouším dvoukrok: $e');
+            // ignore: avoid_print
+            print(st);
+          }
+        }
+        if (!usedNested) {
+          await _syncTaskChecklistsTwoStepForTaskChunk(tenantId, chunk, driftRepos);
+        }
+      }
+    } catch (e, st) {
+      onSyncError?.call('Checklist sync: $e');
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('WorkerSyncService._syncTaskChecklistsFromSupabase ERROR: $e');
+        // ignore: avoid_print
+        print(st);
+      }
+    }
+  }
+
+  /// Záložní stažení: nejdřív hlavičky pro [taskIdsChunk], pak položky po `task_checklist_id` (také po částech).
+  ///
+  /// PROČ: Pokud PostgREST embed neprojde (starší API, chyba parsování), stále dodáme data do Driftu.
+  static Future<void> _syncTaskChecklistsTwoStepForTaskChunk(
+    String tenantId,
+    List<String> taskIdsChunk,
+    DriftSyncRepos driftRepos,
+  ) async {
+    final headersRaw = await SupabaseService.safeFrom('task_checklists', tenantId)
+        .select('id, tenant_id, task_id, template_id, created_at, updated_at')
+        .inFilter('task_id', taskIdsChunk);
+    final headersList = headersRaw is List ? List<dynamic>.from(headersRaw) : <dynamic>[];
+    final checklistIds = <String>[];
+    for (final raw in headersList) {
+      final map = raw is Map<String, dynamic> ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+      if (map.isEmpty) continue;
+      await driftRepos.taskChecklist.upsertChecklistFromSupabaseMap(map);
+      final cid = map['id']?.toString().trim();
+      if (cid != null && cid.isNotEmpty) checklistIds.add(cid);
+    }
+    if (checklistIds.isEmpty) return;
+
+    for (var j = 0; j < checklistIds.length; j += _syncInFilterChunkSize) {
+      final jEnd = j + _syncInFilterChunkSize > checklistIds.length ? checklistIds.length : j + _syncInFilterChunkSize;
+      final idChunk = checklistIds.sublist(j, jEnd);
+      final itemsRaw = await SupabaseService.safeFrom('task_checklist_items', tenantId)
+          .select(
+            'id, tenant_id, task_checklist_id, title, is_photo_required, sort_order, is_completed, completed_at, completed_by, photo_url, created_at, updated_at',
+          )
+          .inFilter('task_checklist_id', idChunk);
+      final itemsList = itemsRaw is List ? List<dynamic>.from(itemsRaw) : <dynamic>[];
+      for (final raw in itemsList) {
+        final map = raw is Map<String, dynamic> ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+        if (map.isEmpty) continue;
+        await driftRepos.taskChecklist.upsertItemFromSupabaseMap(map);
+      }
+    }
   }
 
   /// Push pending úkolů na Supabase s Timestamp Merging (Smart Merge).
@@ -214,6 +590,7 @@ class WorkerSyncService {
     String tenantId, {
     void Function(String)? onSyncError,
     DriftSyncRepos? driftRepos,
+    void Function()? onSmartMergeApplied,
   }) async {
     debugPrint('🔄 SYNC: Spouštím pushPendingUpdates...');
     if (tenantId.isEmpty) return;
@@ -295,7 +672,9 @@ class WorkerSyncService {
           try {
             final parsed = _parseMetadataForSync(task.metadataJson!);
             if (parsed != null && parsed.isNotEmpty) updates['metadata'] = parsed;
-          } catch (_) {}
+          } catch (e, st) {
+            AppLogger.error('WorkerSyncService: parsování metadataJson při pushPendingUpdates selhalo', e, st);
+          }
         }
 
         await SupabaseService.safeFrom('tasks', tenantId).update(updates).eq('id', supabaseId);
@@ -311,6 +690,7 @@ class WorkerSyncService {
             taskType: serverTaskType,
             scheduledStart: serverScheduledStart,
           );
+          onSmartMergeApplied?.call();
         } else {
           await driftRepos.task.markTaskSynced(task);
         }
@@ -335,7 +715,8 @@ class WorkerSyncService {
           .maybeSingle();
       if (res == null) return null;
       return Map<String, dynamic>.from(res as Map);
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('WorkerSyncService: načtení řádku úkolu ze Supabase (_fetchCurrentTaskFromServer) selhalo', e, st);
       return null;
     }
   }
@@ -363,7 +744,9 @@ class WorkerSyncService {
     try {
       final decoded = jsonDecode(raw.toString());
       if (decoded is Map) return Map<String, dynamic>.from(decoded);
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('WorkerSyncService: jsonDecode metadat v _parseMetadataFromDynamic selhal', e, st);
+    }
     return null;
   }
 
@@ -379,6 +762,22 @@ class WorkerSyncService {
   }
 
 
+  /// Stejný výběr sloupců jako při stažení rezervací do Driftu + [updated_at] pro Timestamp Merging.
+  static const String _reservationPushSelectColumns =
+      'id, tenant_id, updated_at, status, guest_name, guest_phone, reference_number, '
+      'special_requests, guest_language, start_date, end_date';
+
+  /// Odešle pending změny rezervací (typicky status z check-inu v terénu) s Timestamp Merging.
+  ///
+  /// PROČ STEJNÝ MODEL JAKO ÚKOLY ([pushPendingUpdates]): Bez porovnání [updated_at] by hrozilo
+  /// „last-write-wins“ v lokální DB – worker by po syncu dál viděl zastaralé údaje, i když
+  /// Postgres jsme nechali správně (UPDATE jen `status`). Smart merge:
+  /// 1) Stáhnout aktuální řádek ze Supabase.
+  /// 2) Porovnat `server.updated_at` s lokálním [Reservation.lastSyncedAt] → detekce konfliktu.
+  /// 3) Na server vždy poslat jen `status` z terénu (worker jiná pole v Driftu nemění).
+  /// 4) Po úspěchu přepsat Drift snapshotem ze serveru + status z pracovníka ([applyReservationAfterStatusPush]).
+  ///
+  /// Při chybě jedné položky smyčka pokračuje (try-catch + continue).
   static Future<void> pushPendingReservationUpdates(
     String tenantId, {
     void Function(String)? onSyncError,
@@ -395,12 +794,40 @@ class WorkerSyncService {
 
       debugPrint('🔄 SYNC: Rezervace $supabaseId → status: ${res.status}');
       try {
+        final serverRow = await _fetchCurrentReservationFromServer(supabaseId, tenantId);
+        if (serverRow == null) {
+          // PROČ: Řádek na serveru neexistuje nebo je mimo RLS / soft-delete – pending push nemá cíl.
+          await driftRepos.reservation.deleteLocalReservationByDriftId(res.id);
+          continue;
+        }
+
+        final serverUpdatedAt = _parseServerUpdatedAt(serverRow);
+        final lastSynced = res.lastSyncedAt;
+        final hasConflict = serverUpdatedAt != null &&
+            (lastSynced == null || serverUpdatedAt.isAfter(lastSynced));
+
+        if (hasConflict) {
+          // Timestamp merging pro rezervace: serverová verze je novější než stav, se kterým worker pracoval offline.
+          // Přesto na Supabase aplikujeme lokální status z terénu (check-in/check-out), aby se neztratila práce v terénu;
+          // ostatní sloupce zůstávají na serveru beze změny (UPDATE posíláme jen status). Drift po úspěchu sloučí
+          // zobrazení: aktuální data ze snapshotu + status z pracovníka — adminovy poznámky / termíny nepřepisujeme starými lokálními kopiemi.
+          if (kDebugMode) {
+            debugPrint(
+              '🔀 SYNC MERGE rezervace $supabaseId: server updated_at novější než lastSyncedAt — Drift se po pushi zarovná se serverem.',
+            );
+          }
+        }
+
         await SupabaseService.safeFrom('reservations', tenantId)
             .update({'status': res.status})
             .eq('id', supabaseId);
         debugPrint('✅ SYNC ÚSPĚCH: Rezervace $supabaseId byla odeslána.');
 
-        await driftRepos.reservation.markReservationSynced(res);
+        await driftRepos.reservation.applyReservationAfterStatusPush(
+          localDriftId: res.id,
+          serverSnapshot: serverRow,
+          statusFromWorker: res.status,
+        );
       } catch (e) {
         onSyncError?.call(e.toString());
         debugPrint('❌ SYNC CHYBA (Rezervace): $e');
@@ -411,6 +838,23 @@ class WorkerSyncService {
         continue;
       }
     }
+  }
+
+  /// Aktuální řádek rezervace ze Supabase (Timestamp Merging před push UPDATE).
+  ///
+  /// PROČ: Nevyžírá výjimky – při síťové chybě nechá volajícího catch v [pushPendingReservationUpdates],
+  /// aby se pending záznam nesmazal omylem (null by vypadalo jako „není na serveru“).
+  static Future<Map<String, dynamic>?> _fetchCurrentReservationFromServer(
+    String reservationId,
+    String tenantId,
+  ) async {
+    final raw = await SupabaseService.safeFrom('reservations', tenantId)
+        .select(_reservationPushSelectColumns)
+        .eq('id', reservationId)
+        .isFilter('deleted_at', null)
+        .maybeSingle();
+    if (raw == null) return null;
+    return Map<String, dynamic>.from(raw as Map);
   }
 
   static Future<int> getPendingSyncCount(String tenantId, {DriftSyncRepos? driftRepos}) async {
@@ -427,7 +871,9 @@ class WorkerSyncService {
     try {
       final decoded = jsonDecode(raw);
       if (decoded is Map) return Map<String, dynamic>.from(decoded);
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('WorkerSyncService: jsonDecode v _parseMetadataForSync selhal', e, st);
+    }
     return null;
   }
 }

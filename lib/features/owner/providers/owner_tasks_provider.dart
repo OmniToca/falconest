@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
@@ -24,13 +25,15 @@ final ownerTasksProvider = FutureProvider<List<TaskRow>>((ref) async {
   // Early exit: uživatel nevlastní žádný apartmán – ušetříme dotaz do DB.
   if (ownedApartmentIds.isEmpty) return [];
 
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return [];
+
   try {
     // BUGFIX: Dvojitá ochrana – explicitní stažení úkolů POUZE pro byty vlastněné tímto uživatelem.
     // SECURITY: Klientský portál nikdy nestahuje tasks bez parametru apartment_id omezeného na vlastněné byty.
     // Vynecháme JOIN na profiles (assigned_to) – ochrana soukromí, jména personálu nenačítáme.
     // PROČ: Archivace. Vyfakturované úkoly (invoiced_at != null) schováváme z aktivních pohledů.
-    final tasksResponse = await SupabaseService.client
-        .from('tasks')
+    final tasksResponse = await SupabaseService.safeFrom('tasks', tenantId)
         .select(
           '''
           *,
@@ -63,12 +66,10 @@ final ownerTasksProvider = FutureProvider<List<TaskRow>>((ref) async {
 
 /// Určí, zda je status úkolu interní návrh – majitel tyto úkoly neuvidí.
 ///
-/// Zahrnuje: draft, pending, Návrh a jazykové varianty (case-insensitive).
+/// Zahrnuje pouze draft a Návrh. Status "pending" NEFILTRUJEME – majitel musí
+/// vidět své nahlášené závady (údržbu), které se zakládají se statusem pending (Nové).
 bool _isDraftStatus(String? status) {
   if (status == null || status.trim().isEmpty) return false;
   final lower = status.trim().toLowerCase();
-  return lower == 'draft' ||
-      lower == 'pending' ||
-      lower == 'návrh' ||
-      lower == 'navrh';
+  return lower == 'draft' || lower == 'návrh' || lower == 'navrh';
 }

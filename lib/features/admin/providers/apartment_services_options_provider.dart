@@ -40,6 +40,8 @@ final apartmentServicesOptionsProvider =
       durationMinutes: durationMinutes,
       requiresPhotoFromApartment: r.requiresPhoto,
       requiresPhotoFromCatalog: ts?.requiresPhoto ?? false,
+      triggerType: r.triggerType,
+      checklistTemplateId: r.checklistTemplateId,
     );
   }).toList();
 

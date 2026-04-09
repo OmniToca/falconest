@@ -1,0 +1,8 @@
+/* FCM: push_daily_summary_* z Edge Function daily-task-summary */
+"push_daily_summary_title" = "Ranní souhrn úkolů";
+"push_daily_summary_body_singular" = "Dnes tě čeká %@ úkol. Přejeme úspěšný den!";
+"push_daily_summary_body_few" = "Dnes tě čekají %@ úkoly. Přejeme úspěšný den!";
+"push_daily_summary_body_many" = "Dnes tě čeká %@ úkolů. Přejeme úspěšný den!";
+/* FCM: template-reminders */
+"fcm_template_reminder_title" = "📱 Čas na zprávu: %@";
+"fcm_template_reminder_body" = "%@ — let v %@ — pošlete šablonu (krok %@: 1=48h, 2=24h, 3=1h).";

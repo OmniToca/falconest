@@ -1,6 +1,7 @@
 import 'package:excel/excel.dart';
 
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/core/utils/id_generator.dart';
 
 /// Výsledek parsování buňky služby v Excelu.
@@ -381,7 +382,9 @@ class ReservationImportService {
             final pt = (aptRow['payer_type']?.toString() ?? '').trim();
             if (pt == 'owner' || pt == 'guest') defaultPayer = pt;
           }
-        } catch (_) {}
+        } catch (e, st) {
+          AppLogger.error('ReservationImportService: výpočet defaultPrice/defaultPayer ze řádků služeb selhal', e, st);
+        }
 
         final parsed = parseServiceCell(
           cellContent,
@@ -565,7 +568,9 @@ class ReservationImportService {
         final p = parts[1].toLowerCase();
         if (p == 'owner' || p == 'majitel') {
           payerType = 'owner';
-        } else if (p == 'guest' || p == 'host') payerType = 'guest';
+        } else if (p == 'guest' || p == 'host') {
+          payerType = 'guest';
+        }
       }
 
       String? flightNumber;
@@ -585,7 +590,8 @@ class ReservationImportService {
         flightNumber: flightNumber,
         customNote: customNote,
       );
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('ReservationImportService: parsování buňky služby selhalo, použit výchozí ParsedService', e, st);
       return ParsedService(chargedPrice: defaultPrice, payerType: defaultPayer ?? 'host');
     }
   }

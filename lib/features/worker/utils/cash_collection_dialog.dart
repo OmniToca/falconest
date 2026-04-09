@@ -4,8 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/currency_service.dart';
-import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
+import 'package:falconest/features/worker/utils/record_cash_collection_worker.dart';
 
 /// Zobrazí potvrzovací dialog pro výběr hotovosti při dokončení úkolu.
 ///
@@ -35,10 +35,17 @@ Future<bool?> maybeShowCashCollectionDialog(
     if (!forceShowForExtraOnly) return null;
   }
 
-  final amountRaw = meta?['amount_to_collect'];
-  final plannedAmount = (amountRaw is num)
-      ? amountRaw.toDouble()
-      : (amountRaw != null ? double.tryParse(amountRaw.toString()) : null) ?? 0;
+  final agencyRaw = meta?['amount_to_collect'];
+  final agency = (agencyRaw is num)
+      ? agencyRaw.toDouble()
+      : (agencyRaw != null ? double.tryParse(agencyRaw.toString()) : null) ??
+          0.0;
+  final transitRaw = meta?['transit_amount_to_collect'];
+  final transit = (transitRaw is num)
+      ? transitRaw.toDouble()
+      : (transitRaw != null ? double.tryParse(transitRaw.toString()) : null) ??
+          0.0;
+  final plannedAmount = agency + transit;
 
   if (plannedAmount <= 0 && !forceShowForExtraOnly) return null;
 
@@ -193,7 +200,8 @@ class _CashCollectionDialogContentState extends State<_CashCollectionDialogConte
     }
 
     try {
-      await CashWalletRepository.instance.recordCashCollection(
+      await recordWorkerCashCollectionAfterConfirm(
+        ref: widget.ref,
         taskId: widget.taskId,
         amount: actual,
         tenantId: tenantId,
@@ -222,7 +230,7 @@ class _CashCollectionDialogContentState extends State<_CashCollectionDialogConte
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('worker.cash_collection_error'.tr(namedArgs: {'error': e.toString()})),
+            content: Text('common.generic_error_user_friendly'.tr()),
           ),
         );
       }
@@ -352,13 +360,14 @@ class _CashCollectionDialogContentState extends State<_CashCollectionDialogConte
                         existingMediaUrls: widget.mediaUrls ?? [],
                       );
                 }
-                if (mounted) Navigator.of(context).pop(true);
-                widget.onCompleted();
-                if (mounted) {
+                // PROČ: Po await musíme chránit dialog i SnackBar; callback notifikace rodiče necháváme vždy.
+                if (context.mounted) {
+                  Navigator.of(context).pop(true);
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(content: Text('worker.cash_collection_not_collected'.tr())),
                   );
                 }
+                widget.onCompleted();
               },
               style: OutlinedButton.styleFrom(
                 foregroundColor: Colors.orange.shade800,

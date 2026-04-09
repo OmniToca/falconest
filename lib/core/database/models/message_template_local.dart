@@ -1,9 +1,10 @@
 import 'package:falconest/core/database/models/sync_status.dart';
+import 'package:falconest/features/communication/models/message_template_row.dart';
 
 /// DTO pro šablonu zprávy (tenant_message_templates) – používán Worker UI.
 ///
-/// Isar odstraněn – DriftMessageTemplateRepository mapuje db.MessageTemplate na tento model.
-/// Řidiči používají šablony v terénu bez připojení (offline-first).
+/// PROČ: Offline-first – Drift ukládá synchronizovaná data; texty jsou v [translationsJson]
+/// (stejný význam jako Supabase jsonb). Kanál a předmět e-mailu držíme paralelně se serverem.
 class MessageTemplateLocal {
   MessageTemplateLocal();
 
@@ -19,14 +20,14 @@ class MessageTemplateLocal {
   /// Lidský název pro UI (např. „48h před transferem“).
   late String name;
 
-  /// Text s placeholdery: {guest_name}, {flight_number}, {address}, …
-  late String body;
-
-  /// Kanál odeslání: whatsapp_link, sms, email.
+  /// Kanál odeslání: whatsapp, sms, email.
   String? channel;
 
-  /// i18n: NULL = výchozí, cs/en/es – verze pro jazyky hostů.
-  String? languageCode;
+  /// Předmět pro e-mail šablony (u sms/whatsapp null).
+  String? emailSubject;
+
+  /// JSON překlady šablony (stejný formát jako Supabase `translations` jsonb).
+  String? translationsJson;
 
   /// Volitelně: transfer, check_in, check_out – filtrování v UI řidiče.
   String? triggerContext;
@@ -39,4 +40,10 @@ class MessageTemplateLocal {
 
   /// Kdy byl záznam naposledy synchronizován z Supabase.
   DateTime? lastSyncedAt;
+
+  /// Text pro hosta dle jazyka – čte pouze z [translationsJson], žádný legacy sloupec.
+  String resolvedBodyForGuest(String guestLanguageLower) {
+    return MessageTemplateTranslations.parseFromStorage(translationsJson)
+        .resolvedBodyForGuest(guestLanguageLower);
+  }
 }

@@ -11,13 +11,14 @@ import 'package:falconest/features/admin/utils/module_icon_mapper.dart';
 import 'package:falconest/features/settings/module_editor_screen.dart';
 import 'package:falconest/features/settings/pricing_type_label.dart';
 import 'package:falconest/features/settings/supported_languages.dart';
-import 'package:falconest/features/settings/user_profile_tab.dart';
+import 'package:falconest/features/settings/user_profile_tab.dart'
+    show UserProfileSettingsSection;
 import 'package:falconest/features/super_admin/services/super_admin_service.dart';
 
 /// Modální okno Nastavení **výhradně pro Super Admina**.
 ///
 /// Toto okno je dedikované pouze pro globální správu systému a modulů.
-/// Super Admin zde vidí: Můj profil (jazyk, měna) a Katalog modulů (včetně kurzovního lístku).
+/// Super Admin zde vidí: jazyk, měna, osobní údaje a Katalog modulů (včetně kurzovního lístku).
 /// NEROZŠIŘUJ tento modal o logiku běžného Tenant Admina – ten používá [SettingsModal]
 /// v [settings_screen.dart].
 class SuperAdminSettingsModal {
@@ -37,54 +38,41 @@ class SuperAdminSettingsModal {
   }
 }
 
-/// Vnitřní obsah modalu Super Admin Nastavení.
-/// Pevně 2 záložky: Můj profil, Moduly.
+/// Vnitřní obsah modalu Super Admin Nastavení – jazyk/měna, osobní údaje, katalog modulů v jednom scrollu.
 class _SuperAdminSettingsContent extends ConsumerWidget {
   const _SuperAdminSettingsContent();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Column(
-              mainAxisSize: MainAxisSize.min,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildHeader(context),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _buildHeader(context),
-                Flexible(
-                  child: DefaultTabController(
-                    length: 2,
-                    child: Column(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 24),
-                          child: _buildProfileSection(context, ref),
-                        ),
-                        const SizedBox(height: 16),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 24),
-                          child: TabBar(
-                            labelColor: Theme.of(context).colorScheme.primary,
-                            unselectedLabelColor: Colors.grey.shade600,
-                            indicatorColor: Theme.of(context).colorScheme.primary,
-                            tabs: [
-                              Tab(text: 'settings.tab_profile'.tr()),
-                              Tab(text: 'settings.catalog_modules'.tr()),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Expanded(
-                          child: TabBarView(
-                            children: [
-                              const UserProfileTab(),
-                              _SuperAdminModulesTabContent(),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                _buildProfileSection(context, ref),
+                const SizedBox(height: 20),
+                Text(
+                  'settings.section_personal_details'.tr(),
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey.shade800,
+                      ),
                 ),
+                const SizedBox(height: 16),
+                const UserProfileSettingsSection(),
+                const Divider(height: 40),
+                const _SuperAdminModulesTabContent(),
               ],
-            );
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   void _onClose(BuildContext context) {
@@ -313,51 +301,48 @@ class _SuperAdminModulesTabContentState
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'settings.catalog_modules'.tr(),
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: Colors.grey[900],
-                        fontWeight: FontWeight.w600,
-                      ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'settings.catalog_modules'.tr(),
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: Colors.grey[900],
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+            ),
+            FilledButton.icon(
+              onPressed: () => _onAddModule(context),
+              icon: const Icon(Icons.add, size: 18),
+              label: Text('settings.add_module'.tr()),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24),
                 ),
               ),
-              FilledButton.icon(
-                onPressed: () => _onAddModule(context),
-                icon: const Icon(Icons.add, size: 18),
-                label: Text('settings.add_module'.tr()),
-                style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(24),
-                  ),
-                ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        _SuperAdminModuleListInModal(
+          onEditModule: (m) {
+            showDialog<void>(
+              context: context,
+              builder: (ctx) => ModuleEditorScreen(
+                existingModule: m,
+                asDialog: true,
               ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          _SuperAdminModuleListInModal(
-            onEditModule: (m) {
-              showDialog<void>(
-                context: context,
-                builder: (ctx) => ModuleEditorScreen(
-                  existingModule: m,
-                  asDialog: true,
-                ),
-              );
-            },
-          ),
-          const SizedBox(height: 24),
-          const _SuperAdminExchangeRatesCard(),
-        ],
-      ),
+            );
+          },
+        ),
+        const SizedBox(height: 24),
+        const _SuperAdminExchangeRatesCard(),
+      ],
     );
   }
 
@@ -408,7 +393,7 @@ class _SuperAdminModuleListInModal extends ConsumerWidget {
         ),
       ),
       error: (err, _) => Text(
-        'common.error_with_message'.tr(namedArgs: {'message': err.toString()}),
+        'common.generic_error_user_friendly'.tr(),
         style: TextStyle(color: Colors.red.shade700),
       ),
     );
@@ -581,11 +566,7 @@ Future<void> _superAdminConfirmDeleteModule(
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'settings.module_delete_error'.tr(
-              namedArgs: {'message': e.toString()},
-            ),
-          ),
+          content: Text('common.generic_error_user_friendly'.tr()),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
         ),
@@ -691,7 +672,7 @@ class _SuperAdminExchangeRatesCard extends ConsumerWidget {
               ),
             ),
             error: (err, _) => Text(
-              'common.error_with_message'.tr(namedArgs: {'message': err.toString()}),
+              'common.generic_error_user_friendly'.tr(),
               style: TextStyle(color: Colors.red.shade700),
             ),
           ),
@@ -737,6 +718,7 @@ class _SuperAdminExchangeRatesCard extends ConsumerWidget {
     if (rate == null || rate <= 0) return;
     try {
       await CurrencyService.updateRate(currency.code, rate);
+      CurrencyService.invalidateCurrenciesCache();
       ref.invalidate(currenciesProvider);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -750,9 +732,7 @@ class _SuperAdminExchangeRatesCard extends ConsumerWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              'settings.rate_save_error'.tr(namedArgs: {'message': e.toString()}),
-            ),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -843,6 +823,7 @@ class _SuperAdminExchangeRatesCard extends ConsumerWidget {
             ? null
             : nameController.text.trim(),
       ));
+      CurrencyService.invalidateCurrenciesCache();
       ref.invalidate(currenciesProvider);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -856,9 +837,7 @@ class _SuperAdminExchangeRatesCard extends ConsumerWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              'settings.rate_save_error'.tr(namedArgs: {'message': e.toString()}),
-            ),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),

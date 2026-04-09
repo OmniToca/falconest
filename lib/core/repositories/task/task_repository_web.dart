@@ -3,8 +3,12 @@
 /// Web je vždy online – data se čtou přímo ze Supabase.
 /// ŽÁDNÝ import isar ani .g.dart – tento soubor se kompiluje pro dart:html.
 library;
+import 'dart:convert';
+
 import 'package:falconest/core/repositories/task/task_repository.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
+import 'package:falconest/core/utils/geo_json_point.dart';
 
 class TaskRepositoryWeb implements ITaskRepository {
   @override
@@ -17,7 +21,7 @@ class TaskRepositoryWeb implements ITaskRepository {
     // Worker vidí úkol, pokud je v assigned_to NEBO v assigned_user_ids.
     final tasksData = await SupabaseService.safeFrom('tasks', tenantId)
         .select(
-          'id, tenant_id, apartment_id, assigned_to, assigned_user_ids, title, description, task_type, scheduled_start, status, photo_url, reference_number',
+          'id, tenant_id, apartment_id, assigned_to, assigned_user_ids, title, description, task_type, scheduled_start, status, photo_url, reference_number, geo_location, custom_location, custom_title, metadata',
         )
         .or('assigned_to.eq.$workerId,assigned_user_ids.cs.{$workerId}')
         .isFilter('deleted_at', null)
@@ -35,10 +39,10 @@ class TaskRepositoryWeb implements ITaskRepository {
       if (aptId != null && aptId.isNotEmpty) apartmentIds.add(aptId);
     }
 
-    Map<String, ({String? name, String? address})> apartmentById = {};
+    Map<String, ({String? name, String? address, dynamic geo})> apartmentById = {};
     if (apartmentIds.isNotEmpty) {
       final aptData = await SupabaseService.safeFrom('apartments', tenantId)
-          .select('id, name, address')
+          .select('id, name, address, geo_location')
           .inFilter('id', apartmentIds.toList())
           .isFilter('deleted_at', null);
       final aptList = aptData is List ? List<dynamic>.from(aptData) : <dynamic>[];
@@ -49,6 +53,7 @@ class TaskRepositoryWeb implements ITaskRepository {
           apartmentById[id] = (
             name: (m['name'] as String?)?.trim(),
             address: (m['address'] as String?)?.trim(),
+            geo: m['geo_location'],
           );
         }
       }
@@ -77,6 +82,17 @@ class TaskRepositoryWeb implements ITaskRepository {
       }
 
       final refNum = (map['reference_number'] as String?)?.trim();
+      final gps = GeoJsonPoint.workerGpsFromTaskThenApartment(
+        taskGeoRaw: map['geo_location'],
+        apartmentGeoRaw: apt?.geo,
+      );
+      Map<String, dynamic>? listMeta;
+      final rawListMeta = map['metadata'];
+      if (rawListMeta is Map) {
+        listMeta = Map<String, dynamic>.from(rawListMeta);
+      }
+      final cLoc = (map['custom_location'] as String?)?.trim();
+      final cTtl = (map['custom_title'] as String?)?.trim();
       result.add(WorkerTask(
         id: id,
         title: (map['title'] as String?)?.trim() ?? '',
@@ -88,6 +104,11 @@ class TaskRepositoryWeb implements ITaskRepository {
         referenceNumber: (refNum != null && refNum.isNotEmpty) ? refNum : null,
         apartmentName: apt?.name,
         apartmentAddress: apt?.address,
+        customLocation: (cLoc != null && cLoc.isNotEmpty) ? cLoc : null,
+        customTitle: (cTtl != null && cTtl.isNotEmpty) ? cTtl : null,
+        metadata: listMeta,
+        latitude: gps?.latitude,
+        longitude: gps?.longitude,
       ));
     }
     result.sort((a, b) => a.scheduledStart.compareTo(b.scheduledStart));
@@ -98,7 +119,9 @@ class TaskRepositoryWeb implements ITaskRepository {
   Future<WorkerTaskDetail?> getWorkerTaskDetail(String tenantId, String taskId) async {
     try {
       final res = await SupabaseService.safeFrom('tasks', tenantId)
-          .select('id, title, description, task_type, scheduled_start, status, apartment_id, client_id, custom_location, custom_title, reservation_id, photo_url, metadata, media_urls, started_at, completed_at, reference_number')
+          .select(
+            'id, title, description, task_type, scheduled_start, due_date, unassigned_info, service_id, status, apartment_id, client_id, custom_location, custom_title, reservation_id, photo_url, metadata, media_urls, started_at, completed_at, reference_number, geo_location',
+          )
           .eq('id', taskId)
           .maybeSingle();
       if (res == null) return null;
@@ -109,18 +132,43 @@ class TaskRepositoryWeb implements ITaskRepository {
       String? aptAddress;
       String? keybox;
       String? ownerNotes;
+      String? apartmentCheckInTime;
+      String? apartmentCheckOutTime;
+      String? apartmentZoneId;
+      String? parkingInstructions;
+      dynamic apartmentGeoRaw;
       if (aptId != null && aptId.isNotEmpty) {
         final aptRes = await SupabaseService.safeFrom('apartments', tenantId)
-            .select('name, address, keybox, owner_notes')
+            .select(
+              'name, address, keybox, owner_notes, check_in_time, check_out_time, zone_id, parking_instructions, geo_location',
+            )
             .eq('id', aptId)
             .maybeSingle();
         if (aptRes != null) {
           final a = Map<String, dynamic>.from(aptRes as Map);
+          apartmentGeoRaw = a['geo_location'];
           aptName = (a['name'] as String?)?.trim();
           aptAddress = (a['address'] as String?)?.trim();
           keybox = (a['keybox'] as String?)?.trim();
           ownerNotes = (a['owner_notes'] as String?)?.trim();
+          apartmentCheckInTime = (a['check_in_time'] as String?)?.trim();
+          if (apartmentCheckInTime != null && apartmentCheckInTime.isEmpty) {
+            apartmentCheckInTime = null;
+          }
+          apartmentCheckOutTime = (a['check_out_time'] as String?)?.trim();
+          if (apartmentCheckOutTime != null && apartmentCheckOutTime.isEmpty) {
+            apartmentCheckOutTime = null;
+          }
+          final z = a['zone_id']?.toString().trim();
+          apartmentZoneId = (z != null && z.isNotEmpty) ? z : null;
+          final pi = a['parking_instructions']?.toString();
+          parkingInstructions =
+              (pi != null && pi.trim().isNotEmpty) ? pi.trim() : null;
+        } else {
+          apartmentGeoRaw = null;
         }
+      } else {
+        apartmentGeoRaw = null;
       }
       String? clientName;
       String? clientPhone;
@@ -141,17 +189,27 @@ class TaskRepositoryWeb implements ITaskRepository {
       }
       String? guestName;
       String? guestPhone;
+      String? specialRequests;
+      String? guestLanguage;
+      var hasLinkedReservation = false;
       if (resId != null && resId.isNotEmpty) {
         final resRes = await SupabaseService.safeFrom('reservations', tenantId)
-            .select('guest_name, guest_phone')
+            .select(
+              'guest_name, guest_phone, special_requests, guest_language',
+            )
             .eq('id', resId)
             .maybeSingle();
         if (resRes != null) {
+          hasLinkedReservation = true;
           final r = Map<String, dynamic>.from(resRes as Map);
           guestName = (r['guest_name'] as String?)?.trim();
           guestPhone = (r['guest_phone'] as String?)?.trim();
           if (guestName != null && guestName.isEmpty) guestName = null;
           if (guestPhone != null && guestPhone.isEmpty) guestPhone = null;
+          final sr = r['special_requests']?.toString().trim();
+          specialRequests = (sr != null && sr.isNotEmpty) ? sr : null;
+          final gl = r['guest_language']?.toString().trim();
+          guestLanguage = (gl != null && gl.isNotEmpty) ? gl : null;
         }
       }
       final rawStart = map['scheduled_start'];
@@ -174,6 +232,34 @@ class TaskRepositoryWeb implements ITaskRepository {
       final customTtl = (map['custom_title'] as String?)?.trim();
 
       final refNum = (map['reference_number'] as String?)?.trim();
+      final dueRaw = map['due_date'];
+      DateTime? dueDate;
+      if (dueRaw is DateTime) {
+        dueDate = dueRaw.toLocal();
+      } else if (dueRaw is String && dueRaw.trim().isNotEmpty) {
+        final t = dueRaw.trim();
+        dueDate = DateTime.tryParse(t)?.toLocal() ?? _parseWebDateOnly(t)?.toLocal();
+      }
+      final unassignedRaw = map['unassigned_info'];
+      String? unassignedInfo;
+      if (unassignedRaw != null) {
+        if (unassignedRaw is Map) {
+          try {
+            unassignedInfo = jsonEncode(Map<String, dynamic>.from(unassignedRaw));
+          } catch (_) {
+            unassignedInfo = unassignedRaw.toString();
+          }
+        } else {
+          final t = unassignedRaw.toString().trim();
+          unassignedInfo = t.isEmpty ? null : t;
+        }
+      }
+
+      final detailGps = GeoJsonPoint.workerGpsFromTaskThenApartment(
+        taskGeoRaw: map['geo_location'],
+        apartmentGeoRaw: apartmentGeoRaw,
+      );
+
       return WorkerTaskDetail(
         id: taskId,
         title: (map['title'] as String?)?.trim() ?? '',
@@ -198,8 +284,20 @@ class TaskRepositoryWeb implements ITaskRepository {
         metadata: metadata,
         startedAt: _parseOptDateTime(map['started_at']),
         completedAt: _parseOptDateTime(map['completed_at']),
+        specialRequests: specialRequests,
+        apartmentCheckInTime: apartmentCheckInTime,
+        apartmentCheckOutTime: apartmentCheckOutTime,
+        apartmentZoneId: apartmentZoneId,
+        parkingInstructions: parkingInstructions,
+        dueDate: dueDate,
+        unassignedInfo: unassignedInfo,
+        guestLanguage: guestLanguage,
+        hasLinkedReservation: hasLinkedReservation,
+        latitude: detailGps?.latitude,
+        longitude: detailGps?.longitude,
       );
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('TaskRepositoryWeb.getWorkerTaskDetail: mapování řádku na WorkerTaskDetail selhalo', e, st);
       return null;
     }
   }
@@ -238,11 +336,47 @@ class TaskRepositoryWeb implements ITaskRepository {
         .eq('id', taskId);
   }
 
+  @override
+  Future<void> appendWorkerQuickNote(
+    String tenantId,
+    String taskId,
+    String appendedLine,
+  ) async {
+    final tid = tenantId.trim();
+    final id = taskId.trim();
+    final line = appendedLine.trim();
+    if (tid.isEmpty || id.isEmpty || line.isEmpty) return;
+
+    final res = await SupabaseService.safeFrom('tasks', tid)
+        .select('description')
+        .eq('id', id)
+        .maybeSingle();
+    final old = res != null && res['description'] != null
+        ? res['description'].toString().trim()
+        : '';
+    final merged = old.isEmpty ? line : '$old\n$line';
+    await SupabaseService.safeFrom('tasks', tid)
+        .update(<String, dynamic>{'description': merged})
+        .eq('id', id);
+  }
+
   static DateTime? _parseOptDateTime(dynamic raw) {
     if (raw == null) return null;
     if (raw is DateTime) return raw;
     if (raw is String) return DateTime.tryParse(raw);
     return null;
+  }
+
+  /// Textový `due_date` z Postgres může být jen `yyyy-MM-dd`.
+  static DateTime? _parseWebDateOnly(String s) {
+    final head = s.split('T').first;
+    final m = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$').firstMatch(head);
+    if (m == null) return null;
+    final y = int.tryParse(m.group(1)!);
+    final mo = int.tryParse(m.group(2)!);
+    final d = int.tryParse(m.group(3)!);
+    if (y == null || mo == null || d == null) return null;
+    return DateTime.utc(y, mo, d);
   }
 
   static List<String> _parseMediaUrls(dynamic raw) {

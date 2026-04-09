@@ -14,8 +14,10 @@ import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/utils/id_generator.dart';
 import 'package:falconest/core/offline/mutation_queue_service.dart';
 import 'package:falconest/core/offline/network_error_helper.dart';
+import 'package:falconest/core/repositories/task/supabase_task_insert_repository.dart';
+import 'package:falconest/core/repositories/task/task_insert_sanitizer.dart';
 import 'package:falconest/core/services/media_service.dart';
-import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/features/worker/utils/worker_photo_annotation_flow.dart';
 
 /// Modul v Supabase Storage pro fotky hlášení závad – cesta tenantId/tasks/uuid.jpg
 const _storageModuleTasks = 'tasks';
@@ -67,7 +69,7 @@ class _IssueReporterDialogState extends ConsumerState<IssueReporterDialog> {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(
-                      'worker.issue_reporter_error'.tr(namedArgs: {'error': error.errorMsg}),
+                      'common.generic_error_user_friendly'.tr(),
                     ),
                     backgroundColor: Colors.orange.shade700,
                   ),
@@ -104,7 +106,7 @@ class _IssueReporterDialogState extends ConsumerState<IssueReporterDialog> {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Text(
-                    'worker.issue_reporter_error'.tr(namedArgs: {'error': e.toString()}),
+                    'common.generic_error_user_friendly'.tr(),
                   ),
                   backgroundColor: Colors.orange.shade700,
                 ),
@@ -141,7 +143,7 @@ class _IssueReporterDialogState extends ConsumerState<IssueReporterDialog> {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(
-                  'worker.issue_reporter_error'.tr(namedArgs: {'error': error.errorMsg}),
+                  'common.generic_error_user_friendly'.tr(),
                 ),
                 backgroundColor: Colors.orange.shade700,
               ),
@@ -171,7 +173,7 @@ class _IssueReporterDialogState extends ConsumerState<IssueReporterDialog> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'worker.issue_reporter_error'.tr(namedArgs: {'error': e.toString()}),
+              'common.generic_error_user_friendly'.tr(),
             ),
             backgroundColor: Colors.orange.shade700,
           ),
@@ -211,7 +213,8 @@ class _IssueReporterDialogState extends ConsumerState<IssueReporterDialog> {
 
   Future<void> _addPhoto() async {
     if (kIsWeb || _photoFiles.length >= _maxPhotos) return;
-    final file = await MediaService.instance.pickAndCompressImage(
+    final file = await pickWorkerPhotoWithAnnotation(
+      context,
       source: ImageSource.camera,
     );
     if (file != null && mounted) {
@@ -302,7 +305,7 @@ class _IssueReporterDialogState extends ConsumerState<IssueReporterDialog> {
     }
 
     // KROK 2: Zápis úkolu do Supabase. Při síťové chybě (offline) uložíme do fronty.
-    final payload = {
+    final payload = <String, dynamic>{
       'id': const Uuid().v4(),
       'tenant_id': widget.tenantId,
       'apartment_id': widget.apartmentId,
@@ -320,7 +323,7 @@ class _IssueReporterDialogState extends ConsumerState<IssueReporterDialog> {
     };
 
     try {
-      await SupabaseService.safeFrom('tasks', widget.tenantId).insert(payload);
+      await SupabaseTaskInsertRepository.createTask(payload); // návratové id zatím nepotřebujeme
 
       if (!mounted) return;
       setState(() => _submitting = false);
@@ -350,7 +353,7 @@ class _IssueReporterDialogState extends ConsumerState<IssueReporterDialog> {
         await MutationQueueService.instance.enqueueMutation(
           table: 'tasks',
           action: 'OFFLINE_ISSUE_TASK',
-          payload: payload,
+          payload: sanitizeTaskInsertPayload(Map<String, dynamic>.from(payload)),
         );
         if (!mounted) return;
         setState(() => _submitting = false);
@@ -368,7 +371,7 @@ class _IssueReporterDialogState extends ConsumerState<IssueReporterDialog> {
       setState(() => _submitting = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('worker.issue_reporter_error'.tr(namedArgs: {'error': e.toString()})),
+          content: Text('common.generic_error_user_friendly'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 8),

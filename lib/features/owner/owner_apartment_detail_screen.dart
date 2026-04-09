@@ -2,6 +2,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'package:falconest/features/owner/providers/owner_apartment_detail_provider.dart';
 
@@ -156,6 +157,14 @@ class _DetailContent extends StatelessWidget {
             ),
           ],
         ),
+        if (detail.reviewLink != null && detail.reviewLink!.trim().isNotEmpty) ...[
+          const SizedBox(height: 16),
+          _GuestReviewLinkCard(url: detail.reviewLink!.trim()),
+        ],
+        const SizedBox(height: 16),
+        _CalendarFeedSyncCard(
+          url: detail.calendarFeedUrl,
+        ),
         const SizedBox(height: 16),
 
         // Časy příjezdu/odjezdu
@@ -236,6 +245,141 @@ class _DetailContent extends StatelessWidget {
       default:
         return status;
     }
+  }
+}
+
+/// Tlačítko otevření odkazu na recenze hostů (Booking/Airbnb).
+///
+/// PROČ: Majitel dostane jeden klik do prohlížeče; bez hardcoded textů.
+class _GuestReviewLinkCard extends StatelessWidget {
+  const _GuestReviewLinkCard({required this.url});
+
+  final String url;
+
+  Future<void> _open(BuildContext context) async {
+    final uri = Uri.tryParse(url.trim());
+    if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
+      return;
+    }
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('owner.detail_link_open_failed'.tr()),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 1,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'owner.detail_guest_reviews_title'.tr(),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () => _open(context),
+              icon: const Icon(Icons.open_in_new, size: 20),
+              label: Text('owner.detail_guest_reviews_open'.tr()),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Sekce iCal synchronizace – URL z RPC (pokud agentura token založila), jinak lokalizovaná výzva.
+///
+/// PROČ: Majitel nevidí hash tokenu; zobrazíme jen uloženou veřejnou URL nebo kontakt na agenturu.
+class _CalendarFeedSyncCard extends StatelessWidget {
+  const _CalendarFeedSyncCard({this.url});
+
+  final String? url;
+
+  void _copyUrl(BuildContext context, String value) {
+    Clipboard.setData(ClipboardData(text: value));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('owner.copied_to_clipboard'.tr()),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final trimmed = url?.trim();
+    final hasUrl = trimmed != null && trimmed.isNotEmpty;
+
+    return Card(
+      elevation: 1,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'owner.detail_calendar_sync_title'.tr(),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'owner.detail_calendar_sync_hint'.tr(),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.grey.shade700,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            if (hasUrl) ...[
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.outlineVariant,
+                  ),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: SelectableText(
+                    trimmed,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              FilledButton.tonalIcon(
+                onPressed: () => _copyUrl(context, trimmed),
+                icon: const Icon(Icons.copy_outlined, size: 20),
+                label: Text('owner.detail_calendar_sync_copy'.tr()),
+              ),
+            ] else
+              Text(
+                'owner.detail_calendar_sync_contact_agency'.tr(),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Colors.grey.shade800,
+                    ),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

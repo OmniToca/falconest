@@ -32,9 +32,9 @@ class ApartmentRepository {
     final q = searchQuery?.trim() ?? '';
     dynamic query = SupabaseService.safeFrom('apartments', tenantId)
         .select(
-          'id, name, address, keybox, code, tenant_id, zone_id, status, '
+          'id, name, address, keybox, parking_instructions, review_link, code, tenant_id, zone_id, status, '
           'check_in_time, check_out_time, standard_cleaning_duration, owner_notes, '
-          'monthly_management_fee, managed_from',
+          'monthly_management_fee, managed_from, geo_location',
         )
         .isFilter('deleted_at', null);
 

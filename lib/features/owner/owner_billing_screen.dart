@@ -2,9 +2,16 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/providers/tenant_currency_provider.dart';
 import 'package:falconest/core/services/billing_pdf_service.dart';
+import 'package:falconest/core/theme/premium_card_decoration.dart';
+import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/features/admin/providers/finance_billing_provider.dart';
+import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
 import 'package:falconest/features/owner/providers/owner_billing_provider.dart';
+import 'package:falconest/features/owner/providers/owner_company_expenses_provider.dart';
+import 'package:falconest/features/owner/providers/owner_dashboard_metrics_provider.dart';
 
 /// Seznam zmražených vyúčtování majitele – Klientská zóna.
 ///
@@ -48,37 +55,45 @@ class OwnerBillingScreen extends ConsumerWidget {
     WidgetRef ref,
     List<BillingSnapshotModel> snapshots,
   ) {
-    if (snapshots.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.receipt_long_outlined, size: 64, color: Colors.grey.shade400),
-              const SizedBox(height: 16),
-              Text(
-                'owner.billing_empty'.tr(),
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: Colors.grey.shade600,
-                    ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
+    final expensesAsync = ref.watch(ownerCompanyExpensesProvider);
 
-    return ListView.builder(
+    return ListView(
       padding: const EdgeInsets.all(24),
-      itemCount: snapshots.length,
-      itemBuilder: (context, index) {
-        return _SnapshotCard(
-          snapshot: snapshots[index],
-          onDownloadPdf: () => _onDownloadPdf(context, ref, snapshots[index]),
-        );
-      },
+      children: [
+        expensesAsync.when(
+          data: (rows) => _OwnerCompanyExpensesSection(rows: rows),
+          loading: () => const Padding(
+            padding: EdgeInsets.only(bottom: 16),
+            child: LinearProgressIndicator(),
+          ),
+          error: (Object e, StackTrace st) => const SizedBox.shrink(),
+        ),
+        if (snapshots.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 32),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.receipt_long_outlined, size: 64, color: Colors.grey.shade400),
+                const SizedBox(height: 16),
+                Text(
+                  'owner.billing_empty'.tr(),
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                        color: Colors.grey.shade600,
+                      ),
+                ),
+              ],
+            ),
+          )
+        else
+          ...snapshots.map(
+            (s) => _SnapshotCard(
+              snapshot: s,
+              onDownloadPdf: () => _onDownloadPdf(context, ref, s),
+            ),
+          ),
+      ],
     );
   }
 
@@ -140,12 +155,108 @@ class OwnerBillingScreen extends ConsumerWidget {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'common.error_with_message'.tr(namedArgs: {'message': e.toString()}),
+              'common.generic_error_user_friendly'.tr(),
             ),
           ),
         );
       }
     }
+  }
+}
+
+/// Firemní výdaje (COMPANY_EXPENSE) u vlastněných bytů – schválení majitelem do [metadata].
+class _OwnerCompanyExpensesSection extends ConsumerWidget {
+  const _OwnerCompanyExpensesSection({required this.rows});
+
+  final List<OwnerCompanyExpenseRow> rows;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (rows.isEmpty) return const SizedBox.shrink();
+
+    final apartments = ref.watch(ownerApartmentsProvider).valueOrNull ?? [];
+    final nameById = {for (final a in apartments) a.id: a.name};
+    final currency = ref.watch(currentTenantCurrencyProvider).valueOrNull ?? 'EUR';
+    final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'owner.company_expenses_title'.tr(),
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'owner.company_expenses_subtitle'.tr(),
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: context.colors.onSurfaceVariant,
+              ),
+        ),
+        const SizedBox(height: 12),
+        ...rows.map((r) {
+          final aptName = nameById[r.apartmentId] ?? r.apartmentId;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Container(
+              decoration: premiumCardDecoration(context),
+              child: ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                title: Text(
+                  r.note?.isNotEmpty == true
+                      ? r.note!
+                      : 'owner.company_expense_no_note'.tr(),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(
+                  '${r.amount.toStringAsFixed(2)} $currency · $aptName',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                trailing: r.ownerApproved
+                    ? Chip(
+                        label: Text('owner.company_expense_approved'.tr()),
+                        visualDensity: VisualDensity.compact,
+                      )
+                    : FilledButton.tonal(
+                        onPressed: tenantId == null || tenantId.isEmpty
+                            ? null
+                            : () async {
+                                try {
+                                  await ownerApproveCompanyExpense(
+                                    tenantId: tenantId,
+                                    transactionId: r.id,
+                                    currentMetadata: r.metadata,
+                                  );
+                                  ref.invalidate(ownerCompanyExpensesProvider);
+                                  ref.invalidate(ownerDashboardMetricsProvider);
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('owner.company_expense_approved_snack'.tr()),
+                                      ),
+                                    );
+                                  }
+                                } catch (_) {
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('common.generic_error_user_friendly'.tr()),
+                                      ),
+                                    );
+                                  }
+                                }
+                              },
+                        child: Text('owner.company_expense_confirm'.tr()),
+                      ),
+              ),
+            ),
+          );
+        }),
+      ],
+    );
   }
 }
 

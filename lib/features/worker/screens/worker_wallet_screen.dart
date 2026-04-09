@@ -124,7 +124,7 @@ class WorkerWalletScreen extends ConsumerWidget {
             error: (err, _) => SliverFillRemaining(
               hasScrollBody: false,
               child: Center(
-                child: Text('common.error_with_message'.tr(namedArgs: {'message': err.toString()})),
+                child: Text('common.generic_error_user_friendly'.tr()),
               ),
             ),
           ),
@@ -209,7 +209,7 @@ class _BalanceHero extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              'common.error_with_message'.tr(namedArgs: {'message': err.toString()}),
+              'common.generic_error_user_friendly'.tr(),
               style: const TextStyle(fontSize: 14, color: Colors.red),
             ),
           ],
@@ -247,7 +247,7 @@ class _TransactionTile extends StatelessWidget {
     final receiptUrl = transaction.receiptImageUrl;
     final createdAt = transaction.createdAt;
 
-    String dateStr = '—';
+    String dateStr = 'common.placeholder_dash'.tr();
     if (createdAt != null) {
       if (createdAt is DateTime) {
         dateStr = formatDate(createdAt.toLocal());

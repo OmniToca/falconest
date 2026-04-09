@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/finance_cash_provider.dart';
@@ -77,7 +78,8 @@ DateTime? _parseCheckInDate(String? s) {
     if (d == null || m == null || y == null) return null;
     if (d > 31 || m > 12) return null;
     return DateTime(y, m, d);
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('dashboard_provider._parseCheckInDate selhalo', e, st);
     return null;
   }
 }

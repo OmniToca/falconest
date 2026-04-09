@@ -16,21 +16,28 @@ Future<void> processOfflineCompanyExpense(Map<String, dynamic> payload) async {
   final apartmentId = apartmentIdRaw.isNotEmpty ? apartmentIdRaw : null;
   final clientIdRaw = (payload['client_id']?.toString() ?? '').trim();
   final clientId = clientIdRaw.isNotEmpty ? clientIdRaw : null;
+  // PROČ: Neplatný payload nesmí vést k tišému smazání mutace z fronty.
   if (tenantId == null ||
       tenantId.isEmpty ||
       profileId == null ||
       profileId.isEmpty ||
       note.isEmpty) {
-    return;
+    throw Exception(
+      'processOfflineCompanyExpense: chybí tenant_id, profile_id nebo poznámka',
+    );
   }
   final amount = (amountRaw is num)
       ? amountRaw.toDouble()
       : (amountRaw != null ? double.tryParse(amountRaw.toString()) : null);
-  if (amount == null || amount <= 0) return;
+  if (amount == null || amount <= 0) {
+    throw Exception('processOfflineCompanyExpense: neplatná částka amount=$amountRaw');
+  }
 
   final receiptRaw = (payload['receipt_image_url']?.toString() ?? '').trim();
   final receiptImageUrl =
       receiptRaw.isNotEmpty ? receiptRaw : null;
+
+  final presetTx = (payload['transaction_id']?.toString() ?? '').trim();
 
   await CashWalletRepository.instance.recordCompanyExpense(
     tenantId: tenantId,
@@ -40,5 +47,6 @@ Future<void> processOfflineCompanyExpense(Map<String, dynamic> payload) async {
     receiptImageUrl: receiptImageUrl,
     apartmentId: apartmentId,
     clientId: clientId,
+    presetTransactionId: presetTx.isNotEmpty ? presetTx : null,
   );
 }

@@ -10,8 +10,8 @@ import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/models/client_model.dart';
 import 'package:falconest/core/offline/network_error_helper.dart';
 import 'package:falconest/core/providers/tenant_currency_provider.dart';
-import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
 import 'package:falconest/core/services/media_service.dart';
+import 'package:falconest/features/worker/widgets/submit_company_expense_worker.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/clients_provider.dart';
 
@@ -74,7 +74,8 @@ class _AddCompanyExpenseDialogState extends ConsumerState<AddCompanyExpenseDialo
         border: const OutlineInputBorder(),
       ),
       items: [
-        const DropdownMenuItem<String?>(value: null, child: Text('—')),
+        // PROČ: .tr() není konstantní výraz – položka nesmí být const.
+        DropdownMenuItem<String?>(value: null, child: Text('common.placeholder_dash'.tr())),
         ...clients.map((c) => DropdownMenuItem<String?>(
               value: c.id,
               child: Text(_clientDisplayName(c)),
@@ -211,9 +212,10 @@ class _AddCompanyExpenseDialogState extends ConsumerState<AddCompanyExpenseDialo
       }
     }
 
-    // KROK 2: Zápis výdaje do DB (s offline podporou přes recordCompanyExpense).
+    // KROK 2: Zápis výdaje – mobil Drift+fronta při výpadku, web přes repository.
     try {
-      await CashWalletRepository.instance.recordCompanyExpense(
+      await submitWorkerCompanyExpense(
+        ref: ref,
         tenantId: tenantId,
         profileId: profileId,
         amount: amount.abs(),
@@ -233,7 +235,7 @@ class _AddCompanyExpenseDialogState extends ConsumerState<AddCompanyExpenseDialo
         setState(() => _isSaving = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('worker.expense_save_error'.tr(namedArgs: {'error': e.toString()})),
+            content: Text('common.generic_error_user_friendly'.tr()),
           ),
         );
       }

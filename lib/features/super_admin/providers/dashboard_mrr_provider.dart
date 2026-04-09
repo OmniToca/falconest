@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
 import 'package:falconest/features/super_admin/providers/all_tenants_provider.dart';
 
@@ -36,7 +37,9 @@ Future<Map<String, Map<String, bool>>> _loadTenantModuleTrial() async {
       if (tenantId == null || tenantId.isEmpty || moduleId == null || moduleId.isEmpty) continue;
       result.putIfAbsent(tenantId, () => {})[moduleId] = map['is_trial'] == true;
     }
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('dashboard MRR: načtení tenant_modules pro trial stav selhalo', e, st);
+  }
   return result;
 }
 

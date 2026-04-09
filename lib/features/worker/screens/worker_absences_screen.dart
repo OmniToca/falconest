@@ -9,15 +9,52 @@ import 'package:falconest/features/worker/widgets/add_absence_dialog.dart';
 
 const _primaryBlue = Color(0xFF1565C0);
 
+/// Lokální filtr seznamu absencí – pouze UI; provider a Drift data zůstávají beze změny.
+enum _WorkerAbsenceListFilter {
+  all,
+  approved,
+  pendingOrRejected,
+}
+
 /// Obrazovka „Moje nepřítomnost“ – přehled vlastních dovolených a nemocí.
 ///
 /// Worker si může prohlédnout své budoucí i minulé záznamy a přidat novou
 /// žádost (dovolená, nemoc). Offline: zápis prochází přes MutationQueueService.
-class WorkerAbsencesScreen extends ConsumerWidget {
+class WorkerAbsencesScreen extends ConsumerStatefulWidget {
   const WorkerAbsencesScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<WorkerAbsencesScreen> createState() =>
+      _WorkerAbsencesScreenState();
+}
+
+class _WorkerAbsencesScreenState extends ConsumerState<WorkerAbsencesScreen> {
+  _WorkerAbsenceListFilter _filter = _WorkerAbsenceListFilter.all;
+
+  /// Aplikuje výběr filtru na již načtený seznam – bez dotazu do repozitáře.
+  List<StaffAbsence> _applyFilter(
+    List<StaffAbsence> list,
+    _WorkerAbsenceListFilter f,
+  ) {
+    switch (f) {
+      case _WorkerAbsenceListFilter.all:
+        return list;
+      case _WorkerAbsenceListFilter.approved:
+        return list.where((a) => a.isApproved).toList();
+      case _WorkerAbsenceListFilter.pendingOrRejected:
+        return list
+            .where(
+              (a) =>
+                  a.isPending ||
+                  (a.status != null &&
+                      a.status == staffAbsenceStatusRejected),
+            )
+            .toList();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final absencesAsync = ref.watch(workerAbsencesProvider);
 
     return Scaffold(
@@ -33,7 +70,7 @@ class WorkerAbsencesScreen extends ConsumerWidget {
         ),
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showAddAbsenceDialog(context, ref),
+        onPressed: _showAddAbsenceDialog,
         icon: const Icon(Icons.add),
         label: Text('worker.absence_add_button'.tr()),
         backgroundColor: _primaryBlue,
@@ -41,18 +78,72 @@ class WorkerAbsencesScreen extends ConsumerWidget {
       body: absencesAsync.when(
         data: (list) {
           if (list.isEmpty) {
-            return _EmptyState(onAddTap: () => _showAddAbsenceDialog(context, ref));
+            return _EmptyState(onAddTap: _showAddAbsenceDialog);
           }
-          return RefreshIndicator(
-            onRefresh: () async => ref.invalidate(workerAbsencesProvider),
-            child: ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: list.length,
-              itemBuilder: (context, i) {
-                final a = list[i];
-                return _AbsenceCard(absence: a);
-              },
-            ),
+          final filtered = _applyFilter(list, _filter);
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                child: SegmentedButton<_WorkerAbsenceListFilter>(
+                  segments: [
+                    ButtonSegment<_WorkerAbsenceListFilter>(
+                      value: _WorkerAbsenceListFilter.all,
+                      label: Text('worker.absences_filter_all'.tr()),
+                      icon: const Icon(Icons.list_alt, size: 18),
+                    ),
+                    ButtonSegment<_WorkerAbsenceListFilter>(
+                      value: _WorkerAbsenceListFilter.approved,
+                      label: Text('worker.absences_filter_approved'.tr()),
+                      icon: const Icon(Icons.check_circle_outline, size: 18),
+                    ),
+                    ButtonSegment<_WorkerAbsenceListFilter>(
+                      value: _WorkerAbsenceListFilter.pendingOrRejected,
+                      label: Text(
+                        'worker.absences_filter_pending_rejected'.tr(),
+                        maxLines: 2,
+                        textAlign: TextAlign.center,
+                      ),
+                      icon: const Icon(Icons.hourglass_top_outlined, size: 18),
+                    ),
+                  ],
+                  selected: {_filter},
+                  onSelectionChanged: (s) {
+                    if (s.isEmpty) return;
+                    setState(() => _filter = s.first);
+                  },
+                ),
+              ),
+              Expanded(
+                child: filtered.isEmpty
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Text(
+                            'worker.absences_filter_empty'.tr(),
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.grey.shade700,
+                              fontSize: 15,
+                            ),
+                          ),
+                        ),
+                      )
+                    : RefreshIndicator(
+                        onRefresh: () async =>
+                            ref.invalidate(workerAbsencesProvider),
+                        child: ListView.builder(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                          itemCount: filtered.length,
+                          itemBuilder: (context, i) {
+                            final a = filtered[i];
+                            return _AbsenceCard(absence: a);
+                          },
+                        ),
+                      ),
+              ),
+            ],
           );
         },
         loading: () => const Center(child: CircularProgressIndicator()),
@@ -65,7 +156,7 @@ class WorkerAbsencesScreen extends ConsumerWidget {
                 Icon(Icons.error_outline, size: 48, color: Colors.red.shade400),
                 const SizedBox(height: 16),
                 Text(
-                  'common.error_with_message'.tr(namedArgs: {'message': '$e'}),
+                  'common.generic_error_user_friendly'.tr(),
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.grey.shade700),
                 ),
@@ -83,7 +174,7 @@ class WorkerAbsencesScreen extends ConsumerWidget {
     );
   }
 
-  void _showAddAbsenceDialog(BuildContext context, WidgetRef ref) {
+  void _showAddAbsenceDialog() {
     showDialog<void>(
       context: context,
       builder: (ctx) => AddAbsenceDialog(
@@ -103,8 +194,8 @@ class _AbsenceCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final from = absence.startDate != null ? formatAbsenceDate(absence.startDate!) : '—';
-    final to = absence.endDate != null ? formatAbsenceDate(absence.endDate!) : '—';
+    final from = absence.startDate != null ? formatAbsenceDate(absence.startDate!) : 'common.placeholder_dash'.tr();
+    final to = absence.endDate != null ? formatAbsenceDate(absence.endDate!) : 'common.placeholder_dash'.tr();
     // Důvod: buď lokalizovaný klíč (vacation, sick, other) nebo volný text z Adminu.
     final String reason;
     switch (absence.reason?.toLowerCase()) {

@@ -2,9 +2,8 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:falconest/core/auth/auth_provider.dart';
-import 'package:falconest/core/presentation/widgets/app_card.dart';
 import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
+import 'package:falconest/core/theme/premium_card_decoration.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/features/admin/screens/admin_settlements_screen.dart';
 import 'package:falconest/features/admin/screens/finance_billing_screen.dart';
@@ -44,7 +43,9 @@ class _FinanceDashboardScreenState extends ConsumerState<FinanceDashboardScreen>
   @override
   Widget build(BuildContext context) {
     final walletsAsync = ref.watch(employeeCashWalletsProvider);
-    ref.watch(activeModuleKeysProvider); // Rebuild při aktivaci/deaktivaci modulů
+    ref.watch(
+      activeModuleKeysProvider,
+    ); // Rebuild při aktivaci/deaktivaci modulů
     final hasExport = isModuleActive(ref, 'finance_export');
     final hasSettlements = isModuleActive(ref, 'settlements');
     final requestedSubTab = ref.watch(financeRequestedSubTabProvider);
@@ -68,9 +69,9 @@ class _FinanceDashboardScreenState extends ConsumerState<FinanceDashboardScreen>
             padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
             child: Text(
               'admin.finance.dashboard_title'.tr(),
-              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold),
             ),
           ),
           // TabBar: Zaměstnanecká pokladna | Vyúčtování | Podklady pro fakturaci
@@ -78,16 +79,8 @@ class _FinanceDashboardScreenState extends ConsumerState<FinanceDashboardScreen>
             controller: _tabController,
             tabs: [
               Tab(text: 'admin.finance.title'.tr()),
-              Tab(
-                child: _SettlementsTabLabel(
-                  isActive: hasSettlements,
-                ),
-              ),
-              Tab(
-                child: _FinanceExportTabLabel(
-                  isActive: hasExport,
-                ),
-              ),
+              Tab(child: _SettlementsTabLabel(isActive: hasSettlements)),
+              Tab(child: _FinanceExportTabLabel(isActive: hasExport)),
             ],
           ),
           Expanded(
@@ -170,26 +163,22 @@ class _FinanceExportLockedPlaceholder extends StatelessWidget {
                 color: Colors.grey.shade200,
                 shape: BoxShape.circle,
               ),
-              child: Icon(
-                Icons.lock,
-                size: 64,
-                color: Colors.grey.shade600,
-              ),
+              child: Icon(Icons.lock, size: 64, color: Colors.grey.shade600),
             ),
             const SizedBox(height: 24),
             Text(
               'admin.module_finance_export_upsell_title'.tr(),
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 12),
             Text(
               'admin.module_finance_export_upsell_desc'.tr(),
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: Colors.grey.shade700,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(color: Colors.grey.shade700),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 32),
@@ -229,26 +218,22 @@ class _SettlementsLockedPlaceholder extends StatelessWidget {
                 color: Colors.grey.shade200,
                 shape: BoxShape.circle,
               ),
-              child: Icon(
-                Icons.lock,
-                size: 64,
-                color: Colors.grey.shade600,
-              ),
+              child: Icon(Icons.lock, size: 64, color: Colors.grey.shade600),
             ),
             const SizedBox(height: 24),
             Text(
               'admin.upsell.settlements.title'.tr(),
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 12),
             Text(
               'admin.upsell.settlements.description'.tr(),
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: Colors.grey.shade700,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(color: Colors.grey.shade700),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 32),
@@ -287,9 +272,9 @@ class _WalletsTabContent extends ConsumerWidget {
             padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
             child: Text(
               'admin.finance.subtitle'.tr(),
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: Colors.grey.shade700,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(color: Colors.grey.shade700),
             ),
           ),
         ),
@@ -301,7 +286,9 @@ class _WalletsTabContent extends ConsumerWidget {
                 await resolveFailedCashCollection(ref, taskId);
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('admin.finance.resolve_success'.tr())),
+                    SnackBar(
+                      content: Text('admin.finance.resolve_success'.tr()),
+                    ),
                   );
                 }
               } catch (e) {
@@ -315,140 +302,99 @@ class _WalletsTabContent extends ConsumerWidget {
           ),
         ),
         walletsAsync.when(
-            data: (wallets) {
-              if (wallets.isEmpty) {
-                return SliverFillRemaining(
-                  child: Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.account_balance_wallet_outlined, size: 64, color: Colors.grey.shade400),
-                        const SizedBox(height: 16),
-                        Text(
-                          'admin.finance.empty'.tr(),
-                          style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Colors.grey.shade600),
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }
-              final withDebt = wallets.where((w) => w.balance > 0).toList();
-              final sorted = [...withDebt, ...wallets.where((w) => w.balance <= 0)];
-              return SliverList(
-                delegate: SliverChildBuilderDelegate(
-                  (context, index) {
-                    final row = sorted[index];
-                    return _WalletCard(
-                      row: row,
-                      formattedBalance: formatWalletAmount(context, ref, row.balance),
-                      onTap: () {
-                        WalletDetailModal.show(
-                          context,
-                          walletId: row.id,
-                          workerName: row.workerName,
-                        );
-                      },
-                      onReceiveCash: () => _showReceiveCashDialog(
-                        context: context,
-                        ref: ref,
-                        row: row,
+          data: (wallets) {
+            if (wallets.isEmpty) {
+              return SliverFillRemaining(
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.account_balance_wallet_outlined,
+                        size: 64,
+                        color: Colors.grey.shade400,
                       ),
-                    );
-                  },
-                  childCount: sorted.length,
+                      const SizedBox(height: 16),
+                      Text(
+                        'admin.finance.empty'.tr(),
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          color: Colors.grey.shade600,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
                 ),
               );
-            },
-            loading: () => const SliverFillRemaining(
-              child: Center(child: CircularProgressIndicator()),
-            ),
-            error: (e, _) => SliverFillRemaining(
-              child: Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
-                    const SizedBox(height: 16),
-                    Text(
-                      'admin.finance.load_error'.tr(),
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    ),
-                  ],
-                ),
+            }
+            final withDebt = wallets.where((w) => w.balance > 0).toList();
+            final sorted = [
+              ...withDebt,
+              ...wallets.where((w) => w.balance <= 0),
+            ];
+            return SliverList(
+              delegate: SliverChildBuilderDelegate((context, index) {
+                final row = sorted[index];
+                return _WalletCard(
+                  row: row,
+                  formattedBalance: formatWalletAmount(
+                    context,
+                    ref,
+                    row.balance,
+                  ),
+                  onTap: () {
+                    WalletDetailModal.show(
+                      context,
+                      walletId: row.id,
+                      workerName: row.workerName,
+                    );
+                  },
+                  onReceiveCash: () => _showReceiveCashDialog(
+                    context: context,
+                    ref: ref,
+                    row: row,
+                  ),
+                );
+              }, childCount: sorted.length),
+            );
+          },
+          loading: () => const SliverFillRemaining(
+            child: Center(child: CircularProgressIndicator()),
+          ),
+          error: (e, _) => SliverFillRemaining(
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.error_outline,
+                    size: 48,
+                    color: Colors.red.shade700,
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'admin.finance.load_error'.tr(),
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                ],
               ),
             ),
           ),
-          const SliverToBoxAdapter(child: SizedBox(height: 24)),
-        ],
-      );
+        ),
+        const SliverToBoxAdapter(child: SizedBox(height: 24)),
+      ],
+    );
   }
 }
 
-/// Zobrazí dialog pro potvrzení převzetí hotovosti od zaměstnance.
+/// Zobrazí dialog pro převzetí hotovosti (částečný nebo celý výběr) – deleguje na WalletDetailModal.
 void _showReceiveCashDialog({
   required BuildContext context,
   required WidgetRef ref,
   required EmployeeCashWalletRow row,
 }) {
-    final formatted = formatWalletAmount(context, ref, row.balance);
-
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('admin.finance.receive_confirm_title'.tr()),
-        content: Text(
-          'admin.finance.receive_confirm_message'.tr(
-            namedArgs: {'balance': formatted},
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: Text('common.cancel'.tr()),
-          ),
-          FilledButton(
-            onPressed: () async {
-              Navigator.of(ctx).pop();
-              final tenantId = ref.read(authNotifierProvider).tenantIdForData;
-              final adminProfileId = ref.read(authNotifierProvider).state.profileId;
-              if (tenantId == null || tenantId.isEmpty || adminProfileId == null || adminProfileId.isEmpty) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('admin.finance.receive_error_missing'.tr())),
-                  );
-                }
-                return;
-              }
-              try {
-                await CashWalletRepository.instance.receiveCashFromWorker(
-                  walletId: row.id,
-                  workerProfileId: row.profileId,
-                  amountToClear: row.balance,
-                  adminProfileId: adminProfileId,
-                  tenantId: tenantId,
-                );
-                ref.invalidate(employeeCashWalletsProvider);
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('admin.finance.receive_success'.tr())),
-                  );
-                }
-              } catch (e) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('admin.finance.receive_error'.tr())),
-                  );
-                }
-              }
-            },
-            child: Text('admin.finance.receive_btn_confirm'.tr()),
-          ),
-        ],
-      ),
-    );
+  WalletDetailModal.showReceiveCashDialog(context, ref, row);
 }
 
 /// Sekce kritických alertů: Zobrazuje úkoly, kde pracovník v terénu nepotvrdil výběr hotovosti.
@@ -480,17 +426,19 @@ class _FailedCashAlertsSection extends ConsumerWidget {
                 child: Text(
                   'admin.finance.alerts_title'.tr(),
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.orange.shade900,
-                      ),
+                    fontWeight: FontWeight.bold,
+                    color: Colors.orange.shade900,
+                  ),
                 ),
               ),
-              ...rows.map((r) => _FailedCashAlertCard(
-                    row: r,
-                    onResolve: () => onResolve(r.taskId),
-                    formatAmount: (v) => formatWalletAmount(context, ref, v),
-                    formatDate: (d) => formatTransactionDate(context, d),
-                  )),
+              ...rows.map(
+                (r) => _FailedCashAlertCard(
+                  row: r,
+                  onResolve: () => onResolve(r.taskId),
+                  formatAmount: (v) => formatWalletAmount(context, ref, v),
+                  formatDate: (d) => formatTransactionDate(context, d),
+                ),
+              ),
             ],
           ),
         );
@@ -520,35 +468,44 @@ class _FailedCashAlertCard extends StatelessWidget {
     final formattedAmount = formatAmount(row.amountToCollect);
     final formattedDate = row.completedAt != null
         ? formatDate(row.completedAt!)
-        : '—';
+        : 'common.placeholder_dash'.tr();
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-      child: AppCard(
-        padding: EdgeInsets.zero,
+      child: premiumCardShell(
+        context,
         child: ListTile(
-        title: Text(
-          'admin.finance.alert_task_info'.tr(
-            namedArgs: {
-              'taskTitle': row.taskTitle,
-              'workerName': row.workerName,
-            },
+          title: Text(
+            'admin.finance.alert_task_info'.tr(
+              namedArgs: {
+                'taskTitle': row.taskTitle,
+                'workerName': row.workerName,
+              },
+            ),
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
           ),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'admin.finance.alert_amount'.tr(
+                  namedArgs: {'amount': formattedAmount},
+                ),
+              ),
+              Text(
+                formattedDate,
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              ),
+            ],
+          ),
+          trailing: FilledButton(
+            onPressed: onResolve,
+            child: Text('admin.finance.btn_resolve'.tr()),
+          ),
+          isThreeLine: true,
         ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('admin.finance.alert_amount'.tr(namedArgs: {'amount': formattedAmount})),
-            Text(formattedDate, style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
-          ],
-        ),
-        trailing: FilledButton(
-          onPressed: onResolve,
-          child: Text('admin.finance.btn_resolve'.tr()),
-        ),
-        isThreeLine: true,
-      ),
       ),
     );
   }
@@ -575,10 +532,10 @@ class _WalletCard extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
-      child: InkWell(
+      child: premiumCardShell(
+        context,
         onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: AppCard(
+        child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
             children: [
@@ -589,17 +546,21 @@ class _WalletCard extends StatelessWidget {
                     Text(
                       row.workerName,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w600,
-                            color: hasDebt ? Colors.red.shade900 : null,
-                          ),
+                        fontWeight: FontWeight.w600,
+                        color: hasDebt ? Colors.red.shade900 : null,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 4),
                     Text(
                       formattedBalance,
                       style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            color: hasDebt ? Colors.red.shade800 : Colors.green.shade800,
-                          ),
+                        fontWeight: FontWeight.bold,
+                        color: hasDebt
+                            ? Colors.red.shade800
+                            : Colors.green.shade800,
+                      ),
                     ),
                   ],
                 ),

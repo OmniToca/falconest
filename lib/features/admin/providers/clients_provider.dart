@@ -6,30 +6,31 @@ import 'package:falconest/core/models/client_model.dart';
 import 'package:falconest/core/repositories/client/client_repository.dart';
 import 'package:falconest/core/repositories/settlements/settlement_repository.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/geo_json_point.dart';
 
-/// Příznak, zda se načítá další stránka (nekonečný scroll).
-/// Notifier ho nastavuje v loadMore() pro zobrazení indikátoru na konci seznamu.
-final clientsLoadingMoreProvider = StateProvider<bool>((ref) => false);
+/// Příznak „načítám další stránku“ pro konkrétní záložku CRM (nekonečný scroll).
+final clientsLoadingMoreByTabProvider =
+    StateProvider.family<bool, ClientPaginatedFilterKind>((ref, _) => false);
 
-/// Notifier pro stránkovaný seznam klientů se server-side vyhledáváním.
+/// Notifier: stránkovaný seznam klientů pro jednu záložku (owner / agency / external).
 ///
-/// PROČ: Při 1000+ klientech nelze stahovat všechny naráz. build() načte první stránku,
-/// loadMore() připojuje další, search(query) resetuje a načte s filtrem.
-class PaginatedClientsNotifier extends AsyncNotifier<List<ClientModel>> {
+/// PROČ FamilyAsyncNotifier: Každá záložka má vlastní offset, _hasMore a výsledek dotazu
+/// s filtrem client_type na Supabase – žádné dělení jedné odpovědi v paměti.
+class PaginatedClientsByTabNotifier
+    extends FamilyAsyncNotifier<List<ClientModel>, ClientPaginatedFilterKind> {
+  late ClientPaginatedFilterKind _tabKind;
   int _offset = 0;
   static const int _limit = 50;
   bool _hasMore = true;
   String _searchQuery = '';
 
-  @override
-  Future<List<ClientModel>> build() async {
-    _offset = 0;
-    _hasMore = true;
+  Future<List<ClientModel>> _reloadFirstPage() async {
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     if (tenantId == null || tenantId.isEmpty) return [];
 
     final list = await ClientRepository.getPaginatedClients(
       tenantId,
+      typeTab: _tabKind,
       limit: _limit,
       offset: 0,
       searchQuery: _searchQuery.isEmpty ? null : _searchQuery,
@@ -39,17 +40,23 @@ class PaginatedClientsNotifier extends AsyncNotifier<List<ClientModel>> {
     return list;
   }
 
-  /// Načte další stránku a připojí ji k aktuálnímu seznamu.
-  /// Volá se při scrollu ke konci seznamu. Pokud _hasMore je false, nic nedělá.
+  @override
+  Future<List<ClientModel>> build(ClientPaginatedFilterKind tabKind) async {
+    _tabKind = tabKind;
+    return _reloadFirstPage();
+  }
+
+  /// Další stránka stejného typu + stejného vyhledávání (server-side FTS na search_vector).
   Future<void> loadMore() async {
     if (!_hasMore) return;
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     if (tenantId == null || tenantId.isEmpty) return;
 
-    ref.read(clientsLoadingMoreProvider.notifier).state = true;
+    ref.read(clientsLoadingMoreByTabProvider(_tabKind).notifier).state = true;
     try {
       final list = await ClientRepository.getPaginatedClients(
         tenantId,
+        typeTab: _tabKind,
         limit: _limit,
         offset: _offset,
         searchQuery: _searchQuery.isEmpty ? null : _searchQuery,
@@ -62,42 +69,67 @@ class PaginatedClientsNotifier extends AsyncNotifier<List<ClientModel>> {
         this.state = AsyncValue.data([...state.value!, ...list]);
       }
     } finally {
-      ref.read(clientsLoadingMoreProvider.notifier).state = false;
+      ref.read(clientsLoadingMoreByTabProvider(_tabKind).notifier).state = false;
     }
   }
 
-  /// Server-side vyhledávání: reset offsetu, nastaví dotaz a načte první stránku.
-  /// Volá se z UI s debounce (např. 500 ms po posledním stisku).
+  /// Stejný vyhledávací řetězec se aplikuje na všechny záložky z UI (debounce v obrazovce).
   Future<void> search(String query) async {
     _searchQuery = query.trim();
-    _offset = 0;
-    _hasMore = true;
     state = const AsyncValue.loading();
-    state = await AsyncValue.guard(() => build());
+    state = await AsyncValue.guard(_reloadFirstPage);
   }
 }
 
-/// Provider stránkovaného seznamu klientů pro obrazovku Klienti.
-///
-/// Používá PaginatedClientsNotifier – build() načte první stránku, loadMore() a search()
-/// volá UI. ref.watch(clientsProvider) vrací AsyncValue<List<ClientModel>>.
-/// Ostatní obrazovky (dropdowny, detail) používají [clientsFullListProvider].
-final clientsProvider =
-    AsyncNotifierProvider<PaginatedClientsNotifier, List<ClientModel>>(
-  PaginatedClientsNotifier.new,
-);
+/// Stránkovaní klienti pro záložku CRM – filtr `client_type` je v Supabase dotazu.
+final paginatedClientsByTabProvider = AsyncNotifierProvider.family<
+    PaginatedClientsByTabNotifier,
+    List<ClientModel>,
+    ClientPaginatedFilterKind>(PaginatedClientsByTabNotifier.new);
+
+/// Mapa id → jméno pouze u klientů typu agency (lehký dotaz pro řádky „doporučila agentura …“).
+final agencyNamesMapProvider = FutureProvider<Map<String, String>>((ref) async {
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return {};
+  return ClientRepository.fetchAgencyIdNameMap(tenantId);
+});
+
+/// Počet externích klientů s danou agenturou v poli agency_id (COUNT na serveru).
+final recommendedClientsCountByAgencyProvider =
+    FutureProvider.autoDispose.family<int, String>((ref, agencyId) async {
+  if (agencyId.trim().isEmpty) return 0;
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return 0;
+  return ClientRepository.countClientsRecommendedByAgency(tenantId, agencyId);
+});
+
+/// Plný seznam doporučených klientů – jen záložka detailu agentury (lazy).
+final clientsRecommendedListByAgencyProvider =
+    FutureProvider.autoDispose.family<List<ClientModel>, String>((ref, agencyId) async {
+  if (agencyId.trim().isEmpty) return [];
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return [];
+  return ClientRepository.fetchClientsRecommendedByAgency(tenantId, agencyId);
+});
+
+/// Invalidace všech tří stránkovaných záložek + sdílených CRM cache po změně dat.
+void invalidatePaginatedClientTabs(WidgetRef ref) {
+  for (final k in ClientPaginatedFilterKind.values) {
+    ref.invalidate(paginatedClientsByTabProvider(k));
+  }
+}
 
 /// Plný seznam klientů (až 500) pro dropdowny a jiné moduly.
 ///
 /// PROČ: Formuláře (výběr klienta, doporučující agentura) potřebují seznam klientů;
-/// stránkovaný provider vrací jen načtené stránky. Tento provider načte jedním dotazem
-/// až 500 záznamů bez vyhledávání – pro výběr z dropdownu stačí.
+/// stránkované záložky vracejí jen jeden typ. Tento provider načte až 500 záznamů bez filtru typu.
 final clientsFullListProvider = FutureProvider<List<ClientModel>>((ref) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];
 
   final list = await ClientRepository.getPaginatedClients(
     tenantId,
+    typeTab: null,
     limit: 500,
     offset: 0,
     searchQuery: null,
@@ -150,8 +182,11 @@ final updateClientProvider = Provider<Future<void> Function(ClientModel client)>
       if (client.email != null) 'email': client.email,
       if (client.phone != null) 'phone': client.phone,
       if (client.clientType != null) 'client_type': client.clientType,
+      if (client.languageCode != null) 'language_code': client.languageCode,
       'profile_id': client.profileId,
       'agency_id': client.agencyId,
+      // PROČ: Explicitně posíláme null, aby dispečer mohl geolokaci v CRM smazat.
+      'geo_location': GeoJsonPoint.toPostgrestJson(client.latitude, client.longitude),
     };
 
     await SupabaseService.safeFrom('clients', tenantId)
@@ -171,8 +206,10 @@ final clientPortalStatusProvider =
     FutureProvider.autoDispose.family<Map<String, dynamic>?, String>((ref, profileId) async {
   if (profileId.isEmpty) return null;
 
-  final res = await SupabaseService.client
-      .from('profiles')
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return null;
+
+  final res = await SupabaseService.safeFrom('profiles', tenantId)
       .select('status, last_sign_in_at')
       .eq('id', profileId)
       .maybeSingle();
@@ -215,27 +252,6 @@ final clientAddressesProvider =
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty || clientId.isEmpty) return [];
   return ClientRepository.fetchAddressesForClient(tenantId, clientId);
-});
-
-/// Provider: seznam externích klientů doporučených danou agenturou.
-///
-/// PROČ: Tab "Doporučení klienti" u detailu agentury – zobrazí klienty s agency_id =
-/// ID této agentury. Slouží pro přehled, kdo nám klienta přivedl.
-final clientsRecommendedByAgencyProvider =
-    FutureProvider.autoDispose.family<List<ClientModel>, String>((ref, agencyId) async {
-  if (agencyId.trim().isEmpty) return [];
-  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
-  if (tenantId == null || tenantId.isEmpty) return [];
-
-  final response = await SupabaseService.safeFrom('clients', tenantId)
-      .select('id, tenant_id, name, email, phone, client_type, profile_id, agency_id, created_at, deleted_at')
-      .eq('agency_id', agencyId)
-      .isFilter('deleted_at', null)
-      .order('name');
-
-  return (response as List)
-      .map((e) => ClientModel.fromJson(e as Map<String, dynamic>))
-      .toList();
 });
 
 /// Provider pro soft delete klienta – nastaví deleted_at.

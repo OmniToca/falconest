@@ -4,118 +4,55 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
-import 'package:falconest/features/worker/widgets/task_countdown_timer.dart';
-import 'package:falconest/features/worker/widgets/worker_task_shared_header.dart';
 import 'package:falconest/features/worker/widgets/issue_reporter_dialog.dart';
-import 'package:falconest/features/worker/widgets/task_complete_with_photo_section.dart';
+import 'package:falconest/features/worker/widgets/worker_task_shared_header.dart';
 
-/// MVP obrazovka pro úkoly typu Závada/Údržba.
-/// Jednoduché zobrazení dat a tlačítko Dokončit.
-class IssueTaskScreen extends ConsumerWidget {
-  const IssueTaskScreen({super.key, required this.taskId});
+/// Obsah scrollu pro závadu – bez Scaffold.
+abstract final class IssueTaskScreen {
+  IssueTaskScreen._();
 
-  final String taskId;
+  static const Color backgroundColor = Color(0xFFFFEBEE);
 
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final detailAsync = ref.watch(workerTaskDetailProvider(taskId));
-
-    return detailAsync.when(
-      data: (detail) {
-        if (detail == null) {
-          return Scaffold(
-            body: Center(child: Text('worker.task_detail_not_found'.tr())),
+  static List<Widget> buildAppBarActions(
+    BuildContext context,
+    WidgetRef ref,
+    WorkerTaskDetail detail,
+  ) {
+    return [
+      IconButton(
+        icon: const Icon(Icons.report_problem_outlined),
+        onPressed: () {
+          final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+          if (tenantId == null || tenantId.isEmpty) return;
+          showDialog(
+            context: context,
+            builder: (ctx) => IssueReporterDialog(
+              tenantId: tenantId,
+              apartmentId: detail.apartmentId,
+            ),
           );
-        }
-        return Scaffold(
-          backgroundColor: const Color(0xFFFFEBEE),
-          appBar: AppBar(
-            title: Text(
-              _appBarTitle(detail),
-              style: const TextStyle(color: Colors.black87),
-            ),
-            backgroundColor: Colors.transparent,
-            foregroundColor: Colors.black87,
-            elevation: 0,
-            iconTheme: const IconThemeData(color: Colors.black87),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.report_problem_outlined),
-                onPressed: () {
-                  final tenantId = ref.read(authNotifierProvider).tenantIdForData;
-                  if (tenantId == null || tenantId.isEmpty) return;
-                  showDialog(
-                    context: context,
-                    builder: (ctx) => IssueReporterDialog(
-                      tenantId: tenantId,
-                      apartmentId: detail.apartmentId,
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-          body: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        WorkerTaskSharedHeader(
-                          title: detail.title.isNotEmpty ? detail.title : detail.apartmentName ?? '—',
-                          scheduledStart: detail.scheduledStart,
-                          apartmentAddress: detail.apartmentAddress,
-                          startedAt: detail.startedAt,
-                          completedAt: detail.completedAt,
-                          estimatedMinutes: parseTaskEstimateMinutes(
-                            detail.description,
-                            detail.metadata,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        // PROČ: Kód schránky – údržbář potřebuje vstup do bytu.
-                        ..._buildKeyboxCard(detail.keybox),
-                        // PROČ: Popis závady z description – hlavní info o problému v odlišené kartě.
-                        ..._buildIssueDescriptionCard(detail.description),
-                        // Poznámka z metadat (custom_note) – doplňující info.
-                        ..._buildIssueMetadata(detail.metadata ?? {}),
-                        const SizedBox(height: 12),
-                        // PROČ: Placeholder pro fotografie – připraveno pro v2.0, zatím jen "žádná fotka".
-                        _buildPhotoPlaceholderCard(),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TaskCompleteWithPhotoSection(
-                  taskId: taskId,
-                  detail: detail,
-                  finishKey: 'worker.task_detail_resolved',
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-      loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
-      error: (_, _) => Scaffold(
-        body: Center(child: Text('worker.task_detail_not_found'.tr())),
+        },
       ),
-    );
+    ];
   }
 
-  static String _appBarTitle(dynamic detail) {
-    final base = detail.title.isNotEmpty ? detail.title : (detail.apartmentName ?? '—');
-    final ref = detail.referenceNumber?.trim();
-    return (ref != null && ref.isNotEmpty) ? '$base • #$ref' : base;
+  static List<Widget> buildScrollChildren(WorkerTaskDetail detail) {
+    return [
+      WorkerTaskAddressContextBar(
+        address: detail.displayAddress,
+        latitude: detail.latitude,
+        longitude: detail.longitude,
+      ),
+      const SizedBox(height: 12),
+      ..._buildKeyboxCard(detail.keybox),
+      ..._buildIssueDescriptionCard(detail.description),
+      ..._buildIssueMetadata(detail.metadata ?? {}),
+      const SizedBox(height: 12),
+      _buildPhotoPlaceholderCard(),
+    ];
   }
 
-  /// Karta s kódem schránky – stejný styl jako Transfer (modré pozadí).
-  List<Widget> _buildKeyboxCard(String? keybox) {
+  static List<Widget> _buildKeyboxCard(String? keybox) {
     final code = keybox?.trim();
     if (code == null || code.isEmpty) return [];
 
@@ -152,8 +89,7 @@ class IssueTaskScreen extends ConsumerWidget {
     ];
   }
 
-  /// Karta popisu závady – červeno/oranžové pozadí, ikona wrench (problém k řešení).
-  List<Widget> _buildIssueDescriptionCard(String description) {
+  static List<Widget> _buildIssueDescriptionCard(String description) {
     final text = description.trim();
     if (text.isEmpty) return [];
 
@@ -190,8 +126,7 @@ class IssueTaskScreen extends ConsumerWidget {
     ];
   }
 
-  /// Placeholder pro fotografie závady – připraveno pro v2.0, zatím jen "žádná fotka".
-  Widget _buildPhotoPlaceholderCard() {
+  static Widget _buildPhotoPlaceholderCard() {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -225,8 +160,7 @@ class IssueTaskScreen extends ConsumerWidget {
     );
   }
 
-  /// Vykreslení metadat pro Závada/Údržbu – custom_note (doplňující popis).
-  List<Widget> _buildIssueMetadata(Map<String, dynamic> meta) {
+  static List<Widget> _buildIssueMetadata(Map<String, dynamic> meta) {
     final note = meta['custom_note'];
     final noteText = note is String ? note.trim() : (note?.toString().trim() ?? '');
     if (noteText.isEmpty) return [];
@@ -237,7 +171,7 @@ class IssueTaskScreen extends ConsumerWidget {
     ];
   }
 
-  Widget _buildCustomNoteCard(String text, {IconData icon = Icons.note_outlined}) {
+  static Widget _buildCustomNoteCard(String text, {IconData icon = Icons.note_outlined}) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(

@@ -8,21 +8,27 @@ import 'package:flutter/material.dart';
 ///
 /// [title] – hlavní nadpis (např. "Petr Sokol", "Úklid bytu 3A").
 /// [scheduledStart] – plánovaný začátek úkolu; při null se řádek s hodinami nezobrazí.
+/// [showTitle] / [showScheduledRow] – PROČ: Master layout detailu úkolu přesunul nadpis a čas do AppBar
+/// a sticky lišty; typové obrazovky pak mohou skrýt duplicitní velké nadpisy, ale ponechat kontext.
 class TaskHeaderWidget extends StatelessWidget {
   const TaskHeaderWidget({
     super.key,
     required this.title,
     this.scheduledStart,
+    this.showTitle = true,
+    this.showScheduledRow = true,
   });
 
   final String title;
   final DateTime? scheduledStart;
+  final bool showTitle;
+  final bool showScheduledRow;
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
+    final children = <Widget>[];
+    if (showTitle) {
+      children.add(
         Text(
           title,
           style: const TextStyle(
@@ -31,9 +37,18 @@ class TaskHeaderWidget extends StatelessWidget {
             color: Colors.black87,
           ),
         ),
-        const SizedBox(height: 12),
-        _buildScheduledTimeRow(scheduledStart),
-      ],
+      );
+      if (showScheduledRow && scheduledStart != null) {
+        children.add(const SizedBox(height: 12));
+      }
+    }
+    if (showScheduledRow) {
+      children.add(_buildScheduledTimeRow(scheduledStart));
+    }
+    if (children.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: children,
     );
   }
 

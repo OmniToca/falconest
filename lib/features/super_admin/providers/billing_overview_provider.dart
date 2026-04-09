@@ -1,7 +1,11 @@
+import 'dart:math' as math;
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/providers/platform_messaging_rates_provider.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
 import 'package:falconest/features/super_admin/providers/all_tenants_provider.dart';
 
@@ -82,7 +86,9 @@ Future<Map<String, Map<String, ({bool isTrial, bool cancelAtPeriodEnd})>>> _load
         cancelAtPeriodEnd: map['cancel_at_period_end'] == true,
       );
     }
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('billing_overview: _loadTenantModuleBillingInfo selhalo', e, st);
+  }
   return result;
 }
 
@@ -92,6 +98,48 @@ bool _isModuleValid(Object? validUntilRaw, Object? trialEndsAtRaw, DateTime now)
   if (validUntil != null && validUntil.isBefore(now)) return false;
   if (trialEndsAt != null && trialEndsAt.isBefore(now)) return false;
   return true;
+}
+
+/// Načte spotřebu SMS/WA (proxy přes `sent_count`) pro aktuální fakturační měsíc.
+///
+/// Důležité:
+/// - `tenant_usage_monthly` agreguje `sent_count` zvlášť pro `channel`.
+/// - Pro fakturaci overage chceme sečíst `sms` + `whatsapp` dohromady.
+/// - Tento dotaz děláme jednou pro všechny tenanti, aby hlavní smyčka
+///   nevolala DB pro každý tenant zvlášť (lepší výkon).
+Future<Map<String, int>> _loadTenantSmsUsage(DateTime nowUtc) async {
+  // Formát `YYYY-MM` – přesně jak je definováno v DB/migraci.
+  final billingMonth = '${nowUtc.year.toString().padLeft(4, '0')}-${nowUtc.month.toString().padLeft(2, '0')}';
+
+  final smsUsageByTenant = <String, int>{};
+
+  try {
+    final res = await SupabaseService.client
+        .from('tenant_usage_monthly')
+        .select('tenant_id, channel, sent_count')
+        .eq('billing_month', billingMonth)
+        // Overages zcela odpovídají požadavku PO: `sms` + `whatsapp`.
+        .inFilter('channel', ['sms', 'whatsapp']);
+
+    final list = res as List<dynamic>;
+    for (final e in list) {
+      final map = e is Map ? e as Map<String, dynamic> : null;
+      if (map == null) continue;
+
+      final tenantId = (map['tenant_id'] as String?)?.trim() ?? '';
+      if (tenantId.isEmpty) continue;
+
+      final sentRaw = map['sent_count'];
+      final sentCount = sentRaw is int ? sentRaw : (sentRaw is num ? sentRaw.toInt() : 0);
+      smsUsageByTenant[tenantId] = (smsUsageByTenant[tenantId] ?? 0) + sentCount;
+    }
+  } catch (e, st) {
+    // Pokud se spotřeba nepodaří načíst, raději nevystavíme fakturaci s chybou.
+    // Všechny tenanti pak budou bez overage položky.
+    AppLogger.error('_loadSmsUsageByTenantForMonth: načtení tenant_message_log selhalo', e, st);
+  }
+
+  return smsUsageByTenant;
 }
 
 /// Provider: přehled fakturace pro Super Admina – sjednocená matematika s dashboard_mrr_provider.
@@ -117,9 +165,14 @@ final billingOverviewProvider = FutureProvider<List<TenantBillingRow>>((ref) asy
 
   if (items.isEmpty) return [];
 
+  // PROČ: Jednotková cena za „SMS jednotku“ v overage musí odpovídat tarifu v DB (stejně jako dispatch).
+  final messagingRates = await ref.watch(platformMessagingRatesProvider.future);
+
   final tenantModuleBillingInfo = await _loadTenantModuleBillingInfo();
+  final nowUtc = DateTime.now().toUtc();
+  final tenantSmsUsageByTenant = await _loadTenantSmsUsage(nowUtc);
   final moduleById = {for (final m in modules) m.id: m};
-  final now = DateTime.now().toUtc();
+  final now = nowUtc;
 
   final rows = <TenantBillingRow>[];
   for (final item in items) {
@@ -176,6 +229,34 @@ final billingOverviewProvider = FutureProvider<List<TenantBillingRow>>((ref) asy
         isTrial: info.isTrial,
         isModuleTrial: info.isTrial,
         isCanceling: info.cancelAtPeriodEnd,
+      ));
+    }
+
+    // 5) SMS/WA Overage (FÁZE 4 – Super Admin fakturace)
+    //
+    // BUSINESS LOGIKA:
+    // - Manažer agentury má v ceně modulu/servisu zdarma limit (FREE_LIMIT).
+    // - Pokud automatizace odešle víc zpráv (sent_count pro sms+whatsapp),
+    //   nadlimit se zpoplatní pevnou cenou PRICE_PER_SMS.
+    // - Není to nový kreditní systém; přidáme pouze další fakturační položku
+    //   do rozpisu.
+    //
+    // PROČ do invoiceItems:
+    // - Řešíme to tak, aby gross/net sleva/diskontování zůstalo konzistentní
+    //   se stávající matematickou logikou.
+    const int freeLimit = 250;
+    final pricePerSmsEur = messagingRates.sms;
+
+    final totalSmsWaSent = tenantSmsUsageByTenant[tenant.id] ?? 0;
+    final overage = math.max(0, totalSmsWaSent - freeLimit);
+    final overagePriceEur = overage * pricePerSmsEur;
+
+    if (overagePriceEur > 0) {
+      invoiceItems.add(InvoiceItem(
+        name: 'super_admin.billing_item_overage_sms',
+        priceEur: overagePriceEur,
+        isTrial: false,
+        isModuleTrial: false,
       ));
     }
 

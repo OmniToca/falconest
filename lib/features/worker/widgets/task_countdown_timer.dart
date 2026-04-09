@@ -41,11 +41,15 @@ class TaskCountdownTimer extends StatefulWidget {
     required this.startedAt,
     this.completedAt,
     required this.estimatedMinutes,
+    /// PROČ: V master detailu je odpočet v sticky liště pod AppBar – bez vnějšího spodního okraje,
+    /// aby vizuálně seděl do kompaktního panelu.
+    this.embedInSticky = false,
   });
 
   final DateTime? startedAt;
   final DateTime? completedAt;
   final int estimatedMinutes;
+  final bool embedInSticky;
 
   @override
   State<TaskCountdownTimer> createState() => _TaskCountdownTimerState();
@@ -65,7 +69,8 @@ class _TaskCountdownTimerState extends State<TaskCountdownTimer> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.startedAt != widget.startedAt ||
         oldWidget.completedAt != widget.completedAt ||
-        oldWidget.estimatedMinutes != widget.estimatedMinutes) {
+        oldWidget.estimatedMinutes != widget.estimatedMinutes ||
+        oldWidget.embedInSticky != widget.embedInSticky) {
       _timer?.cancel();
       _startTimer();
     }
@@ -92,6 +97,8 @@ class _TaskCountdownTimerState extends State<TaskCountdownTimer> {
       return const SizedBox.shrink();
     }
 
+    final sticky = widget.embedInSticky;
+
     final target = widget.startedAt!.add(Duration(minutes: widget.estimatedMinutes));
     final now = DateTime.now().toUtc();
     final difference = target.difference(now);
@@ -113,16 +120,16 @@ class _TaskCountdownTimerState extends State<TaskCountdownTimer> {
     final bgColor = isOverdue ? Colors.red.shade50 : Colors.green.shade50;
 
     return Container(
-      padding: const EdgeInsets.all(14),
-      margin: const EdgeInsets.only(bottom: 12),
+      padding: EdgeInsets.all(sticky ? 10 : 14),
+      margin: sticky ? EdgeInsets.zero : const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: bgColor,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(sticky ? 12 : 8),
         border: Border.all(color: color.withValues(alpha: 0.5)),
       ),
       child: Row(
         children: [
-          Icon(Icons.timer, size: 24, color: color),
+          Icon(Icons.timer, size: sticky ? 28 : 24, color: color),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -132,7 +139,7 @@ class _TaskCountdownTimerState extends State<TaskCountdownTimer> {
                 Text(
                   label,
                   style: TextStyle(
-                    fontSize: 12,
+                    fontSize: sticky ? 11 : 12,
                     fontWeight: FontWeight.w600,
                     color: Colors.grey.shade700,
                   ),
@@ -141,7 +148,7 @@ class _TaskCountdownTimerState extends State<TaskCountdownTimer> {
                 Text(
                   displayStr,
                   style: TextStyle(
-                    fontSize: 20,
+                    fontSize: sticky ? 26 : 20,
                     fontWeight: FontWeight.bold,
                     fontFeatures: const [FontFeature.tabularFigures()],
                     color: color,

@@ -179,7 +179,7 @@ class _MemberTasksTabState extends ConsumerState<MemberTasksTab> {
               Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
               const SizedBox(height: 16),
               Text(
-                'common.error_with_message'.tr(namedArgs: {'message': err.toString()}),
+                'common.generic_error_user_friendly'.tr(),
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.red.shade700, fontSize: 12),
               ),
@@ -259,10 +259,14 @@ class MemberFinanceTab extends ConsumerWidget {
     final walletRow = list.where((r) => r.profileId == profileId).firstOrNull;
     final balance = walletRow?.balance ?? 0.0;
 
+    // PROČ bez Expanded: záložka je uvnitř SingleChildScrollView v dialogu – výška je neomezená,
+    // Expanded v Column by shodil layout (prázdná obrazovka). Seznam používá shrinkWrap + NeverScrollable
+    // a scroll řeší vnější ScrollView.
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Text(
             'clients.tab_finance'.tr(),
@@ -311,30 +315,28 @@ class MemberFinanceTab extends ConsumerWidget {
               ),
         ),
         const SizedBox(height: 8),
-        Expanded(
-          child: financesAsync.when(
+        financesAsync.when(
             data: (list) {
               if (list.isEmpty) {
-                return Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Text(
-                      'clients.finance_empty'.tr(),
-                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                            color: Colors.grey.shade600,
-                          ),
-                      textAlign: TextAlign.center,
-                    ),
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 24),
+                  child: Text(
+                    'clients.finance_empty'.tr(),
+                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          color: Colors.grey.shade600,
+                        ),
+                    textAlign: TextAlign.center,
                   ),
                 );
               }
               return ListView.builder(
                 shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
                 padding: EdgeInsets.zero,
                 itemCount: list.length,
                 itemBuilder: (context, index) {
                   final row = list[index];
-                  final taskTitle = (row['task_title'] as String?)?.trim() ?? '—';
+                  final taskTitle = (row['task_title'] as String?)?.trim() ?? 'common.placeholder_dash'.tr();
                   final amount = (row['amount'] as num?)?.toDouble() ?? 0.0;
                   final status = (row['status'] as String?)?.trim().toLowerCase() ?? 'pending';
                   final createdAt = row['created_at'];
@@ -351,7 +353,7 @@ class MemberFinanceTab extends ConsumerWidget {
                       : 'clients.finance_status_pending'.tr();
                   final dateStr = date != null
                       ? DateFormat.yMd(context.locale.toString()).format(date.toLocal())
-                      : '—';
+                      : 'common.placeholder_dash'.tr();
                   final amountStr = formatWalletAmount(context, ref, amount);
 
                   return Card(
@@ -376,26 +378,25 @@ class MemberFinanceTab extends ConsumerWidget {
                 },
               );
             },
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error: (err, _) => Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
-                    const SizedBox(height: 16),
-                    Text(
-                      'common.error_with_message'.tr(namedArgs: {'message': err.toString()}),
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.red.shade700, fontSize: 12),
-                    ),
-                  ],
+            loading: () => const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: Center(child: CircularProgressIndicator()),
                 ),
-              ),
-            ),
+            error: (err, _) => Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.error_outline, size: 40, color: Colors.red.shade700),
+                      const SizedBox(height: 12),
+                      SelectableText(
+                        'common.generic_error_user_friendly'.tr(),
+                        style: TextStyle(color: Colors.red.shade700, fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ),
           ),
-        ),
         ],
       ),
     );
@@ -508,7 +509,7 @@ class _MemberAbsenceTabState extends ConsumerState<MemberAbsenceTab> {
         setState(() => _isSaving = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -519,10 +520,11 @@ class _MemberAbsenceTabState extends ConsumerState<MemberAbsenceTab> {
 
   Future<void> _approveAbsence(StaffAbsence a) async {
     if (a.startDate == null || a.endDate == null) return;
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return;
     setState(() => _isSaving = true);
     try {
-      await SupabaseService.client
-          .from('staff_absences')
+      await SupabaseService.safeFrom('staff_absences', tenantId)
           .update({'status': staffAbsenceStatusApproved})
           .eq('id', a.id);
       if (!mounted) return;
@@ -539,7 +541,7 @@ class _MemberAbsenceTabState extends ConsumerState<MemberAbsenceTab> {
         setState(() => _isSaving = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -549,10 +551,11 @@ class _MemberAbsenceTabState extends ConsumerState<MemberAbsenceTab> {
   }
 
   Future<void> _rejectAbsence(StaffAbsence a) async {
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return;
     setState(() => _isSaving = true);
     try {
-      await SupabaseService.client
-          .from('staff_absences')
+      await SupabaseService.safeFrom('staff_absences', tenantId)
           .update({'status': staffAbsenceStatusRejected})
           .eq('id', a.id);
       if (!mounted) return;
@@ -563,7 +566,7 @@ class _MemberAbsenceTabState extends ConsumerState<MemberAbsenceTab> {
         setState(() => _isSaving = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -575,10 +578,13 @@ class _MemberAbsenceTabState extends ConsumerState<MemberAbsenceTab> {
   @override
   Widget build(BuildContext context) {
     final absencesAsync = ref.watch(staffAbsencesProvider);
+    // PROČ bez Expanded + vnitřního SingleChildScrollView: záložka je v dialogu uvnitř
+    // SingleChildScrollView – neomezená výška. Scroll zajišťuje vnější ScrollView v admin_team_screen.
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Text(
             'admin.absence_title'.tr(),
@@ -588,164 +594,178 @@ class _MemberAbsenceTabState extends ConsumerState<MemberAbsenceTab> {
                 ),
           ),
           const SizedBox(height: 16),
-          Expanded(
-            child: absencesAsync.when(
-              data: (all) {
-                final list = all.where((a) => a.belongsTo(widget.member)).toList();
-                return SingleChildScrollView(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      if (list.isEmpty)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          child: Text(
-                            'admin.absence_empty_list'.tr(),
-                            style: TextStyle(color: Colors.grey.shade600),
-                          ),
-                        )
-                      else
-                        ...list.map(
-                          (a) => Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: Card(
-                              margin: EdgeInsets.zero,
-                              child: Padding(
-                                padding: const EdgeInsets.all(10),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
+          absencesAsync.when(
+            data: (all) {
+              final list = all.where((a) => a.belongsTo(widget.member)).toList();
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (list.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      child: Text(
+                        'admin.absence_empty_list'.tr(),
+                        style: TextStyle(color: Colors.grey.shade600),
+                      ),
+                    )
+                  else
+                    ...list.map(
+                      (a) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Card(
+                          margin: EdgeInsets.zero,
+                          child: Padding(
+                            padding: const EdgeInsets.all(10),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
                                   children: [
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: Text(
-                                            '${a.startDate != null ? _formatDate(a.startDate!) : '–'} – ${a.endDate != null ? _formatDate(a.endDate!) : '–'}',
-                                            style: const TextStyle(
-                                              fontWeight: FontWeight.w600,
-                                              fontSize: 13,
-                                            ),
+                                    Expanded(
+                                      child: Text(
+                                        '${a.startDate != null ? _formatDate(a.startDate!) : '–'} – ${a.endDate != null ? _formatDate(a.endDate!) : '–'}',
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                    ),
+                                    if (a.isPending)
+                                      Padding(
+                                        padding: const EdgeInsets.only(left: 8),
+                                        child: Text(
+                                          'admin.absence_status_pending'.tr(),
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.orange.shade800,
+                                            fontWeight: FontWeight.w600,
                                           ),
                                         ),
-                                        if (a.isPending)
-                                          Padding(
-                                            padding: const EdgeInsets.only(left: 8),
-                                            child: Text(
-                                              'admin.absence_status_pending'.tr(),
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                color: Colors.orange.shade800,
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                            ),
-                                          ),
-                                      ],
-                                    ),
-                                    if (a.reason != null && a.reason!.isNotEmpty)
-                                      Text(
-                                        a.reason!,
-                                        style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
                                       ),
-                                    if (a.isPending) ...[
-                                      const SizedBox(height: 8),
-                                      Row(
-                                        mainAxisAlignment: MainAxisAlignment.end,
-                                        children: [
-                                          TextButton(
-                                            onPressed: _isSaving ? null : () => _rejectAbsence(a),
-                                            child: Text('admin.absence_reject'.tr()),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          FilledButton(
-                                            onPressed: _isSaving ? null : () => _approveAbsence(a),
-                                            child: Text('admin.absence_approve'.tr()),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
                                   ],
                                 ),
-                              ),
+                                if (a.reason != null && a.reason!.isNotEmpty)
+                                  Text(
+                                    a.reason!,
+                                    style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                                  ),
+                                if (a.isPending) ...[
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.end,
+                                    children: [
+                                      TextButton(
+                                        onPressed: _isSaving ? null : () => _rejectAbsence(a),
+                                        child: Text('admin.absence_reject'.tr()),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      FilledButton(
+                                        onPressed: _isSaving ? null : () => _approveAbsence(a),
+                                        child: Text('admin.absence_approve'.tr()),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ],
                             ),
                           ),
                         ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'admin.absence_add'.tr(),
-                        style: Theme.of(context).textTheme.titleSmall,
                       ),
-                      const SizedBox(height: 8),
-                      Form(
-                        key: _formKey,
-                        child: Column(
+                    ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'admin.absence_add'.tr(),
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 8),
+                  Form(
+                    key: _formKey,
+                    child: Column(
+                      children: [
+                        Row(
                           children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: OutlinedButton.icon(
-                                    onPressed: _pickFromDate,
-                                    icon: const Icon(Icons.calendar_today, size: 18),
-                                    label: Text(
-                                      _fromDate == null
-                                          ? 'admin.absence_from'.tr()
-                                          : _formatDate(_fromDate!),
-                                    ),
-                                  ),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: _pickFromDate,
+                                icon: const Icon(Icons.calendar_today, size: 18),
+                                label: Text(
+                                  _fromDate == null
+                                      ? 'admin.absence_from'.tr()
+                                      : _formatDate(_fromDate!),
                                 ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: OutlinedButton.icon(
-                                    onPressed: _pickToDate,
-                                    icon: const Icon(Icons.calendar_today, size: 18),
-                                    label: Text(
-                                      _toDate == null
-                                          ? 'admin.absence_to'.tr()
-                                          : _formatDate(_toDate!),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 12),
-                            TextFormField(
-                              controller: _reasonController,
-                              decoration: InputDecoration(
-                                prefixIcon: const Icon(Icons.notes_outlined),
-                                labelText: 'admin.absence_reason_hint'.tr(),
-                                border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(10),
-                                    borderSide: BorderSide(color: Colors.grey.shade300)),
-                                enabledBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(10),
-                                    borderSide: BorderSide(color: Colors.grey.shade300)),
-                                focusedBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(10),
-                                    borderSide: BorderSide(color: Theme.of(context).colorScheme.primary)),
                               ),
-                              maxLines: 2,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: _pickToDate,
+                                icon: const Icon(Icons.calendar_today, size: 18),
+                                label: Text(
+                                  _toDate == null
+                                      ? 'admin.absence_to'.tr()
+                                      : _formatDate(_toDate!),
+                                ),
+                              ),
                             ),
                           ],
                         ),
-                      ),
-                      const SizedBox(height: 12),
-                      FilledButton.icon(
-                        onPressed: _isSaving || _fromDate == null || _toDate == null
-                            ? null
-                            : _saveAbsence,
-                        icon: _isSaving
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.add, size: 20),
-                        label: Text('common.save'.tr()),
-                      ),
-                    ],
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _reasonController,
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.notes_outlined),
+                            labelText: 'admin.absence_reason_hint'.tr(),
+                            border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(10),
+                                borderSide: BorderSide(color: Colors.grey.shade300)),
+                            enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(10),
+                                borderSide: BorderSide(color: Colors.grey.shade300)),
+                            focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(10),
+                                borderSide: BorderSide(color: Theme.of(context).colorScheme.primary)),
+                          ),
+                          maxLines: 2,
+                        ),
+                      ],
+                    ),
                   ),
-                );
-              },
-              loading: () => const Center(child: CircularProgressIndicator()),
-              error: (_, _) => Text('common.error'.tr()),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: _isSaving || _fromDate == null || _toDate == null
+                        ? null
+                        : _saveAbsence,
+                    icon: _isSaving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.add, size: 20),
+                    label: Text('common.save'.tr()),
+                  ),
+                ],
+              );
+            },
+            loading: () => const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+            error: (err, _) => Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline, size: 40, color: Colors.red.shade700),
+                  const SizedBox(height: 12),
+                  SelectableText(
+                    'common.generic_error_user_friendly'.tr(),
+                    style: TextStyle(color: Colors.red.shade700, fontSize: 13),
+                  ),
+                ],
+              ),
             ),
           ),
         ],

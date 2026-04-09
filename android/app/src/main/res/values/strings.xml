@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- FCM: title_loc_key / body_loc_key z Edge Function daily-task-summary (výchozí = angličtina). -->
+    <string name="push_daily_summary_title">Morning task summary</string>
+    <string name="push_daily_summary_body_singular">You have %1$s task today. Have a great day!</string>
+    <string name="push_daily_summary_body_few">You have %1$s tasks today. Have a great day!</string>
+    <string name="push_daily_summary_body_many">You have %1$s tasks today. Have a great day!</string>
+    <!-- FCM: template-reminders (Edge) — title_loc_key / body_loc_key -->
+    <string name="fcm_template_reminder_title">📱 Time to send a message: %1$s</string>
+    <string name="fcm_template_reminder_body">%1$s — Flight at %2$s — Send WhatsApp template (step %3$s: 1=48h, 2=24h, 3=1h).</string>
+</resources>

@@ -156,7 +156,7 @@ class _ModuleSubscriptionDialogState extends ConsumerState<ModuleSubscriptionDia
               const SizedBox(height: 8),
               ListTile(
                 title: Text('super_admin.module_trial_ends_label'.tr()),
-                subtitle: Text(_formatDate(_trialEndsAt).isEmpty ? '—' : _formatDate(_trialEndsAt)),
+                subtitle: Text(_formatDate(_trialEndsAt).isEmpty ? 'common.placeholder_dash'.tr() : _formatDate(_trialEndsAt)),
                 trailing: const Icon(Icons.calendar_today_outlined),
                 onTap: _saving ? null : () => _pickDate(current: _trialEndsAt, onPicked: (d) => setState(() => _trialEndsAt = d)),
               ),
@@ -164,7 +164,7 @@ class _ModuleSubscriptionDialogState extends ConsumerState<ModuleSubscriptionDia
             const SizedBox(height: 8),
             ListTile(
               title: Text('super_admin.module_valid_until_label'.tr()),
-              subtitle: Text(_formatDate(_validUntil).isEmpty ? '—' : _formatDate(_validUntil)),
+              subtitle: Text(_formatDate(_validUntil).isEmpty ? 'common.placeholder_dash'.tr() : _formatDate(_validUntil)),
               trailing: const Icon(Icons.calendar_today_outlined),
               onTap: _saving ? null : () => _pickDate(current: _validUntil, onPicked: (d) => setState(() => _validUntil = d)),
             ),

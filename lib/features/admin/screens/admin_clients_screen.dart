@@ -5,10 +5,33 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/models/client_model.dart';
+import 'package:falconest/core/repositories/client/client_repository.dart';
+import 'package:falconest/core/theme/app_spacing.dart';
+import 'package:falconest/core/theme/premium_card_decoration.dart';
+import 'package:falconest/core/theme/theme_ext.dart';
+import 'package:falconest/features/admin/providers/admin_cross_nav_provider.dart';
 import 'package:falconest/features/admin/providers/apartment_owners_provider.dart';
 import 'package:falconest/features/admin/providers/clients_provider.dart';
 import 'package:falconest/features/admin/widgets/client_form_dialog.dart';
 import 'package:falconest/features/admin/widgets/client_detail_dialog.dart';
+
+/// Rychlé CRM filtry nad již načteným (a vyhledaným) seznamem — bez změny dotazů na Supabase.
+List<ClientModel> applyCrmQuickClientFilters(
+  List<ClientModel> clients, {
+  required bool portalAccessOnly,
+  required bool noEmailOnly,
+}) {
+  var it = clients.where((c) => c.deletedAt == null);
+  if (portalAccessOnly) {
+    it = it.where(
+      (c) => c.profileId != null && c.profileId!.trim().isNotEmpty,
+    );
+  }
+  if (noEmailOnly) {
+    it = it.where((c) => (c.email ?? '').trim().isEmpty);
+  }
+  return it.toList();
+}
 
 /// Mapování client_type z DB na i18n klíč pro zobrazení.
 String _clientTypeLabel(BuildContext context, String? clientType) {
@@ -45,12 +68,19 @@ class _AdminClientsScreenState extends ConsumerState<AdminClientsScreen> {
   final _scrollController2 = ScrollController();
   final _scrollController3 = ScrollController();
 
+  /// Rychlé filtry (kombinují se s FTS vyhledáváním) — aplikují se lokálně na stránkovaný výsledek.
+  bool _crmQuickFilterPortal = false;
+  bool _crmQuickFilterNoEmail = false;
+
   @override
   void initState() {
     super.initState();
-    _scrollController1.addListener(() => _onScroll(_scrollController1));
-    _scrollController2.addListener(() => _onScroll(_scrollController2));
-    _scrollController3.addListener(() => _onScroll(_scrollController3));
+    _scrollController1.addListener(
+        () => _onScroll(_scrollController1, ClientPaginatedFilterKind.owner));
+    _scrollController2.addListener(
+        () => _onScroll(_scrollController2, ClientPaginatedFilterKind.agency));
+    _scrollController3.addListener(
+        () => _onScroll(_scrollController3, ClientPaginatedFilterKind.external));
   }
 
   @override
@@ -63,136 +93,135 @@ class _AdminClientsScreenState extends ConsumerState<AdminClientsScreen> {
     super.dispose();
   }
 
-  /// Při scrollu ke konci (0.9 * maxScrollExtent) načte další stránku.
-  void _onScroll(ScrollController controller) {
+  /// Při scrollu ke konci (0.9 * maxScrollExtent) načte další stránku pro danou záložku.
+  void _onScroll(ScrollController controller, ClientPaginatedFilterKind tabKind) {
     if (!controller.hasClients) return;
     final pos = controller.position;
     if (pos.pixels >= pos.maxScrollExtent * 0.9) {
-      ref.read(clientsProvider.notifier).loadMore();
+      ref.read(paginatedClientsByTabProvider(tabKind).notifier).loadMore();
     }
   }
 
-  /// Server-side vyhledávání s debounce 500 ms – neposílá dotaz při každém stisku.
+  /// Server-side FTS (`clients.search_vector`, websearch + simple) – stejný řetězec pro všechny tři záložky.
   void _onSearchChanged() {
     _searchDebounce?.cancel();
     _searchDebounce = Timer(const Duration(milliseconds: 500), () {
       final query = _searchController.text.trim();
-      ref.read(clientsProvider.notifier).search(query);
+      for (final k in ClientPaginatedFilterKind.values) {
+        ref.read(paginatedClientsByTabProvider(k).notifier).search(query);
+      }
     });
   }
 
-  /// Rozdělí klienty do 3 skupin podle client_type.
-  /// owner = majitelé, agency = agentury, external = externí + staré záznamy (null).
-  void _splitByType(
-    List<ClientModel> filtered,
-    List<ClientModel> ownerClients,
-    List<ClientModel> agencyClients,
-    List<ClientModel> externalClients,
-  ) {
-    ownerClients.clear();
-    agencyClients.clear();
-    externalClients.clear();
-    for (final c in filtered) {
-      final t = c.clientType?.toLowerCase();
-      if (t == 'owner') {
-        ownerClients.add(c);
-      } else if (t == 'agency') {
-        agencyClients.add(c);
-      } else {
-        // external nebo null (staré záznamy bez client_type)
-        externalClients.add(c);
-      }
-    }
+  void _invalidateClientCaches(WidgetRef r) {
+    invalidatePaginatedClientTabs(r);
+    r.invalidate(clientsFullListProvider);
+    r.invalidate(agencyNamesMapProvider);
   }
 
   @override
   Widget build(BuildContext context) {
-    final clientsAsync = ref.watch(clientsProvider);
-    final loadingMore = ref.watch(clientsLoadingMoreProvider);
-
-    return Scaffold(
-      body: clientsAsync.when(
-        data: (clients) {
-          final ownerClients = <ClientModel>[];
-          final agencyClients = <ClientModel>[];
-          final externalClients = <ClientModel>[];
-          _splitByType(clients, ownerClients, agencyClients, externalClients);
-
-          return DefaultTabController(
-            length: 3,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _TopActionBar(
-                  searchController: _searchController,
-                  onSearchChanged: _onSearchChanged,
-                  onAdd: () => _showAddDialog(context, ref),
-                ),
-                TabBar(
-                  tabs: [
-                    Tab(text: 'clients.tab_owners'.tr()),
-                    Tab(text: 'clients.tab_agencies'.tr()),
-                    Tab(text: 'clients.tab_external'.tr()),
-                  ],
-                ),
-                Expanded(
-                  child: TabBarView(
-                    children: [
-                      _ClientsTabContent(
-                        clients: ownerClients,
-                        searchQuery: _searchController.text.trim(),
-                        scrollController: _scrollController1,
-                        isLoadingMore: loadingMore,
-                        onEdit: (c) => _showClientDetail(context, ref, c),
-                        onDelete: (c) => _showDeleteConfirm(context, ref, c),
-                      ),
-                      _ClientsTabContent(
-                        clients: agencyClients,
-                        searchQuery: _searchController.text.trim(),
-                        scrollController: _scrollController2,
-                        isLoadingMore: loadingMore,
-                        onEdit: (c) => _showClientDetail(context, ref, c),
-                        onDelete: (c) => _showDeleteConfirm(context, ref, c),
-                      ),
-                      _ClientsTabContent(
-                        clients: externalClients,
-                        searchQuery: _searchController.text.trim(),
-                        scrollController: _scrollController3,
-                        isLoadingMore: loadingMore,
-                        onEdit: (c) => _showClientDetail(context, ref, c),
-                        onDelete: (c) => _showDeleteConfirm(context, ref, c),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+    // PROČ: Po křížové navigaci z úkolu/rezervace otevřeme stejný dialog detailu klienta jako při kliknutí v CRM.
+    ref.listen<AdminCrossNavPending>(adminCrossNavPendingProvider, (previous, next) {
+      final id = next.clientId;
+      if (id == null || id.isEmpty) return;
+      final full = ref.read(clientsFullListProvider).valueOrNull;
+      ClientModel? client;
+      if (full != null) {
+        for (final c in full) {
+          if (c.id == id) {
+            client = c;
+            break;
+          }
+        }
+      }
+      if (client == null) {
+        for (final k in ClientPaginatedFilterKind.values) {
+          final paginated =
+              ref.read(paginatedClientsByTabProvider(k)).valueOrNull;
+          if (paginated == null) continue;
+          for (final c in paginated) {
+            if (c.id == id) {
+              client = c;
+              break;
+            }
+          }
+          if (client != null) break;
+        }
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!context.mounted) return;
+        ref.read(adminCrossNavPendingProvider.notifier).clear();
+        if (client != null) {
+          _showClientDetail(context, ref, client);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('admin.cross_nav_client_not_found'.tr()),
+              behavior: SnackBarBehavior.floating,
             ),
           );
-        },
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (err, _) => Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
-              const SizedBox(height: 16),
-              Text(
-                'common.error_with_message'.tr(
-                  namedArgs: {'message': err.toString()},
-                ),
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.red.shade700),
+        }
+      });
+    });
+    return Scaffold(
+      body: DefaultTabController(
+        length: 3,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _TopActionBar(
+              searchController: _searchController,
+              onSearchChanged: _onSearchChanged,
+              onAdd: () => _showAddDialog(context, ref),
+              portalFilter: _crmQuickFilterPortal,
+              noEmailFilter: _crmQuickFilterNoEmail,
+              onPortalFilterChanged: (v) =>
+                  setState(() => _crmQuickFilterPortal = v),
+              onNoEmailFilterChanged: (v) =>
+                  setState(() => _crmQuickFilterNoEmail = v),
+            ),
+            TabBar(
+              tabs: [
+                Tab(text: 'clients.tab_owners'.tr()),
+                Tab(text: 'clients.tab_agencies'.tr()),
+                Tab(text: 'clients.tab_external'.tr()),
+              ],
+            ),
+            Expanded(
+              child: TabBarView(
+                children: [
+                  _ClientsTabContent(
+                    tabKind: ClientPaginatedFilterKind.owner,
+                    searchQuery: _searchController.text.trim(),
+                    scrollController: _scrollController1,
+                    portalFilter: _crmQuickFilterPortal,
+                    noEmailFilter: _crmQuickFilterNoEmail,
+                    onEdit: (c) => _showClientDetail(context, ref, c),
+                    onDelete: (c) => _showDeleteConfirm(context, ref, c),
+                  ),
+                  _ClientsTabContent(
+                    tabKind: ClientPaginatedFilterKind.agency,
+                    searchQuery: _searchController.text.trim(),
+                    scrollController: _scrollController2,
+                    portalFilter: _crmQuickFilterPortal,
+                    noEmailFilter: _crmQuickFilterNoEmail,
+                    onEdit: (c) => _showClientDetail(context, ref, c),
+                    onDelete: (c) => _showDeleteConfirm(context, ref, c),
+                  ),
+                  _ClientsTabContent(
+                    tabKind: ClientPaginatedFilterKind.external,
+                    searchQuery: _searchController.text.trim(),
+                    scrollController: _scrollController3,
+                    portalFilter: _crmQuickFilterPortal,
+                    noEmailFilter: _crmQuickFilterNoEmail,
+                    onEdit: (c) => _showClientDetail(context, ref, c),
+                    onDelete: (c) => _showDeleteConfirm(context, ref, c),
+                  ),
+                ],
               ),
-              const SizedBox(height: 16),
-              FilledButton(
-                onPressed: () {
-                  ref.invalidate(clientsProvider);
-                  ref.invalidate(clientsFullListProvider);
-                },
-                child: Text('common.retry'.tr()),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -211,9 +240,8 @@ class _AdminClientsScreenState extends ConsumerState<AdminClientsScreen> {
       builder: (ctx) => ClientFormDialog(
         ref: ref,
         onSaved: () {
-                  ref.invalidate(clientsProvider);
-                  ref.invalidate(clientsFullListProvider);
-                },
+          _invalidateClientCaches(ref);
+        },
       ),
     );
   }
@@ -239,8 +267,15 @@ class _AdminClientsScreenState extends ConsumerState<AdminClientsScreen> {
                 await ref.read(softDeleteClientProvider)(client.id);
                 if (ctx.mounted) {
                   Navigator.of(ctx).pop();
-                  ref.invalidate(clientsProvider);
-                  ref.invalidate(clientsFullListProvider);
+                  _invalidateClientCaches(ref);
+                  final aid = client.agencyId?.trim();
+                  if (aid != null && aid.isNotEmpty) {
+                    ref.invalidate(recommendedClientsCountByAgencyProvider(aid));
+                  }
+                  if ((client.clientType?.toLowerCase() ?? '') == 'agency') {
+                    ref.invalidate(
+                        recommendedClientsCountByAgencyProvider(client.id));
+                  }
                   ScaffoldMessenger.of(ctx).showSnackBar(
                     SnackBar(
                       content: Text('clients.deleted'.tr()),
@@ -270,60 +305,110 @@ class _AdminClientsScreenState extends ConsumerState<AdminClientsScreen> {
   }
 }
 
-/// Obsah jedné záložky – Grid karet nebo prázdný stav. Podporuje scroll controller a indikátor načítání další stránky.
-class _ClientsTabContent extends StatelessWidget {
+/// Obsah jedné záložky – vlastní stránkovaný provider podle [tabKind] (filtr na Supabase).
+class _ClientsTabContent extends ConsumerWidget {
   const _ClientsTabContent({
-    required this.clients,
+    required this.tabKind,
     required this.searchQuery,
     required this.scrollController,
-    required this.isLoadingMore,
+    required this.portalFilter,
+    required this.noEmailFilter,
     required this.onEdit,
     required this.onDelete,
   });
 
-  final List<ClientModel> clients;
+  final ClientPaginatedFilterKind tabKind;
   final String searchQuery;
   final ScrollController scrollController;
-  final bool isLoadingMore;
+  final bool portalFilter;
+  final bool noEmailFilter;
   final ValueChanged<ClientModel> onEdit;
   final ValueChanged<ClientModel> onDelete;
 
   @override
-  Widget build(BuildContext context) {
-    if (clients.isEmpty && !isLoadingMore) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(
-            searchQuery.isEmpty
-                ? 'clients.tab_empty'.tr()
-                : 'admin.apartments_search_no_results'.tr(),
-            style: Theme.of(context).textTheme.titleMedium,
-            textAlign: TextAlign.center,
-          ),
-        ),
-      );
-    }
-    return Column(
-      children: [
-        Expanded(
-          child: _ClientsCardList(
-            clients: clients,
-            scrollController: scrollController,
-            onEdit: onEdit,
-            onDelete: onDelete,
-          ),
-        ),
-        if (isLoadingMore)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 12),
-            child: SizedBox(
-              width: 24,
-              height: 24,
-              child: CircularProgressIndicator(strokeWidth: 2),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final clientsAsync = ref.watch(paginatedClientsByTabProvider(tabKind));
+    final loadingMore = ref.watch(clientsLoadingMoreByTabProvider(tabKind));
+
+    return clientsAsync.when(
+      data: (clients) {
+        final filtered = applyCrmQuickClientFilters(
+          clients,
+          portalAccessOnly: portalFilter,
+          noEmailOnly: noEmailFilter,
+        );
+        if (clients.isEmpty && !loadingMore) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                searchQuery.isEmpty
+                    ? 'clients.tab_empty'.tr()
+                    : 'admin.apartments_search_no_results'.tr(),
+                style: Theme.of(context).textTheme.titleMedium,
+                textAlign: TextAlign.center,
+              ),
             ),
-          ),
-      ],
+          );
+        }
+        if (filtered.isEmpty && !loadingMore) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                'admin.clients_quick_filter_empty'.tr(),
+                style: Theme.of(context).textTheme.titleMedium,
+                textAlign: TextAlign.center,
+              ),
+            ),
+          );
+        }
+        return Column(
+          children: [
+            Expanded(
+              child: _ClientsCardList(
+                clients: filtered,
+                scrollController: scrollController,
+                onEdit: onEdit,
+                onDelete: onDelete,
+              ),
+            ),
+            if (loadingMore)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+          ],
+        );
+      },
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (err, _) => Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
+            const SizedBox(height: 16),
+            Text(
+              'common.generic_error_user_friendly'.tr(),
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.red.shade700),
+            ),
+            const SizedBox(height: 16),
+            FilledButton(
+              onPressed: () {
+                invalidatePaginatedClientTabs(ref);
+                ref.invalidate(clientsFullListProvider);
+                ref.invalidate(agencyNamesMapProvider);
+              },
+              child: Text('common.retry'.tr()),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -334,49 +419,79 @@ class _TopActionBar extends StatelessWidget {
     required this.searchController,
     required this.onSearchChanged,
     required this.onAdd,
+    required this.portalFilter,
+    required this.noEmailFilter,
+    required this.onPortalFilterChanged,
+    required this.onNoEmailFilterChanged,
   });
 
   final TextEditingController searchController;
   final VoidCallback onSearchChanged;
   final VoidCallback onAdd;
+  final bool portalFilter;
+  final bool noEmailFilter;
+  final ValueChanged<bool> onPortalFilterChanged;
+  final ValueChanged<bool> onNoEmailFilterChanged;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(
-            'clients.title'.tr(),
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-          ),
-          const SizedBox(width: 32),
-          Expanded(
-            child: TextField(
-              controller: searchController,
-              onChanged: (_) => onSearchChanged(),
-              decoration: InputDecoration(
-                hintText: 'admin.apartments_search_hint'.tr(),
-                prefixIcon: const Icon(Icons.search),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                filled: true,
-                fillColor: Colors.white,
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
+          Row(
+            children: [
+              Text(
+                'clients.title'.tr(),
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+              ),
+              const SizedBox(width: 32),
+              Expanded(
+                child: TextField(
+                  controller: searchController,
+                  onChanged: (_) => onSearchChanged(),
+                  decoration: InputDecoration(
+                    hintText: 'admin.apartments_search_hint'.tr(),
+                    prefixIcon: const Icon(Icons.search),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    filled: true,
+                    fillColor: context.colors.surface,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                  ),
                 ),
               ),
-            ),
+              const SizedBox(width: 16),
+              FilledButton.icon(
+                onPressed: onAdd,
+                icon: const Icon(Icons.add, size: 20),
+                label: Text('clients.add_new'.tr()),
+              ),
+            ],
           ),
-          const SizedBox(width: 16),
-          FilledButton.icon(
-            onPressed: onAdd,
-            icon: const Icon(Icons.add, size: 20),
-            label: Text('clients.add_new'.tr()),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilterChip(
+                label: Text('admin.clients_filter_portal_access'.tr()),
+                selected: portalFilter,
+                onSelected: onPortalFilterChanged,
+              ),
+              FilterChip(
+                label: Text('admin.clients_filter_no_email'.tr()),
+                selected: noEmailFilter,
+                onSelected: onNoEmailFilterChanged,
+              ),
+            ],
           ),
         ],
       ),
@@ -384,9 +499,7 @@ class _TopActionBar extends StatelessWidget {
   }
 }
 
-/// Responzivní Grid klientů – maxCrossAxisExtent 500 (mobil 1 sloupec, desktop 2–3).
-/// Každá buňka je Card s klikacím řádkem (onTap = úprava) a ikonou koše.
-/// [scrollController] slouží pro nekonečný scroll (loadMore při dosažení konce).
+/// Responzivní grid – dlaždice s [premiumCardDecoration] (stejný standard jako nástěnka).
 class _ClientsCardList extends StatelessWidget {
   const _ClientsCardList({
     required this.clients,
@@ -402,6 +515,7 @@ class _ClientsCardList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final radius = BorderRadius.circular(AppSpacing.md);
     return Padding(
       padding: const EdgeInsets.all(16),
       child: GridView.builder(
@@ -415,17 +529,21 @@ class _ClientsCardList extends StatelessWidget {
         itemCount: clients.length,
         itemBuilder: (context, index) {
           final c = clients[index];
-          return Card(
-            elevation: 0,
-            margin: EdgeInsets.zero,
-            shape: RoundedRectangleBorder(
-              side: BorderSide(color: Colors.grey.shade200),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: _ClientListTile(
-              client: c,
-              onEdit: onEdit,
-              onDelete: onDelete,
+          return ClipRRect(
+            borderRadius: radius,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () => onEdit(c),
+                borderRadius: radius,
+                child: Ink(
+                  decoration: premiumCardDecoration(context),
+                  child: _ClientListTile(
+                    client: c,
+                    onDelete: onDelete,
+                  ),
+                ),
+              ),
             ),
           );
         },
@@ -439,12 +557,10 @@ class _ClientsCardList extends StatelessWidget {
 class _ClientListTile extends ConsumerWidget {
   const _ClientListTile({
     required this.client,
-    required this.onEdit,
     required this.onDelete,
   });
 
   final ClientModel client;
-  final ValueChanged<ClientModel> onEdit;
   final ValueChanged<ClientModel> onDelete;
 
   static String _initials(String name) {
@@ -484,13 +600,9 @@ class _ClientListTile extends ConsumerWidget {
     if (phone.isNotEmpty) subtitleParts.add(phone);
     final subtitle = subtitleParts.isEmpty ? '–' : subtitleParts.join(' • ');
 
-    return Material(
-      color: Colors.white,
-      child: InkWell(
-        onTap: () => onEdit(client),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Row(
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
             children: [
               CircleAvatar(
                 radius: 22,
@@ -593,8 +705,6 @@ class _ClientListTile extends ConsumerWidget {
               ),
             ],
           ),
-        ),
-      ),
     );
   }
 }
@@ -665,7 +775,7 @@ class _CompactOwnerMeta extends ConsumerWidget {
 /// Kompaktní meta pro agenturu – počet doporučených externích klientů.
 ///
 /// PROČ: Administrátor na první pohled vidí, kolik klientů daná agentura přivedla.
-/// Načítá clientsRecommendedByAgencyProvider – klienti s agency_id = tato agentura.
+/// Počet doporučení z [recommendedClientsCountByAgencyProvider] (COUNT na serveru).
 class _CompactAgencyMeta extends ConsumerWidget {
   const _CompactAgencyMeta({required this.agencyId});
 
@@ -673,10 +783,10 @@ class _CompactAgencyMeta extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final recommendedAsync = ref.watch(clientsRecommendedByAgencyProvider(agencyId));
+    final recommendedAsync =
+        ref.watch(recommendedClientsCountByAgencyProvider(agencyId));
     return recommendedAsync.when(
-      data: (clients) {
-        final count = clients.length;
+      data: (count) {
         return Padding(
           padding: const EdgeInsets.only(top: 4),
           child: Row(
@@ -711,11 +821,12 @@ class _CompactExternalAgencyMeta extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final clientsAsync = ref.watch(clientsFullListProvider);
-    return clientsAsync.when(
-      data: (clients) {
-        final agency = clients.where((c) => c.id == agencyId).firstOrNull;
-        final name = agency?.name.trim() ?? '–';
+    final mapAsync = ref.watch(agencyNamesMapProvider);
+    return mapAsync.when(
+      data: (map) {
+        final name = (map[agencyId] ?? '').trim().isEmpty
+            ? '–'
+            : map[agencyId]!.trim();
         return Padding(
           padding: const EdgeInsets.only(top: 4),
           child: Row(

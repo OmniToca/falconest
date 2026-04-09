@@ -1,4 +1,5 @@
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 
 /// Jeden záznam z tabulky [agency_management_settlements] – schválená provize pro Lovec/Farmáře.
 ///
@@ -57,8 +58,8 @@ class AgencyManagementSettlementsRepository {
   /// Načte schválené (a ostatní) provize za daný měsíc. [period] = první den měsíce.
   Future<List<AgencySettlementRow>> getSettlementsForPeriod(DateTime period) async {
     final periodStr = _periodToDateStr(period);
-    final res = await SupabaseService.client
-        .from('agency_management_settlements')
+    // Globální přehled HQ – scoped tenant null; RLS omezí podle role super admina.
+    final res = await SupabaseService.safeFrom('agency_management_settlements', null)
         .select(
           'id, profile_id, tenant_id, settlement_period, role_type, amount, status, '
           'approved_by, approved_at, created_at, updated_at, profiles(name)',
@@ -70,7 +71,9 @@ class AgencyManagementSettlementsRepository {
     for (final e in list) {
       try {
         result.add(_parseRow(Map<String, dynamic>.from(e)));
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('AgencyManagementSettlementsRepository: parsování řádku settlement selhalo', e, st);
+      }
     }
     return result;
   }
@@ -102,7 +105,7 @@ class AgencyManagementSettlementsRepository {
       'approved_at': now,
       'updated_at': now,
     };
-    await SupabaseService.client.from('agency_management_settlements').upsert(
+    await SupabaseService.safeFrom('agency_management_settlements', tenantId).upsert(
       payload,
       onConflict: 'profile_id,tenant_id,settlement_period,role_type',
     );
@@ -113,7 +116,9 @@ class AgencyManagementSettlementsRepository {
     try {
       final p = m['profiles'];
       if (p is Map) profileName = (p['name'] as String?)?.trim();
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('AgencyManagementSettlementsRepository: čtení vnořeného profiles z řádku selhalo', e, st);
+    }
     final periodRaw = m['settlement_period'];
     DateTime period = DateTime.now();
     if (periodRaw != null) {

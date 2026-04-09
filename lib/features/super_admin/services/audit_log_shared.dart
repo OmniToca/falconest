@@ -62,6 +62,8 @@ class AuditLogEntry {
 abstract class AuditActionType {
   static const String softDelete = 'SOFT_DELETE';
   static const String softDeleteCascade = 'SOFT_DELETE_CASCADE';
+  /// Uživatel otevřel odkaz na WhatsApp s předvyplněnou šablonou (Smart Template Selector).
+  static const String whatsappLinkOpened = 'WHATSAPP_LINK_OPENED';
 }
 
 const Set<String> kSoftDeleteTables = {'apartments', 'tasks', 'profiles', 'reservations'};
@@ -80,10 +82,26 @@ bool canHardDeleteAuditEntry(AuditLogEntry entry) {
   return kSoftDeleteTables.contains(entry.tableName);
 }
 
-Future<void> applyRestoreToSupabase(String tableName, String recordId) async {
-  await SupabaseService.client.from(tableName).update({'deleted_at': null}).eq('id', recordId);
+/// [tenantId] z auditního záznamu – bez něj nelze vynutit Frontend Firewall u tenantových tabulek.
+Future<void> applyRestoreToSupabase(
+  String tableName,
+  String recordId,
+  String? tenantId,
+) async {
+  final tid = tenantId?.trim();
+  if (tid == null || tid.isEmpty) return;
+  // Bezpečnostní vynucení tenant_id klauzule přes safeFrom (obnova soft-deleted řádku).
+  await SupabaseService.safeFrom(tableName, tid)
+      .update({'deleted_at': null})
+      .eq('id', recordId);
 }
 
-Future<void> applyHardDeleteToSupabase(String tableName, String recordId) async {
-  await SupabaseService.client.from(tableName).delete().eq('id', recordId);
+Future<void> applyHardDeleteToSupabase(
+  String tableName,
+  String recordId,
+  String? tenantId,
+) async {
+  final tid = tenantId?.trim();
+  if (tid == null || tid.isEmpty) return;
+  await SupabaseService.safeFrom(tableName, tid).delete().eq('id', recordId);
 }

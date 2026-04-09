@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/super_admin/services/hq_staff_contract_repository.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 
 /// Repozitář smluv HQ – jedna instance pro celou aplikaci.
 final hqStaffContractRepositoryProvider =
@@ -73,7 +74,8 @@ final hqStaffPortfolioProvider = FutureProvider.autoDispose
       if (mb == profileId) managed.add(row);
     }
     return HqStaffPortfolio(acquiredByMe: acquired, managedByMe: managed);
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('hqStaffPortfolioProvider: načtení portfolia tenanta selhalo', e, st);
     return const HqStaffPortfolio(acquiredByMe: [], managedByMe: []);
   }
 });
@@ -98,7 +100,8 @@ final hqStaffAbsencesProvider = FutureProvider.autoDispose
     return list
         .map((e) => StaffAbsence.fromJson(Map<String, dynamic>.from(e as Map)))
         .toList();
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('hqStaffAbsencesProvider: načtení HQ absencí selhalo', e, st);
     return [];
   }
 });

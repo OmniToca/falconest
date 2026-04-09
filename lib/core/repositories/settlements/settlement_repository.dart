@@ -1,8 +1,10 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/foundation.dart';
 
 import 'package:falconest/core/models/task_commission_model.dart';
 import 'package:falconest/core/models/task_payout_model.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 
 /// Výsledek načtení vyúčtování pro jeden úkol.
 ///
@@ -47,10 +49,9 @@ class SettlementRepository {
       throw ArgumentError('tenantId a taskId jsou povinné.');
     }
 
-    final client = SupabaseService.client;
-
     // Příprava výplat – pro nové záznamy (id prázdné) vložíme přes insert.
     // PROČ: DB generuje id a časová razítka; nepředáváme je z klienta.
+    // Frontend Firewall: [safeInsertPayload] na každý řádek (batch insert neprojde přes [SafeTenantTable.insert]).
     if (payouts.isNotEmpty) {
       final payoutRows = payouts.map((p) {
         final map = <String, dynamic>{
@@ -63,7 +64,11 @@ class SettlementRepository {
         return map;
       }).toList();
 
-      await client.from('task_payouts').insert(payoutRows);
+      final safePayouts = payoutRows
+          .map((r) => SupabaseService.safeInsertPayload(tenantId, r))
+          .toList();
+      // Bezpečnostní vynucení tenant_id klauzule přes safeFrom (batch řádků už mají safeInsertPayload).
+      await SupabaseService.safeFrom('task_payouts', tenantId).insert(safePayouts);
     }
 
     // Příprava provizí – buď client_id (partner) nebo profile_id (zaměstnanec).
@@ -84,7 +89,10 @@ class SettlementRepository {
         return map;
       }).toList();
 
-      await client.from('task_commissions').insert(commissionRows);
+      final safeCommissions = commissionRows
+          .map((r) => SupabaseService.safeInsertPayload(tenantId, r))
+          .toList();
+      await SupabaseService.client.from('task_commissions').insert(safeCommissions);
     }
   }
 
@@ -94,21 +102,19 @@ class SettlementRepository {
   /// zda už pro úkol existují záznamy (např. aby se předešlo duplicitám).
   ///
   /// Vrací prázdné seznamy, pokud úkol nemá žádné vyúčtování.
-  Future<TaskSettlements> getSettlementsForTask(String taskId) async {
-    if (taskId.trim().isEmpty) {
+  ///
+  /// [tenantId] – povinné pro [safeFrom]; bez něj by Super Admin mohl načíst cizí úkol.
+  Future<TaskSettlements> getSettlementsForTask(String tenantId, String taskId) async {
+    if (tenantId.trim().isEmpty || taskId.trim().isEmpty) {
       return const TaskSettlements(payouts: [], commissions: []);
     }
 
-    final client = SupabaseService.client;
-
     // Paralelní načtení výplat a provizí – zrychlení oproti sekvenčnímu volání.
-    final payoutsFuture = client
-        .from('task_payouts')
+    final payoutsFuture = SupabaseService.safeFrom('task_payouts', tenantId)
         .select()
         .eq('task_id', taskId);
 
-    final commissionsFuture = client
-        .from('task_commissions')
+    final commissionsFuture = SupabaseService.safeFrom('task_commissions', tenantId)
         .select()
         .eq('task_id', taskId);
 
@@ -129,13 +135,13 @@ class SettlementRepository {
   ///
   /// PROČ: Admin při hromadném vyplácení (Payroll) označí několik výplat najednou.
   /// [payoutIds] – seznam UUID z task_payouts. Prázdný seznam se ignoruje.
-  Future<void> markPayoutsAsPaid(List<String> payoutIds) async {
-    if (payoutIds.isEmpty) return;
+  /// [tenantId] – vynucení rozsahu u update (Frontend Firewall).
+  Future<void> markPayoutsAsPaid(String tenantId, List<String> payoutIds) async {
+    if (tenantId.trim().isEmpty || payoutIds.isEmpty) return;
     final ids = payoutIds.where((id) => id.trim().isNotEmpty).toList();
     if (ids.isEmpty) return;
 
-    await SupabaseService.client
-        .from('task_payouts')
+    await SupabaseService.safeFrom('task_payouts', tenantId)
         .update({'status': 'paid', 'updated_at': DateTime.now().toUtc().toIso8601String()})
         .inFilter('id', ids);
   }
@@ -144,13 +150,13 @@ class SettlementRepository {
   ///
   /// PROČ: Admin při hromadném vyplácení (Payroll) označí několik provizí najednou.
   /// [commissionIds] – seznam UUID z task_commissions. Prázdný seznam se ignoruje.
-  Future<void> markCommissionsAsPaid(List<String> commissionIds) async {
-    if (commissionIds.isEmpty) return;
+  /// [tenantId] – vynucení rozsahu u update (Frontend Firewall).
+  Future<void> markCommissionsAsPaid(String tenantId, List<String> commissionIds) async {
+    if (tenantId.trim().isEmpty || commissionIds.isEmpty) return;
     final ids = commissionIds.where((id) => id.trim().isNotEmpty).toList();
     if (ids.isEmpty) return;
 
-    await SupabaseService.client
-        .from('task_commissions')
+    await SupabaseService.safeFrom('task_commissions', tenantId)
         .update({'status': 'paid', 'updated_at': DateTime.now().toUtc().toIso8601String()})
         .inFilter('id', ids);
   }
@@ -162,13 +168,12 @@ class SettlementRepository {
   Future<List<Map<String, dynamic>>> getPendingPayoutsWithProfile(String tenantId) async {
     if (tenantId.trim().isEmpty) return [];
     try {
-      final res = await SupabaseService.client
-          .from('task_payouts')
+      final res = await SupabaseService.safeFrom('task_payouts', tenantId)
           .select('id, profile_id, amount, task_id, profiles(name, first_name, last_name), tasks(title, custom_title, completed_at, scheduled_start, metadata)')
-          .eq('tenant_id', tenantId)
           .eq('status', 'pending');
       return (res as List).cast<Map<String, dynamic>>();
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('SettlementRepository.getPendingPayoutsWithProfile selhal', e, st);
       return [];
     }
   }
@@ -179,14 +184,13 @@ class SettlementRepository {
   Future<List<Map<String, dynamic>>> getPendingCommissionsWithClient(String tenantId) async {
     if (tenantId.trim().isEmpty) return [];
     try {
-      final res = await SupabaseService.client
-          .from('task_commissions')
+      final res = await SupabaseService.safeFrom('task_commissions', tenantId)
           .select('id, client_id, amount, task_id, clients(name), tasks(title, custom_title, completed_at, scheduled_start, metadata)')
-          .eq('tenant_id', tenantId)
           .eq('status', 'pending')
           .not('client_id', 'is', null);
       return (res as List).cast<Map<String, dynamic>>();
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('SettlementRepository.getPendingCommissionsWithClient selhal', e, st);
       return [];
     }
   }
@@ -197,14 +201,13 @@ class SettlementRepository {
   Future<List<Map<String, dynamic>>> getPendingCommissionsWithProfile(String tenantId) async {
     if (tenantId.trim().isEmpty) return [];
     try {
-      final res = await SupabaseService.client
-          .from('task_commissions')
+      final res = await SupabaseService.safeFrom('task_commissions', tenantId)
           .select('id, profile_id, amount, task_id, profiles(name, first_name, last_name), tasks(title, custom_title, completed_at, scheduled_start, metadata)')
-          .eq('tenant_id', tenantId)
           .eq('status', 'pending')
           .not('profile_id', 'is', null);
       return (res as List).cast<Map<String, dynamic>>();
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('SettlementRepository.getPendingCommissionsWithProfile selhal', e, st);
       return [];
     }
   }
@@ -223,10 +226,8 @@ class SettlementRepository {
     if (tenantId.trim().isEmpty || clientId.trim().isEmpty) return [];
 
     try {
-      final res = await SupabaseService.client
-          .from('task_commissions')
+      final res = await SupabaseService.safeFrom('task_commissions', tenantId)
           .select('id, task_id, amount, status, created_at, tasks(title, custom_title)')
-          .eq('tenant_id', tenantId)
           .eq('client_id', clientId)
           .order('created_at', ascending: false);
 
@@ -248,11 +249,12 @@ class SettlementRepository {
           'amount': map['amount'],
           'status': map['status'],
           'created_at': map['created_at'],
-          'task_title': taskTitle.isEmpty ? '—' : taskTitle,
+          'task_title': taskTitle.isEmpty ? 'common.placeholder_dash'.tr() : taskTitle,
         });
       }
       return result;
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('SettlementRepository.getCommissionsForClient selhal', e, st);
       return [];
     }
   }
@@ -269,10 +271,8 @@ class SettlementRepository {
     if (tenantId.trim().isEmpty || profileId.trim().isEmpty) return [];
 
     try {
-      final res = await SupabaseService.client
-          .from('task_commissions')
+      final res = await SupabaseService.safeFrom('task_commissions', tenantId)
           .select('id, task_id, amount, status, created_at, tasks(title, custom_title, completed_at)')
-          .eq('tenant_id', tenantId)
           .eq('profile_id', profileId)
           .order('created_at', ascending: false);
 
@@ -297,12 +297,13 @@ class SettlementRepository {
           'amount': map['amount'],
           'status': map['status'],
           'created_at': map['created_at'],
-          'task_title': taskTitle.isEmpty ? '—' : taskTitle,
+          'task_title': taskTitle.isEmpty ? 'common.placeholder_dash'.tr() : taskTitle,
           'completed_at': completedAt?.toIso8601String(),
         });
       }
       return result;
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('SettlementRepository.getMyCommissions selhal', e, st);
       return [];
     }
   }
@@ -318,10 +319,8 @@ class SettlementRepository {
     if (tenantId.trim().isEmpty || profileId.trim().isEmpty) return [];
 
     try {
-      final res = await SupabaseService.client
-          .from('task_payouts')
+      final res = await SupabaseService.safeFrom('task_payouts', tenantId)
           .select('id, task_id, amount, status, created_at, tasks(title, custom_title, completed_at)')
-          .eq('tenant_id', tenantId)
           .eq('profile_id', profileId)
           .order('created_at', ascending: false);
 
@@ -346,12 +345,13 @@ class SettlementRepository {
           'amount': map['amount'],
           'status': map['status'],
           'created_at': map['created_at'],
-          'task_title': taskTitle.isEmpty ? '—' : taskTitle,
+          'task_title': taskTitle.isEmpty ? 'common.placeholder_dash'.tr() : taskTitle,
           'completed_at': completedAt?.toIso8601String(),
         });
       }
       return result;
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('SettlementRepository.getMyPayouts selhal', e, st);
       return [];
     }
   }
@@ -374,10 +374,8 @@ class SettlementRepository {
     final periodStr = '${period.year}-${period.month.toString().padLeft(2, '0')}-01';
 
     try {
-      final res = await SupabaseService.client
-          .from('payout_snapshots')
+      final res = await SupabaseService.safeFrom('payout_snapshots', tenantId)
           .select('id, is_employee, profile_id, client_id, recipient_name, total_amount, items_data')
-          .eq('tenant_id', tenantId)
           .eq('payout_period', periodStr)
           .order('recipient_name');
 
@@ -421,21 +419,16 @@ class SettlementRepository {
 
     final periodStr =
         '${payoutPeriodFirstDay.year}-${payoutPeriodFirstDay.month.toString().padLeft(2, '0')}-01';
-    final client = SupabaseService.client;
 
     // Načtení existujícího řádku pro tento měsíc a příjemce (pro merge při doplacení).
     final existingRaw = isEmployee
-        ? await client
-            .from('payout_snapshots')
+        ? await SupabaseService.safeFrom('payout_snapshots', tenantId)
             .select('id, total_amount, items_data')
-            .eq('tenant_id', tenantId)
             .eq('payout_period', periodStr)
             .eq('profile_id', profileId!)
             .maybeSingle()
-        : await client
-            .from('payout_snapshots')
+        : await SupabaseService.safeFrom('payout_snapshots', tenantId)
             .select('id, total_amount, items_data')
-            .eq('tenant_id', tenantId)
             .eq('payout_period', periodStr)
             .eq('client_id', clientId!)
             .maybeSingle();
@@ -453,24 +446,25 @@ class SettlementRepository {
       final mergedItems = [...existingItems, ...itemsData];
       final mergedAmount = existingAmount + totalAmount;
 
-      await client.from('payout_snapshots').update({
+      await SupabaseService.safeFrom('payout_snapshots', tenantId).update({
         'total_amount': mergedAmount,
         'items_data': mergedItems,
         'locked_at': DateTime.now().toUtc().toIso8601String(),
       }).eq('id', existing['id']);
     } else {
       // Nový řádek.
-      await client.from('payout_snapshots').insert({
-        'tenant_id': tenantId,
-        'payout_period': periodStr,
-        'is_employee': isEmployee,
-        'profile_id': isEmployee ? profileId : null,
-        'client_id': isEmployee ? null : clientId,
-        'recipient_name': recipientName.trim().isEmpty ? '—' : recipientName,
-        'total_amount': totalAmount,
-        'items_data': itemsData,
-        'locked_by': lockedByProfileId,
-      });
+      await SupabaseService.safeFrom('payout_snapshots', tenantId).insert(
+            SupabaseService.safeInsertPayload(tenantId, {
+              'payout_period': periodStr,
+              'is_employee': isEmployee,
+              'profile_id': isEmployee ? profileId : null,
+              'client_id': isEmployee ? null : clientId,
+              'recipient_name': recipientName.trim().isEmpty ? 'common.placeholder_dash'.tr() : recipientName,
+              'total_amount': totalAmount,
+              'items_data': itemsData,
+              'locked_by': lockedByProfileId,
+            }),
+          );
     }
   }
 
@@ -492,11 +486,9 @@ class SettlementRepository {
 
     final period = DateTime.utc(month.year, month.month, 1);
     final periodStr = '${period.year}-${period.month.toString().padLeft(2, '0')}-01';
-    final client = SupabaseService.client;
 
     final rows = snapshotRows.map((row) {
-      return {
-        'tenant_id': tenantId,
+      return SupabaseService.safeInsertPayload(tenantId, {
         'payout_period': periodStr,
         'is_employee': row['is_employee'] as bool,
         'profile_id': row['profile_id'] as String?,
@@ -505,10 +497,10 @@ class SettlementRepository {
         'total_amount': (row['total_amount'] as num).toDouble(),
         'items_data': row['items_data'],
         'locked_by': lockedByProfileId,
-      };
+      });
     }).toList();
 
-    await client.from('payout_snapshots').insert(rows);
+    await SupabaseService.safeFrom('payout_snapshots', tenantId).insert(rows);
   }
 
   /// Načte surové řádky úkolů pro frontu „Ke schválení“ – dokončené úkoly bez výplat/provizí.
@@ -529,10 +521,8 @@ class SettlementRepository {
     try {
       final excludeIds = await getTaskIdsWithPayouts(tenantId);
 
-      final res = await SupabaseService.client
-          .from('tasks')
+      final res = await SupabaseService.safeFrom('tasks', tenantId)
           .select()
-          .eq('tenant_id', tenantId)
           .isFilter('deleted_at', null)
           .inFilter('status', ['completed', 'done', 'hotovo', 'dokončeno'])
           .order('completed_at', ascending: false)
@@ -543,7 +533,8 @@ class SettlementRepository {
         final id = (r['id'] as String?)?.trim();
         return id != null && id.isNotEmpty && !excludeIds.contains(id);
       }).toList();
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('SettlementRepository.getAllPendingSettlementTasks selhal', e, st);
       return [];
     }
   }
@@ -558,10 +549,7 @@ class SettlementRepository {
     if (tenantId.trim().isEmpty) return {};
 
     try {
-      final res = await SupabaseService.client
-          .from('task_payouts')
-          .select('task_id')
-          .eq('tenant_id', tenantId);
+      final res = await SupabaseService.safeFrom('task_payouts', tenantId).select('task_id');
 
       final list = res as List;
       final ids = <String>{};
@@ -571,7 +559,8 @@ class SettlementRepository {
         if (tid != null && tid.isNotEmpty) ids.add(tid);
       }
       return ids;
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('SettlementRepository.getTaskIdsWithPayouts selhal', e, st);
       return {};
     }
   }
@@ -586,10 +575,7 @@ class SettlementRepository {
     if (tenantId.trim().isEmpty) return {};
 
     try {
-      final res = await SupabaseService.client
-          .from('task_commissions')
-          .select('task_id')
-          .eq('tenant_id', tenantId);
+      final res = await SupabaseService.safeFrom('task_commissions', tenantId).select('task_id');
 
       final list = res as List;
       final ids = <String>{};
@@ -599,7 +585,8 @@ class SettlementRepository {
         if (tid != null && tid.isNotEmpty) ids.add(tid);
       }
       return ids;
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('SettlementRepository.getTaskIdsWithCommissions selhal', e, st);
       return {};
     }
   }

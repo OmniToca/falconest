@@ -1,0 +1,3 @@
+/* FCM: template-reminders (English default for devices without cs/es bundle) */
+"fcm_template_reminder_title" = "📱 Time to send a message: %@";
+"fcm_template_reminder_body" = "%@ — Flight at %@ — Send WhatsApp template (step %@: 1=48h, 2=24h, 3=1h).";

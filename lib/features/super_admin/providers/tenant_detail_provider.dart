@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 
 /// Model uživatele z profiles pro zobrazení v týmu agentury.
 class ProfileRow {
@@ -214,7 +215,8 @@ final tenantDetailProvider =
 
     if (res == null) return null;
     return TenantDetailRow.fromJson(Map<String, dynamic>.from(res as Map));
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('tenantDetailProvider: načtení detailu tenanta selhalo', e, st);
     return null;
   }
 });
@@ -240,10 +242,13 @@ final tenantProfilesProvider =
           name: map['name'] as String? ?? '',
           role: map['role'] as String? ?? '',
         ));
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('tenantProfilesProvider: parsování řádku profilu tenanta selhalo', e, st);
+      }
     }
     return result;
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('tenantProfilesProvider: hlavní dotaz na profily tenanta selhal', e, st);
     return [];
   }
 });
@@ -289,7 +294,9 @@ final tenantStatsFullProvider =
         .eq('tenant_id', tenantId)
         .filter('deleted_at', 'is', null);
     activeUsers = (profilesRes as List).length;
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('tenantStatsFullProvider: počet aktivních profilů tenanta selhal', e, st);
+  }
   try {
     dynamic invRes;
     try {
@@ -298,14 +305,17 @@ final tenantStatsFullProvider =
           .select('id')
           .eq('tenant_id', tenantId)
           .filter('deleted_at', 'is', null);
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('tenantStatsFullProvider: invitations s deleted_at filtrem selhal, použit fallback', e, st);
       invRes = await client
           .from('invitations')
           .select('id')
           .eq('tenant_id', tenantId);
     }
     pendingInvitations = (invRes as List).length;
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('tenantStatsFullProvider: počet čekajících pozvánek tenanta selhal', e, st);
+  }
   try {
     final aptRes = await client
         .from('apartments')
@@ -313,7 +323,9 @@ final tenantStatsFullProvider =
         .eq('tenant_id', tenantId)
         .filter('deleted_at', 'is', null);
     apartmentCount = (aptRes as List).length;
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('tenantStatsFullProvider: počet bytů tenanta selhal', e, st);
+  }
   return TenantStatsFull(
     activeUsers: activeUsers,
     pendingInvitations: pendingInvitations,
@@ -334,7 +346,9 @@ final tenantStatsProvider =
         .eq('tenant_id', tenantId)
         .filter('deleted_at', 'is', null);
     apartments = (aptRes as List).length;
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('tenantStatsProvider: počet bytů tenanta selhal', e, st);
+  }
   try {
     final now = DateTime.now();
     final start = DateTime(now.year, now.month, 1).toUtc().toIso8601String();
@@ -358,7 +372,9 @@ final tenantStatsProvider =
           .lte('start_date', end);
       reservations = (resRes as List).length;
     }
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('tenantStatsProvider: počet rezervací v měsíci selhal', e, st);
+  }
   return TenantStats(
     apartmentCount: apartments,
     reservationsThisMonth: reservations,
@@ -421,7 +437,8 @@ final tenantModuleSubscriptionMapProvider =
       map[moduleId] = TenantModuleSubscriptionData.fromJson(row);
     }
     return map;
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('tenantModuleSubscriptionMapProvider: načtení tenant_modules selhalo', e, st);
     return {};
   }
 });

@@ -4,6 +4,7 @@ import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/providers/tenant_currency_local_stub.dart'
     if (dart.library.io) 'package:falconest/core/providers/tenant_currency_local_io.dart' as tenant_currency_local;
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 
 /// Načte výchozí měnu aktuálního tenanta (agentury).
 ///
@@ -41,6 +42,8 @@ final currentTenantCurrencyProvider = FutureProvider<String?>((ref) async {
         return v.trim().toUpperCase();
       }
     }
-  } catch (_) {}
+  } catch (e, st) {
+    AppLogger.error('currentTenantCurrencyProvider: dotaz currency na tenants z Supabase selhal', e, st);
+  }
   return null;
 });

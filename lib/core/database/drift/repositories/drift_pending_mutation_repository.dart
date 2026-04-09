@@ -100,4 +100,14 @@ class DriftPendingMutationRepository {
   Stream<int> watchCount() {
     return _db.select(_db.pendingMutations).watch().map((rows) => rows.length);
   }
+
+  /// Stream celé fronty v pořadí vytvoření – Drift při změně tabulky znovu vyemituje seznam.
+  ///
+  /// PROČ: Obrazovka worker fronty potřebuje okamžitou aktualizaci po processQueue / enqueue
+  /// bez ruční invalidace provideru.
+  Stream<List<PendingMutationRow>> watchAllOrderedByCreatedAt() {
+    final query = _db.select(_db.pendingMutations)
+      ..orderBy([(t) => OrderingTerm.asc(t.createdAt)]);
+    return query.watch().map((rows) => rows.map(_toRow).toList());
+  }
 }

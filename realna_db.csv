@@ -1,0 +1,485 @@
+Tabulka,Sloupec,Typ dat,Může být NULL?
+agency_management_settlements,id,uuid,NO
+agency_management_settlements,profile_id,uuid,NO
+agency_management_settlements,tenant_id,uuid,NO
+agency_management_settlements,settlement_period,date,NO
+agency_management_settlements,role_type,text,NO
+agency_management_settlements,amount,numeric,NO
+agency_management_settlements,status,text,NO
+agency_management_settlements,approved_by,uuid,YES
+agency_management_settlements,approved_at,timestamp with time zone,YES
+agency_management_settlements,created_at,timestamp with time zone,NO
+agency_management_settlements,updated_at,timestamp with time zone,NO
+apartment_ical_sources,id,uuid,NO
+apartment_ical_sources,tenant_id,uuid,NO
+apartment_ical_sources,apartment_id,uuid,NO
+apartment_ical_sources,ical_url,text,NO
+apartment_ical_sources,source_label,text,NO
+apartment_ical_sources,last_synced_at,timestamp with time zone,YES
+apartment_ical_sources,created_at,timestamp with time zone,YES
+apartment_ical_sources,updated_at,timestamp with time zone,YES
+apartment_owners,id,uuid,NO
+apartment_owners,apartment_id,uuid,NO
+apartment_owners,owner_id,uuid,NO
+apartment_owners,deleted_at,timestamp with time zone,YES
+apartment_owners,is_primary_billing,boolean,YES
+apartment_services,id,uuid,NO
+apartment_services,tenant_id,uuid,NO
+apartment_services,apartment_id,uuid,NO
+apartment_services,service_id,uuid,NO
+apartment_services,custom_price,numeric,YES
+apartment_services,custom_description,text,YES
+apartment_services,trigger_type,text,NO
+apartment_services,schedule_interval,text,YES
+apartment_services,is_mandatory,boolean,NO
+apartment_services,payer_type,text,NO
+apartment_services,requires_photo,boolean,YES
+apartment_services,checklist_template_id,uuid,YES
+apartments,id,uuid,NO
+apartments,tenant_id,uuid,NO
+apartments,name,text,NO
+apartments,address,text,YES
+apartments,keybox,text,YES
+apartments,status,text,YES
+apartments,check_in_time,text,YES
+apartments,check_out_time,text,YES
+apartments,standard_cleaning_duration,integer,YES
+apartments,owner_notes,text,YES
+apartments,deleted_at,timestamp with time zone,YES
+apartments,zone_id,uuid,YES
+apartments,code,text,YES
+apartments,monthly_management_fee,numeric,YES
+apartments,managed_from,date,YES
+apartments,parking_instructions,text,YES
+apartments,review_link,text,YES
+app_super_admins,id,uuid,NO
+audit_logs,id,uuid,NO
+audit_logs,tenant_id,uuid,YES
+audit_logs,user_id,uuid,YES
+audit_logs,action_type,text,NO
+audit_logs,table_name,text,YES
+audit_logs,record_id,text,YES
+audit_logs,details,jsonb,YES
+audit_logs,created_at,timestamp with time zone,NO
+automation_message_queue,id,uuid,NO
+automation_message_queue,tenant_id,uuid,NO
+automation_message_queue,rule_id,uuid,YES
+automation_message_queue,entity_id,uuid,NO
+automation_message_queue,entity_type,text,NO
+automation_message_queue,scheduled_for,timestamp with time zone,NO
+automation_message_queue,status,USER-DEFINED,NO
+automation_message_queue,channel,USER-DEFINED,NO
+automation_message_queue,recipient_contact,text,YES
+automation_message_queue,editable_payload,jsonb,NO
+automation_message_queue,attempt_count,integer,NO
+automation_message_queue,last_error,text,YES
+automation_message_queue,created_at,timestamp with time zone,NO
+automation_message_queue,updated_at,timestamp with time zone,NO
+automation_rules,id,uuid,NO
+automation_rules,tenant_id,uuid,NO
+automation_rules,name,text,NO
+automation_rules,is_active,boolean,NO
+automation_rules,trigger_event,text,NO
+automation_rules,offset_minutes,integer,NO
+automation_rules,channel,USER-DEFINED,NO
+automation_rules,template_id,uuid,NO
+automation_rules,target_entity,text,NO
+automation_rules,quiet_hours_start,time without time zone,YES
+automation_rules,quiet_hours_end,time without time zone,YES
+automation_rules,created_at,timestamp with time zone,NO
+automation_rules,updated_at,timestamp with time zone,NO
+billing_shortfall_transfers,id,uuid,NO
+billing_shortfall_transfers,tenant_id,uuid,NO
+billing_shortfall_transfers,client_id,uuid,NO
+billing_shortfall_transfers,amount,numeric,NO
+billing_shortfall_transfers,description,text,YES
+billing_shortfall_transfers,task_id,uuid,YES
+billing_shortfall_transfers,cash_transaction_id,uuid,NO
+billing_shortfall_transfers,created_at,timestamp with time zone,NO
+billing_snapshots,id,uuid,NO
+billing_snapshots,tenant_id,uuid,NO
+billing_snapshots,client_id,uuid,NO
+billing_snapshots,billing_period,date,NO
+billing_snapshots,snapshot_data,jsonb,NO
+billing_snapshots,locked_at,timestamp with time zone,NO
+billing_snapshots,locked_by,uuid,NO
+checklist_template_items,id,uuid,NO
+checklist_template_items,tenant_id,uuid,NO
+checklist_template_items,template_id,uuid,NO
+checklist_template_items,title,text,NO
+checklist_template_items,is_photo_required,boolean,NO
+checklist_template_items,sort_order,integer,NO
+checklist_template_items,created_at,timestamp with time zone,NO
+checklist_template_items,updated_at,timestamp with time zone,NO
+checklist_templates,id,uuid,NO
+checklist_templates,tenant_id,uuid,NO
+checklist_templates,name,text,NO
+checklist_templates,description,text,YES
+checklist_templates,is_active,boolean,NO
+checklist_templates,created_at,timestamp with time zone,NO
+checklist_templates,updated_at,timestamp with time zone,NO
+client_addresses,id,uuid,NO
+client_addresses,tenant_id,uuid,NO
+client_addresses,client_id,uuid,NO
+client_addresses,label,text,NO
+client_addresses,address,text,NO
+client_addresses,created_at,timestamp with time zone,YES
+client_addresses,updated_at,timestamp with time zone,YES
+client_addresses,deleted_at,timestamp with time zone,YES
+clients,id,uuid,NO
+clients,tenant_id,uuid,NO
+clients,name,text,NO
+clients,email,text,YES
+clients,phone,text,YES
+clients,client_type,text,YES
+clients,created_at,timestamp with time zone,YES
+clients,deleted_at,timestamp with time zone,YES
+clients,profile_id,uuid,YES
+clients,agency_id,uuid,YES
+clients,language_code,character varying,YES
+cron_edge_config,key,text,NO
+cron_edge_config,value,text,NO
+currencies,code,text,NO
+currencies,symbol,text,NO
+currencies,rate,numeric,NO
+currencies,name,text,YES
+currencies,created_at,timestamp with time zone,YES
+employee_cash_transactions,id,uuid,NO
+employee_cash_transactions,tenant_id,uuid,NO
+employee_cash_transactions,wallet_id,uuid,NO
+employee_cash_transactions,task_id,uuid,YES
+employee_cash_transactions,amount,numeric,NO
+employee_cash_transactions,transaction_type,text,NO
+employee_cash_transactions,created_by,uuid,NO
+employee_cash_transactions,created_at,timestamp with time zone,YES
+employee_cash_transactions,note,text,YES
+employee_cash_transactions,receipt_image_url,text,YES
+employee_cash_transactions,expected_amount,numeric,YES
+employee_cash_transactions,apartment_id,uuid,YES
+employee_cash_transactions,client_id,uuid,YES
+employee_cash_transactions,is_shortfall_resolved,boolean,NO
+employee_cash_transactions,shortfall_resolution_type,text,YES
+employee_cash_transactions,shortfall_resolution_note,text,YES
+employee_cash_wallets,id,uuid,NO
+employee_cash_wallets,tenant_id,uuid,NO
+employee_cash_wallets,profile_id,uuid,NO
+employee_cash_wallets,balance,numeric,NO
+employee_cash_wallets,updated_at,timestamp with time zone,YES
+hq_staff_contracts,id,uuid,NO
+hq_staff_contracts,profile_id,uuid,NO
+hq_staff_contracts,employment_type,text,NO
+hq_staff_contracts,position_label,text,YES
+hq_staff_contracts,fixed_salary_monthly,numeric,YES
+hq_staff_contracts,bonus_per_acquired_agency,numeric,YES
+hq_staff_contracts,commission_percent_managed,numeric,YES
+hq_staff_contracts,valid_from,date,NO
+hq_staff_contracts,valid_to,date,YES
+hq_staff_contracts,created_at,timestamp with time zone,NO
+hq_staff_contracts,updated_at,timestamp with time zone,NO
+invitations,id,uuid,NO
+invitations,email,text,NO
+invitations,tenant_id,uuid,YES
+invitations,role,text,NO
+invitations,first_name,text,NO
+invitations,last_name,text,NO
+invitations,created_at,timestamp with time zone,YES
+invitations,roles,ARRAY,YES
+invitations,start_date,text,YES
+invitations,end_date,text,YES
+invitations,weekly_hours,integer,YES
+invitations,profile_id,uuid,YES
+invoices,id,uuid,NO
+invoices,tenant_id,uuid,NO
+invoices,stripe_invoice_id,text,YES
+invoices,amount_due,numeric,NO
+invoices,amount_paid,numeric,NO
+invoices,currency,text,NO
+invoices,status,text,NO
+invoices,invoice_pdf_url,text,YES
+invoices,created_at,timestamp with time zone,NO
+invoices,paid_at,timestamp with time zone,YES
+modules,id,uuid,NO
+modules,key,text,NO
+modules,name,text,NO
+modules,description,text,YES
+modules,price_eur,numeric,YES
+modules,created_at,timestamp with time zone,YES
+modules,order_index,integer,YES
+modules,pricing_type,text,NO
+modules,show_in_menu,boolean,NO
+modules,parent_module_key,text,YES
+notification_preferences,profile_id,uuid,NO
+notification_preferences,tenant_id,uuid,NO
+notification_preferences,daily_summary_enabled,boolean,NO
+notification_preferences,upcoming_task_enabled,boolean,NO
+notification_preferences,new_task_assigned_enabled,boolean,NO
+notification_preferences,template_reminders_enabled,boolean,NO
+notifications,id,uuid,NO
+notifications,tenant_id,uuid,NO
+notifications,profile_id,uuid,NO
+notifications,title,text,NO
+notifications,message,text,NO
+notifications,type,text,YES
+notifications,is_read,boolean,NO
+notifications,created_at,timestamp with time zone,YES
+payout_snapshots,id,uuid,NO
+payout_snapshots,tenant_id,uuid,NO
+payout_snapshots,payout_period,date,NO
+payout_snapshots,is_employee,boolean,NO
+payout_snapshots,profile_id,uuid,YES
+payout_snapshots,client_id,uuid,YES
+payout_snapshots,recipient_name,text,NO
+payout_snapshots,total_amount,numeric,NO
+payout_snapshots,items_data,jsonb,NO
+payout_snapshots,locked_at,timestamp with time zone,NO
+payout_snapshots,locked_by,uuid,NO
+platform_messaging_rates,id,uuid,NO
+platform_messaging_rates,channel,text,NO
+platform_messaging_rates,price_eur,numeric,NO
+platform_messaging_rates,valid_from,timestamp with time zone,NO
+platform_messaging_rates,created_at,timestamp with time zone,NO
+profiles,id,uuid,NO
+profiles,auth_id,uuid,YES
+profiles,email,text,YES
+profiles,first_name,text,YES
+profiles,last_name,text,YES
+profiles,name,text,YES
+profiles,status,text,NO
+profiles,tenant_id,uuid,YES
+profiles,role,text,YES
+profiles,roles,ARRAY,YES
+profiles,weekly_hours,integer,YES
+profiles,start_date,date,YES
+profiles,end_date,date,YES
+profiles,language_code,text,YES
+profiles,preferred_currency,text,YES
+profiles,last_sign_in_at,timestamp with time zone,YES
+profiles,created_at,timestamp with time zone,YES
+profiles,updated_at,timestamp with time zone,YES
+profiles,deleted_at,timestamp with time zone,YES
+profiles,zone_preferences,jsonb,YES
+reservation_services,id,uuid,NO
+reservation_services,tenant_id,uuid,NO
+reservation_services,reservation_id,uuid,NO
+reservation_services,apartment_service_id,uuid,NO
+reservation_services,custom_note,text,YES
+reservation_services,charged_price,numeric,YES
+reservation_services,payer_type,text,YES
+reservation_services,requires_photo,boolean,YES
+reservation_services,flight_number,text,YES
+reservations,id,uuid,NO
+reservations,apartment_id,uuid,NO
+reservations,start_date,date,NO
+reservations,end_date,date,NO
+reservations,special_requests,text,YES
+reservations,guest_name,text,YES
+reservations,check_in,text,YES
+reservations,check_out,text,YES
+reservations,needs_transfer,boolean,YES
+reservations,status,text,YES
+reservations,tenant_id,uuid,YES
+reservations,deleted_at,timestamp with time zone,YES
+reservations,guest_adults,integer,NO
+reservations,guest_children,integer,NO
+reservations,arrival_time,timestamp with time zone,YES
+reservations,guest_phone,text,YES
+reservations,reservation_source,text,YES
+reservations,departure_time,timestamp with time zone,YES
+reservations,internal_note,text,YES
+reservations,agency_collects_payment,boolean,YES
+reservations,reference_number,text,YES
+reservations,external_uid,text,YES
+reservations,last_communication_template_context,text,YES
+reservations,last_communication_at,timestamp with time zone,YES
+reservations,last_communication_template_id,uuid,YES
+reservations,guest_language,character varying,YES
+reservations,is_owner_block,boolean,NO
+staff_absences,id,uuid,NO
+staff_absences,profile_id,uuid,YES
+staff_absences,start_date,text,NO
+staff_absences,end_date,text,NO
+staff_absences,reason,text,YES
+staff_absences,invitation_id,uuid,YES
+staff_absences,tenant_id,uuid,YES
+staff_absences,status,text,YES
+support_interventions,id,uuid,NO
+support_interventions,profile_id,uuid,NO
+support_interventions,tenant_id,uuid,NO
+support_interventions,started_at,timestamp with time zone,NO
+support_interventions,ended_at,timestamp with time zone,YES
+support_interventions,work_report,text,YES
+support_interventions,created_at,timestamp with time zone,NO
+support_interventions,updated_at,timestamp with time zone,NO
+task_categories,id,uuid,NO
+task_categories,code,text,NO
+task_categories,color_hex,text,NO
+task_categories,icon_name,text,YES
+task_categories,order_index,integer,YES
+task_categories,planning_priority,integer,NO
+task_checklist_items,id,uuid,NO
+task_checklist_items,tenant_id,uuid,NO
+task_checklist_items,task_checklist_id,uuid,NO
+task_checklist_items,title,text,NO
+task_checklist_items,is_photo_required,boolean,NO
+task_checklist_items,sort_order,integer,NO
+task_checklist_items,is_completed,boolean,NO
+task_checklist_items,completed_at,timestamp with time zone,YES
+task_checklist_items,completed_by,uuid,YES
+task_checklist_items,photo_url,text,YES
+task_checklist_items,created_at,timestamp with time zone,NO
+task_checklist_items,updated_at,timestamp with time zone,NO
+task_checklists,id,uuid,NO
+task_checklists,tenant_id,uuid,NO
+task_checklists,task_id,uuid,NO
+task_checklists,template_id,uuid,YES
+task_checklists,created_at,timestamp with time zone,NO
+task_checklists,updated_at,timestamp with time zone,NO
+task_commissions,id,uuid,NO
+task_commissions,tenant_id,uuid,NO
+task_commissions,task_id,uuid,NO
+task_commissions,client_id,uuid,YES
+task_commissions,amount,numeric,NO
+task_commissions,status,text,NO
+task_commissions,created_at,timestamp with time zone,NO
+task_commissions,updated_at,timestamp with time zone,NO
+task_commissions,profile_id,uuid,YES
+task_payouts,id,uuid,NO
+task_payouts,tenant_id,uuid,NO
+task_payouts,task_id,uuid,NO
+task_payouts,profile_id,uuid,NO
+task_payouts,amount,numeric,NO
+task_payouts,status,text,NO
+task_payouts,created_at,timestamp with time zone,NO
+task_payouts,updated_at,timestamp with time zone,NO
+tasks,id,uuid,NO
+tasks,tenant_id,uuid,NO
+tasks,apartment_id,uuid,YES
+tasks,assigned_user_id,uuid,YES
+tasks,scheduled_start,timestamp with time zone,NO
+tasks,status,text,NO
+tasks,photo_url,text,YES
+tasks,local_updated_at,timestamp with time zone,NO
+tasks,assigned_to,uuid,YES
+tasks,task_type,text,YES
+tasks,due_date,text,YES
+tasks,description,text,YES
+tasks,title,text,YES
+tasks,deleted_at,timestamp with time zone,YES
+tasks,reservation_id,uuid,YES
+tasks,service_id,uuid,YES
+tasks,metadata,jsonb,NO
+tasks,started_at,timestamp with time zone,YES
+tasks,completed_at,timestamp with time zone,YES
+tasks,created_by,uuid,YES
+tasks,media_urls,ARRAY,YES
+tasks,invoiced_at,timestamp with time zone,YES
+tasks,client_id,uuid,YES
+tasks,custom_location,text,YES
+tasks,custom_title,text,YES
+tasks,reference_number,text,YES
+tasks,assigned_user_ids,ARRAY,NO
+tasks,updated_at,timestamp with time zone,YES
+tasks,unassigned_info,jsonb,YES
+tasks,last_communication_template_id,uuid,YES
+tasks,last_communication_template_context,text,YES
+tasks,last_communication_at,timestamp with time zone,YES
+tenant_calendar_feed_tokens,id,uuid,NO
+tenant_calendar_feed_tokens,tenant_id,uuid,NO
+tenant_calendar_feed_tokens,token_hash,text,NO
+tenant_calendar_feed_tokens,label,text,YES
+tenant_calendar_feed_tokens,revoked_at,timestamp with time zone,YES
+tenant_calendar_feed_tokens,created_at,timestamp with time zone,NO
+tenant_message_log,id,uuid,NO
+tenant_message_log,tenant_id,uuid,NO
+tenant_message_log,queue_id,uuid,YES
+tenant_message_log,sent_at,timestamp with time zone,NO
+tenant_message_log,channel,USER-DEFINED,NO
+tenant_message_log,external_api_id,text,YES
+tenant_message_log,status,text,NO
+tenant_message_log,unit_price,numeric,YES
+tenant_message_log,recipient_masked,text,YES
+tenant_message_log,content_snapshot,text,NO
+tenant_message_log,error_details,text,YES
+tenant_message_log,created_at,timestamp with time zone,NO
+tenant_message_log,direction,text,NO
+tenant_message_log,inbound_text,text,YES
+tenant_message_log,metadata,jsonb,NO
+tenant_message_templates,id,uuid,NO
+tenant_message_templates,tenant_id,uuid,NO
+tenant_message_templates,key,text,NO
+tenant_message_templates,name,text,NO
+tenant_message_templates,channel,text,YES
+tenant_message_templates,trigger_context,text,YES
+tenant_message_templates,order_index,integer,NO
+tenant_message_templates,created_at,timestamp with time zone,YES
+tenant_message_templates,deleted_at,timestamp with time zone,YES
+tenant_message_templates,email_subject,text,YES
+tenant_message_templates,translations,jsonb,YES
+tenant_modules,id,uuid,NO
+tenant_modules,tenant_id,uuid,YES
+tenant_modules,module_id,uuid,YES
+tenant_modules,status,text,YES
+tenant_modules,valid_until,timestamp with time zone,YES
+tenant_modules,created_at,timestamp with time zone,YES
+tenant_modules,is_trial,boolean,NO
+tenant_modules,trial_ends_at,timestamp with time zone,YES
+tenant_modules,deleted_at,timestamp with time zone,YES
+tenant_modules,stripe_subscription_id,text,YES
+tenant_modules,stripe_price_id,text,YES
+tenant_modules,cancel_at_period_end,boolean,NO
+tenant_services,id,uuid,NO
+tenant_services,tenant_id,uuid,NO
+tenant_services,name,text,NO
+tenant_services,description,text,YES
+tenant_services,service_type,text,NO
+tenant_services,default_price,numeric,YES
+tenant_services,is_active,boolean,NO
+tenant_services,deleted_at,timestamp with time zone,YES
+tenant_services,order_index,integer,YES
+tenant_services,required_role,text,YES
+tenant_services,duration_minutes,integer,YES
+tenant_services,requires_photo,boolean,NO
+tenant_usage_monthly,id,uuid,NO
+tenant_usage_monthly,tenant_id,uuid,NO
+tenant_usage_monthly,billing_month,text,NO
+tenant_usage_monthly,channel,USER-DEFINED,NO
+tenant_usage_monthly,sent_count,integer,NO
+tenant_usage_monthly,created_at,timestamp with time zone,NO
+tenant_usage_monthly,updated_at,timestamp with time zone,NO
+tenant_wallets,tenant_id,uuid,NO
+tenant_wallets,balance,integer,NO
+tenant_wallets,updated_at,timestamp with time zone,YES
+tenants,id,uuid,NO
+tenants,name,text,NO
+tenants,notes,text,YES
+tenants,is_active,boolean,YES
+tenants,trial_ends_at,date,YES
+tenants,system_announcement,text,YES
+tenants,billing_info,jsonb,YES
+tenants,price_per_apartment,numeric,YES
+tenants,currency,text,YES
+tenants,discount_percentage,integer,NO
+tenants,deleted_at,timestamp with time zone,YES
+tenants,stripe_customer_id,text,YES
+tenants,billing_email,text,YES
+tenants,paid_until,timestamp with time zone,YES
+tenants,acquired_by,uuid,YES
+tenants,managed_by,uuid,YES
+tenants,integration_settings,jsonb,NO
+user_devices,id,uuid,NO
+user_devices,tenant_id,uuid,NO
+user_devices,profile_id,uuid,NO
+user_devices,fcm_token,text,NO
+user_devices,device_type,text,NO
+user_devices,last_active_at,timestamp with time zone,YES
+wallet_transactions,id,uuid,NO
+wallet_transactions,tenant_id,uuid,NO
+wallet_transactions,amount,integer,NO
+wallet_transactions,transaction_type,text,NO
+wallet_transactions,reference_id,text,YES
+wallet_transactions,created_at,timestamp with time zone,YES
+zones,id,uuid,NO
+zones,tenant_id,uuid,NO
+zones,name,text,NO
+zones,created_at,timestamp with time zone,YES
+zones,deleted_at,timestamp with time zone,YES

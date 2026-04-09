@@ -24,5 +24,8 @@ final unreadNotificationsProvider = StreamProvider<List<NotificationModel>>((ref
     return Stream.value([]);
   }
 
-  return ref.read(notificationRepositoryProvider).watchUnreadNotifications(profileId);
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  return ref
+      .read(notificationRepositoryProvider)
+      .watchUnreadNotifications(profileId, tenantId);
 });

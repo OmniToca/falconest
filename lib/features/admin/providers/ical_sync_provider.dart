@@ -11,7 +11,9 @@ import 'package:falconest/features/admin/services/ical_sync_service.dart';
 /// Načte seznam iCal zdrojů pro daný apartmán.
 final icalSourcesProvider =
     FutureProvider.autoDispose.family<List<IcalSourceRow>, String>((ref, apartmentId) async {
-  return IcalSyncService.instance.getSources(apartmentId);
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return [];
+  return IcalSyncService.instance.getSources(apartmentId, tenantId);
 });
 
 /// Provider pro Notifier, který spravuje přidávání zdrojů a sync (loading, chyby).
@@ -90,7 +92,9 @@ class IcalSyncNotifier extends StateNotifier<IcalSyncState> {
 
   /// Odstraní iCal zdroj a invaliduje seznam.
   Future<void> removeSource(String apartmentId, String sourceId) async {
-    await IcalSyncService.instance.removeSource(sourceId);
+    final tenantId = _tenantId;
+    if (tenantId == null || tenantId.isEmpty) return;
+    await IcalSyncService.instance.removeSource(sourceId, tenantId);
     _ref.invalidate(icalSourcesProvider(apartmentId));
   }
 
@@ -115,7 +119,7 @@ class IcalSyncNotifier extends StateNotifier<IcalSyncState> {
       _ref.invalidate(adminReservationsProvider);
       _ref.invalidate(icalSourcesProvider(apartmentId));
       if (sourceId != null && result.error == null) {
-        await IcalSyncService.instance.updateLastSyncedAt(sourceId);
+        await IcalSyncService.instance.updateLastSyncedAt(sourceId, tenantId);
         _ref.invalidate(icalSourcesProvider(apartmentId));
       }
       state = state.copyWith(syncingSourceId: null, syncError: result.error);

@@ -2,10 +2,14 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/features/admin/models/task_category_model.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/task_categories_provider.dart';
+import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
 import 'package:falconest/features/owner/providers/owner_tasks_provider.dart';
+import 'package:falconest/features/owner/widgets/owner_report_issue_dialog.dart';
+import 'package:falconest/features/owner/widgets/owner_task_detail_dialog.dart';
 import 'package:falconest/utils/task_visuals.dart';
 
 /// Obrazovka přehledu úkolů (prací) pro Klientský portál.
@@ -19,6 +23,8 @@ class OwnerTasksScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final tasksAsync = ref.watch(ownerTasksProvider);
     final categoriesByCode = ref.watch(taskCategoriesProvider).valueOrNull ?? {};
+    final apartments = ref.read(ownerApartmentsProvider).valueOrNull ?? [];
+    final profileId = ref.read(authNotifierProvider).state.profileId ?? '';
 
     return Scaffold(
       appBar: AppBar(
@@ -37,6 +43,7 @@ class OwnerTasksScreen extends ConsumerWidget {
           return _OwnerTasksKanbanBoard(
             tasks: tasks,
             categoriesByCode: categoriesByCode,
+            currentUserProfileId: profileId,
           );
         },
         loading: () => const Center(child: CircularProgressIndicator()),
@@ -60,6 +67,18 @@ class OwnerTasksScreen extends ConsumerWidget {
           ),
         ),
       ),
+      floatingActionButton: apartments.isEmpty
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: () => openOwnerReportIssueDialog(
+                context,
+                apartments: apartments,
+                profileId: profileId,
+                onSuccess: () => ref.invalidate(ownerTasksProvider),
+              ),
+              icon: const Icon(Icons.report_problem_outlined),
+              label: Text('owner.report_issue_btn'.tr()),
+            ),
     );
   }
 }
@@ -85,10 +104,12 @@ class _OwnerTasksKanbanBoard extends StatelessWidget {
   const _OwnerTasksKanbanBoard({
     required this.tasks,
     required this.categoriesByCode,
+    required this.currentUserProfileId,
   });
 
   final List<TaskRow> tasks;
   final Map<String, TaskCategoryModel> categoriesByCode;
+  final String currentUserProfileId;
 
   List<TaskRow> _tasksForColumn(_OwnerColumn col) {
     return tasks.where((t) => _columnForStatus(t.status) == col).toList();
@@ -105,16 +126,19 @@ class _OwnerTasksKanbanBoard extends StatelessWidget {
             tasks: _tasksForColumn(_OwnerColumn.assigned),
             titleKey: 'owner.tasks_column_assigned',
             categoriesByCode: categoriesByCode,
+            currentUserProfileId: currentUserProfileId,
           ),
           _OwnerKanbanColumn(
             tasks: _tasksForColumn(_OwnerColumn.inProgress),
             titleKey: 'owner.tasks_column_in_progress',
             categoriesByCode: categoriesByCode,
+            currentUserProfileId: currentUserProfileId,
           ),
           _OwnerKanbanColumn(
             tasks: _tasksForColumn(_OwnerColumn.completed),
             titleKey: 'owner.tasks_column_completed',
             categoriesByCode: categoriesByCode,
+            currentUserProfileId: currentUserProfileId,
           ),
         ].map((w) => Expanded(child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 6),
@@ -131,11 +155,13 @@ class _OwnerKanbanColumn extends StatelessWidget {
     required this.tasks,
     required this.titleKey,
     required this.categoriesByCode,
+    required this.currentUserProfileId,
   });
 
   final List<TaskRow> tasks;
   final String titleKey;
   final Map<String, TaskCategoryModel> categoriesByCode;
+  final String currentUserProfileId;
 
   @override
   Widget build(BuildContext context) {
@@ -165,11 +191,28 @@ class _OwnerKanbanColumn extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
               itemCount: tasks.length,
               itemBuilder: (context, index) {
+                final task = tasks[index];
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 8),
-                  child: _OwnerTaskCard(
-                    task: tasks[index],
-                    categoriesByCode: categoriesByCode,
+                  child: InkWell(
+                    onTap: () => OwnerTaskDetailDialog.show(
+                      context,
+                      OwnerTaskDetailData(
+                        title: task.title,
+                        taskType: task.taskType,
+                        apartmentName: task.apartmentName,
+                        scheduledStart: task.scheduledStart ?? task.dueDate,
+                        status: task.status,
+                        description: task.description.trim().isEmpty ? null : task.description,
+                        mediaUrls: task.mediaUrls,
+                      ),
+                    ),
+                    borderRadius: BorderRadius.circular(12),
+                    child: _OwnerTaskCard(
+                      task: task,
+                      categoriesByCode: categoriesByCode,
+                      currentUserProfileId: currentUserProfileId,
+                    ),
                   ),
                 );
               },
@@ -184,16 +227,18 @@ class _OwnerKanbanColumn extends StatelessWidget {
 /// Zjednodušená karta úkolu pro majitele.
 ///
 /// UI: Karta je striktně read-only, bez Drag&Drop a jmen personálu.
-/// Zobrazuje: typ úkolu, název, byt, datum a čas. Interní poznámky a jméno
-/// zaměstnance jsou skryty (nahrazeno generickým „Personál agentury“).
+/// Zobrazuje: typ úkolu, název, byt, datum a čas. Pokud úkol nahlásil majitel
+/// (createdBy == currentUserProfileId), zobrazí se Chip „Nahlášeno vámi“ a stav je zvýrazněn.
 class _OwnerTaskCard extends StatelessWidget {
   const _OwnerTaskCard({
     required this.task,
     required this.categoriesByCode,
+    required this.currentUserProfileId,
   });
 
   final TaskRow task;
   final Map<String, TaskCategoryModel> categoriesByCode;
+  final String currentUserProfileId;
 
   static String _formatDue(DateTime d) {
     return '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')} '
@@ -216,6 +261,9 @@ class _OwnerTaskCard extends StatelessWidget {
         return 'admin.task_type_check_out';
       case 'issue':
         return 'admin.task_type_issue';
+      case 'maintenance':
+      case 'údržba':
+        return 'admin.task_type_maintenance';
       case 'material':
         return 'admin.task_type_material';
       case 'jiné':
@@ -238,11 +286,15 @@ class _OwnerTaskCard extends StatelessWidget {
     if (s == 'in_progress' || s == 'probíhá') return 'task_status.in_progress'.tr();
     if (s == 'problem' || s == 'problém') return 'task_status.problem'.tr();
     if (s == 'completed' || s == 'done' || s == 'hotovo') return 'task_status.completed'.tr();
+    if (s == 'pending') return 'owner.task_status_new'.tr();
     return 'task_status.assigned'.tr();
   }
 
   @override
   Widget build(BuildContext context) {
+    final isReportedByMe = currentUserProfileId.isNotEmpty &&
+        task.createdBy != null &&
+        task.createdBy == currentUserProfileId;
     final dueStr = _formatDue(task.dueDate);
     final cardColor = TaskVisuals.getBackgroundColor(
       task.taskType,
@@ -255,11 +307,14 @@ class _OwnerTaskCard extends StatelessWidget {
     final statusColor = _statusColor(task.status);
 
     return Card(
-      elevation: 0,
+      elevation: isReportedByMe ? 1 : 0,
       color: cardColor,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade300),
+        side: BorderSide(
+          color: isReportedByMe ? const Color(0xFF1976D2) : Colors.grey.shade300,
+          width: isReportedByMe ? 1.5 : 1,
+        ),
       ),
       margin: EdgeInsets.zero,
       child: Padding(
@@ -280,6 +335,20 @@ class _OwnerTaskCard extends StatelessWidget {
                 ),
               ],
             ),
+            if (isReportedByMe) ...[
+              const SizedBox(height: 6),
+              Chip(
+                avatar: Icon(Icons.person_outline, size: 14, color: Colors.blue.shade700),
+                label: Text(
+                  'owner.tasks_reported_by_me'.tr(),
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.blue.shade800),
+                ),
+                backgroundColor: Colors.blue.shade50,
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 0),
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
             const SizedBox(height: 4),
             Text(
               (task.title.trim().isNotEmpty)
@@ -324,15 +393,19 @@ class _OwnerTaskCard extends StatelessWidget {
               runSpacing: 4,
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: isReportedByMe ? 8 : 6,
+                    vertical: isReportedByMe ? 4 : 2,
+                  ),
                   decoration: BoxDecoration(
-                    color: statusColor.withValues(alpha: 0.15),
+                    color: statusColor.withValues(alpha: isReportedByMe ? 0.25 : 0.15),
                     borderRadius: BorderRadius.circular(8),
+                    border: isReportedByMe ? Border.all(color: statusColor, width: 1) : null,
                   ),
                   child: Text(
                     _statusLabel(task.status),
                     style: TextStyle(
-                      fontSize: 10,
+                      fontSize: isReportedByMe ? 11 : 10,
                       fontWeight: FontWeight.bold,
                       color: statusColor,
                     ),

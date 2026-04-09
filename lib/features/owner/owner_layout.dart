@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/owner/owner_apartments_screen.dart';
 import 'package:falconest/features/owner/owner_billing_screen.dart';
+import 'package:falconest/features/owner/owner_dashboard_screen.dart';
 import 'package:falconest/features/owner/owner_planning_calendar_screen.dart';
 import 'package:falconest/features/owner/owner_reservations_screen.dart';
 import 'package:falconest/features/owner/owner_tasks_screen.dart';
@@ -19,16 +20,19 @@ const _accentColor = Color(0xFF1976D2);
 const _textMuted = Color(0xFF616161);
 
 /// Indexy záložek v klientském portálu.
-const int _ownerTabApartments = 0;
-const int _ownerTabReservations = 1;
-const int _ownerTabTasks = 2;
-const int _ownerTabCalendar = 3;
-const int _ownerTabBilling = 4;
+const int _ownerTabDashboard = 0;
+const int _ownerTabApartments = 1;
+const int _ownerTabReservations = 2;
+const int _ownerTabTasks = 3;
+const int _ownerTabCalendar = 4;
+const int _ownerTabBilling = 5;
 
 /// Responzivní layout pro klientský portál majitelů bytů (role property_owner).
 ///
 /// REFACTOR: Přechod z ShellRoute na IndexedStack pro stabilnější navigaci v Klientském portálu.
 /// Používá lokální stav (_selectedIndex) místo GoRouter pro přepínání záložek – stejný princip jako Admin.
+///
+/// [initialTabIndex] – výchozí záložka (např. při deeplinku `/owner/dashboard`).
 ///
 /// Pomocí [LayoutBuilder] mění chování podle šířky obrazovky:
 /// - **Úzké (< 800 px)**: Vysouvací [Drawer] s hamburger ikonou v AppBar
@@ -36,20 +40,36 @@ const int _ownerTabBilling = 4;
 ///
 /// Prémiový design: více whitespace, jemné stíny, zakulacené rohy.
 class OwnerLayout extends StatefulWidget {
-  const OwnerLayout({super.key});
+  const OwnerLayout({
+    super.key,
+    this.initialTabIndex = _ownerTabDashboard,
+  });
+
+  /// Výchozí záložka (0 = Dashboard, 1 = Apartmány, …).
+  final int initialTabIndex;
 
   @override
   State<OwnerLayout> createState() => _OwnerLayoutState();
 }
 
 class _OwnerLayoutState extends State<OwnerLayout> {
-  int _selectedIndex = _ownerTabApartments;
+  late int _selectedIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedIndex = widget.initialTabIndex.clamp(
+      _ownerTabDashboard,
+      _ownerTabBilling,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final body = IndexedStack(
       index: _selectedIndex,
       children: const [
+        OwnerDashboardScreen(),
         OwnerApartmentsScreen(),
         OwnerReservationsScreen(),
         OwnerTasksScreen(),
@@ -162,6 +182,12 @@ class _OwnerSidebar extends StatelessWidget {
               const Divider(height: 1, indent: 24, endIndent: 24),
               const SizedBox(height: 16),
               // Navigační položky – Přepnutí záložky přes setState (IndexedStack).
+              _OwnerNavItem(
+                icon: Icons.dashboard_outlined,
+                label: 'owner.menu_dashboard'.tr(),
+                isDrawer: isDrawer,
+                onTap: () => onIndexChanged(_ownerTabDashboard),
+              ),
               _OwnerNavItem(
                 icon: Icons.apartment_outlined,
                 label: 'owner.menu_apartments'.tr(),

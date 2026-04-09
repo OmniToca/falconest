@@ -5,6 +5,7 @@ library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/database/drift/database_provider.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/tasks/models/task_detail_data.dart';
 
 /// Načte detail úkolu podle Drift ID a mapuje na DTO.
@@ -36,7 +37,8 @@ final taskDetailProvider = FutureProvider.family<TaskDetailData?, int>((ref, tas
       apartmentAddress: apartmentAddress,
       apartmentKeybox: apartmentKeybox,
     );
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('taskDetailProvider (mobile): načtení detailu z Drift selhalo', e, st);
     return null;
   }
 });

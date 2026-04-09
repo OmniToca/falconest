@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/reservation_services_repository.dart';
 
@@ -17,17 +18,24 @@ import 'package:falconest/features/admin/providers/reservation_services_reposito
 /// [taskCount] = počet dokončených úkolů, kde assigned_to == assigneeId.
 /// [hoursWorked] = odpracované hodiny – součet z reálných časů (completed_at - started_at)
 /// když oba existují, jinak fallback na metadata.estimated_minutes.
+///
+/// [memberDisplayName]: null = bucket „nepřiřazeno“ ([assigneeId] prázdné); neprázdný řetězec = jméno
+/// z týmu v čase výpočtu reportu; prázdný řetězec = profil v datech úkolů, ale už není v týmu (UI: removed_user).
+/// PROČ v datech: grafy a seznam personálu nesmí volitelně sledovat [teamFullListProvider], aby se nepřekreslovaly při úpravě jmen.
 class EmployeePerformance {
   const EmployeePerformance({
     required this.assigneeId,
     required this.taskCount,
     required this.hoursWorked,
+    this.memberDisplayName,
   });
 
   final String assigneeId;
   final int taskCount;
+
   /// Hodiny (desetinné), např. 12.5 = 12h 30min.
   final double hoursWorked;
+  final String? memberDisplayName;
 }
 
 /// Ziskovost jednoho apartmánu za vybraný měsíc.
@@ -35,14 +43,19 @@ class EmployeePerformance {
 /// [apartmentId] = UUID bytu.
 /// [totalRevenue] = součet charged_price všech dokončených úkolů pro tento byt
 /// (přes reservation_services – owner + guest dohromady jako celková tržba).
+///
+/// [displayName]: pro [apartmentId] == 'external' prázdné (UI použije i18n). Jinak název bytu z cache
+/// apartmánů v čase výpočtu nebo zkrácené ID. PROČ: UI grafu nesleduje [apartmentsFullListProvider].
 class ApartmentRevenue {
   const ApartmentRevenue({
     required this.apartmentId,
     required this.totalRevenue,
+    required this.displayName,
   });
 
   final String apartmentId;
   final double totalRevenue;
+  final String displayName;
 }
 
 /// Ziskovost jednoho klienta za vybraný měsíc.
@@ -76,6 +89,7 @@ class ReportsSummary {
   final List<EmployeePerformance> employeePerformances;
   final List<ApartmentRevenue> apartmentRevenues;
   final List<ClientRevenue> clientRevenues;
+
   /// Celková tržba za měsíc (součet totalRevenue všech apartmánů + klientů).
   final double totalMonthRevenue;
   final int month;
@@ -118,16 +132,25 @@ final reportsDataProvider = FutureProvider<ReportsSummary>((ref) async {
   final startOfMonth = DateTime.utc(year, month, 1);
   final startOfNextMonth = DateTime.utc(year, month + 1, 1);
 
-  final apartments = ref.watch(apartmentsFullListProvider).valueOrNull ?? [];
+  // PROČ read + future: jednorázový snapshot pro měsíc a paušály. Watch by při každé úpravě bytu
+  // invalidoval celý report a zbytečně přestavoval grafy (stejně jako u týmu níže).
+  final apartments = await ref.read(apartmentsFullListProvider.future);
+  final apartmentIdToName = <String, String>{
+    for (final a in apartments)
+      if (a.id.trim().isNotEmpty) a.id: a.name,
+  };
   final startOfReportMonth = DateTime.utc(year, month, 1);
-  final monthlyFeeSum = apartments.fold<double>(
-      0, (sum, apt) {
-        if (apt.managedFrom != null) {
-          final firstDayManaged = DateTime.utc(apt.managedFrom!.year, apt.managedFrom!.month, 1);
-          if (startOfReportMonth.isBefore(firstDayManaged)) return sum;
-        }
-        return sum + apt.monthlyManagementFee;
-      });
+  final monthlyFeeSum = apartments.fold<double>(0, (sum, apt) {
+    if (apt.managedFrom != null) {
+      final firstDayManaged = DateTime.utc(
+        apt.managedFrom!.year,
+        apt.managedFrom!.month,
+        1,
+      );
+      if (startOfReportMonth.isBefore(firstDayManaged)) return sum;
+    }
+    return sum + apt.monthlyManagementFee;
+  });
 
   try {
     // Krok 1: Načti dokončené úkoly tenantu POUZE pro vybraný měsíc (časové okno v DB).
@@ -135,13 +158,11 @@ final reportsDataProvider = FutureProvider<ReportsSummary>((ref) async {
     // Reporty používají completed_at jako primární datum pro zařazení do měsíce.
     final startIso = startOfMonth.toIso8601String();
     final endIso = startOfNextMonth.toIso8601String();
-    final tasksRes = await SupabaseService.client
-        .from('tasks')
+    final tasksRes = await SupabaseService.safeFrom('tasks', tenantId)
         .select(
           'id, title, task_type, apartment_id, reservation_id, service_id, client_id, '
           'completed_at, due_date, scheduled_start, assigned_to, started_at, metadata',
         )
-        .eq('tenant_id', tenantId)
         .eq('status', 'completed')
         .isFilter('deleted_at', null)
         .gte('completed_at', startIso)
@@ -173,7 +194,10 @@ final reportsDataProvider = FutureProvider<ReportsSummary>((ref) async {
 
     final priceByResService = <String, double>{};
     if (reservationIds.isNotEmpty) {
-      final servicesByRes = await fetchByReservationIds(reservationIds, tenantId);
+      final servicesByRes = await fetchByReservationIds(
+        reservationIds,
+        tenantId,
+      );
       final apartmentServiceIds = <String>{};
       for (final list in servicesByRes.values) {
         for (final rs in list) {
@@ -183,11 +207,10 @@ final reportsDataProvider = FutureProvider<ReportsSummary>((ref) async {
       }
       final aptServiceToServiceId = <String, String>{};
       if (apartmentServiceIds.isNotEmpty) {
-        final aptRes = await SupabaseService.client
-            .from('apartment_services')
-            .select('id, service_id')
-            .eq('tenant_id', tenantId)
-            .inFilter('id', apartmentServiceIds.toList());
+        final aptRes = await SupabaseService.safeFrom(
+          'apartment_services',
+          tenantId,
+        ).select('id, service_id').inFilter('id', apartmentServiceIds.toList());
         for (final row in (aptRes as List)) {
           final m = row as Map<String, dynamic>;
           final id = (m['id'] as String?)?.trim();
@@ -228,16 +251,20 @@ final reportsDataProvider = FutureProvider<ReportsSummary>((ref) async {
     final clientIdToName = <String, String>{};
 
     if (apartmentIdsFromTasks.isNotEmpty) {
-      final ownersRes = await SupabaseService.client
-          .from('apartment_owners')
-          .select('apartment_id, owner_id')
-          .inFilter('apartment_id', apartmentIdsFromTasks)
-          .isFilter('deleted_at', null);
+      // PROČ: safeFrom vnutí tenant_id – stejná ochrana jako u tasks/clients (viz migrace apartment_owners.tenant_id).
+      final ownersRes =
+          await SupabaseService.safeFrom('apartment_owners', tenantId)
+              .select('apartment_id, owner_id')
+              .inFilter('apartment_id', apartmentIdsFromTasks)
+              .isFilter('deleted_at', null);
       for (final row in (ownersRes as List)) {
         final m = row as Map<String, dynamic>;
         final aptId = (m['apartment_id'] as String?)?.trim();
         final ownerId = (m['owner_id'] as String?)?.trim();
-        if (aptId != null && aptId.isNotEmpty && ownerId != null && ownerId.isNotEmpty) {
+        if (aptId != null &&
+            aptId.isNotEmpty &&
+            ownerId != null &&
+            ownerId.isNotEmpty) {
           apartmentToOwnerId.putIfAbsent(aptId, () => ownerId);
         }
       }
@@ -245,12 +272,11 @@ final reportsDataProvider = FutureProvider<ReportsSummary>((ref) async {
 
     final profileIdsToFetch = apartmentToOwnerId.values.toSet().toList();
     if (profileIdsToFetch.isNotEmpty) {
-      final clientsByProfileRes = await SupabaseService.client
-          .from('clients')
-          .select('id, name, profile_id')
-          .eq('tenant_id', tenantId)
-          .inFilter('profile_id', profileIdsToFetch)
-          .isFilter('deleted_at', null);
+      final clientsByProfileRes =
+          await SupabaseService.safeFrom('clients', tenantId)
+              .select('id, name, profile_id')
+              .inFilter('profile_id', profileIdsToFetch)
+              .isFilter('deleted_at', null);
       for (final row in (clientsByProfileRes as List)) {
         final m = row as Map<String, dynamic>;
         final id = (m['id'] as String?)?.trim();
@@ -258,16 +284,16 @@ final reportsDataProvider = FutureProvider<ReportsSummary>((ref) async {
         final profileId = (m['profile_id'] as String?)?.trim();
         if (id == null || id.isEmpty) continue;
         if (name != null && name.isNotEmpty) clientIdToName[id] = name;
-        if (profileId != null && profileId.isNotEmpty) ownerIdToClientId[profileId] = id;
+        if (profileId != null && profileId.isNotEmpty)
+          ownerIdToClientId[profileId] = id;
       }
     }
     if (clientIdsFromTasks.isNotEmpty) {
-      final clientsDirectRes = await SupabaseService.client
-          .from('clients')
-          .select('id, name')
-          .eq('tenant_id', tenantId)
-          .inFilter('id', clientIdsFromTasks)
-          .isFilter('deleted_at', null);
+      final clientsDirectRes =
+          await SupabaseService.safeFrom('clients', tenantId)
+              .select('id, name')
+              .inFilter('id', clientIdsFromTasks)
+              .isFilter('deleted_at', null);
       for (final row in (clientsDirectRes as List)) {
         final m = row as Map<String, dynamic>;
         final id = (m['id'] as String?)?.trim();
@@ -300,7 +326,8 @@ final reportsDataProvider = FutureProvider<ReportsSummary>((ref) async {
     // hotovost), jinak reservation_services.charged_price. Dvojí agregace: byty + klienti.
     final byEmployee = <String, ({int count, double hours})>{};
     final byApartment = <String, double>{};
-    final byClient = <String, ({String clientId, String clientName, double revenue})>{};
+    final byClient =
+        <String, ({String clientId, String clientName, double revenue})>{};
 
     for (final t in tasksInMonth) {
       final assigneeId = (t['assigned_to'] as String?)?.trim() ?? '';
@@ -316,8 +343,12 @@ final reportsDataProvider = FutureProvider<ReportsSummary>((ref) async {
       double? servicePrice;
       double? amountToCollect;
       if (meta is Map) {
-        servicePrice = double.tryParse((meta['service_price']?.toString() ?? '').trim());
-        amountToCollect = double.tryParse((meta['amount_to_collect']?.toString() ?? '').trim());
+        servicePrice = double.tryParse(
+          (meta['service_price']?.toString() ?? '').trim(),
+        );
+        amountToCollect = double.tryParse(
+          (meta['amount_to_collect']?.toString() ?? '').trim(),
+        );
       }
       final finalPrice = servicePrice ?? amountToCollect ?? fallbackPrice;
 
@@ -331,7 +362,8 @@ final reportsDataProvider = FutureProvider<ReportsSummary>((ref) async {
       } else {
         final metaHours = t['metadata'];
         if (metaHours is Map) {
-          final raw = metaHours['estimated_minutes'] ?? metaHours['estimate_minutes'];
+          final raw =
+              metaHours['estimated_minutes'] ?? metaHours['estimate_minutes'];
           if (raw != null) {
             if (raw is num) {
               hours = raw.toDouble() / 60.0;
@@ -378,34 +410,68 @@ final reportsDataProvider = FutureProvider<ReportsSummary>((ref) async {
       );
     }
 
-    final employeePerformances = byEmployee.entries
-        .map((e) => EmployeePerformance(
-              assigneeId: e.key,
-              taskCount: e.value.count,
-              hoursWorked: e.value.hours,
-            ))
-        .toList()
-      ..sort((a, b) => b.taskCount.compareTo(a.taskCount));
+    // Jména personálu – snapshot v čase výpočtu; bez ref.watch v UI grafů kvůli stabilnímu překreslování.
+    final teamList = await ref.read(teamFullListProvider.future);
+    final nameByProfileId = <String, String>{};
+    for (final m in teamList) {
+      final id = m.profileId ?? m.id;
+      if (id.isNotEmpty) nameByProfileId[id] = m.name;
+    }
 
-    final apartmentRevenues = byApartment.entries
-        .map((e) => ApartmentRevenue(
-              apartmentId: e.key,
-              totalRevenue: e.value,
-            ))
-        .toList()
-      ..sort((a, b) => b.totalRevenue.compareTo(a.totalRevenue));
+    final employeePerformances =
+        byEmployee.entries
+            .map(
+              (e) => EmployeePerformance(
+                assigneeId: e.key,
+                taskCount: e.value.count,
+                hoursWorked: e.value.hours,
+                memberDisplayName: e.key.isEmpty
+                    ? null
+                    : () {
+                        final n = nameByProfileId[e.key]?.trim();
+                        if (n != null && n.isNotEmpty) return n;
+                        return '';
+                      }(),
+              ),
+            )
+            .toList()
+          ..sort((a, b) => b.taskCount.compareTo(a.taskCount));
 
-    final clientRevenues = byClient.entries
-        .map((e) => ClientRevenue(
-              clientId: e.value.clientId,
-              clientName: e.value.clientName,
-              totalRevenue: e.value.revenue,
-            ))
-        .toList()
-      ..sort((a, b) => b.totalRevenue.compareTo(a.totalRevenue));
+    final apartmentRevenues =
+        byApartment.entries
+            .map(
+              (e) => ApartmentRevenue(
+                apartmentId: e.key,
+                totalRevenue: e.value,
+                displayName: e.key == 'external'
+                    ? ''
+                    : () {
+                        final n = apartmentIdToName[e.key]?.trim();
+                        if (n != null && n.isNotEmpty) return n;
+                        final id = e.key;
+                        return id.length >= 8 ? id.substring(0, 8) : id;
+                      }(),
+              ),
+            )
+            .toList()
+          ..sort((a, b) => b.totalRevenue.compareTo(a.totalRevenue));
 
-    final revenueFromTasks =
-        apartmentRevenues.fold<double>(0, (s, a) => s + a.totalRevenue);
+    final clientRevenues =
+        byClient.entries
+            .map(
+              (e) => ClientRevenue(
+                clientId: e.value.clientId,
+                clientName: e.value.clientName,
+                totalRevenue: e.value.revenue,
+              ),
+            )
+            .toList()
+          ..sort((a, b) => b.totalRevenue.compareTo(a.totalRevenue));
+
+    final revenueFromTasks = apartmentRevenues.fold<double>(
+      0,
+      (s, a) => s + a.totalRevenue,
+    );
     final totalMonthRevenue = revenueFromTasks + monthlyFeeSum;
 
     return ReportsSummary(

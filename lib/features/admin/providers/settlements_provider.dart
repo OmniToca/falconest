@@ -200,7 +200,11 @@ final taskSettlementsProvider =
   if (taskId.trim().isEmpty) {
     return const TaskSettlements(payouts: [], commissions: []);
   }
-  return SettlementRepository.instance.getSettlementsForTask(taskId);
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) {
+    return const TaskSettlements(payouts: [], commissions: []);
+  }
+  return SettlementRepository.instance.getSettlementsForTask(tenantId, taskId);
 });
 
 /// Uloží schválené vyúčtování (výplaty + provize) a invaliduje frontu.
@@ -544,7 +548,7 @@ final groupedPendingPayoutsProvider =
     } else {
       partnerData[key] = (
         recipientId: clientId,
-        name: name.isEmpty ? '—' : name,
+        name: name.isEmpty ? 'common.placeholder_dash'.tr() : name,
         taskMonth: taskMonth,
         commissionIds: [id],
         total: amount,
@@ -648,7 +652,7 @@ List<PayoutLineItem> _itemsFromSnapshotRow(Map<String, dynamic> row) {
     if (e is! Map) continue;
     final m = Map<String, dynamic>.from(e);
     final taskId = (m['task_id'] as String?)?.trim() ?? '';
-    final taskTitle = (m['task_title'] as String?)?.trim() ?? '—';
+    final taskTitle = (m['task_title'] as String?)?.trim() ?? 'common.placeholder_dash'.tr();
     final amount = (m['amount'] is num) ? (m['amount'] as num).toDouble() : 0.0;
     DateTime? date;
     final d = m['date'];
@@ -695,7 +699,7 @@ final payoutHistoryReportProvider =
     final profileId = (row['profile_id'] as String?)?.trim();
     final clientId = (row['client_id'] as String?)?.trim();
     final recipientId = (profileId ?? clientId ?? '').trim();
-    final recipientName = (row['recipient_name'] as String?)?.trim() ?? '—';
+    final recipientName = (row['recipient_name'] as String?)?.trim() ?? 'common.placeholder_dash'.tr();
     final totalAmount = (row['total_amount'] is num)
         ? (row['total_amount'] as num).toDouble()
         : 0.0;
@@ -725,23 +729,23 @@ final payoutHistoryReportProvider =
 /// Invalidace [payoutHistoryReportProvider] obnoví záložku Historie výplat.
 Future<void> markPayoutGroupAsPaid({required dynamic ref, required PayoutGroup group}) async {
   final repo = SettlementRepository.instance;
+  final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) {
+    throw StateError('Nelze označit výplatu bez tenant ID.');
+  }
 
   // KROK A: Označit výplaty a provize jako vyplacené.
   if (group.payoutIds.isNotEmpty) {
-    await repo.markPayoutsAsPaid(group.payoutIds);
+    await repo.markPayoutsAsPaid(tenantId, group.payoutIds);
   }
   if (group.commissionIds.isNotEmpty) {
-    await repo.markCommissionsAsPaid(group.commissionIds);
+    await repo.markCommissionsAsPaid(tenantId, group.commissionIds);
   }
 
   // KROK B: Zápis do payout_snapshots – měsíc ÚKOLU (group.taskMonth), ne datum vyplacení!
   // PROČ: Účetní proplácí únorové úkoly 10. března → snapshot musí patřit do ÚNORA.
-  final tenantId = ref.read(authNotifierProvider).tenantIdForData;
   final lockedByProfileId = ref.read(authNotifierProvider).state.profileId;
-  if (tenantId != null &&
-      tenantId.isNotEmpty &&
-      lockedByProfileId != null &&
-      lockedByProfileId.trim().isNotEmpty) {
+  if (lockedByProfileId != null && lockedByProfileId.trim().isNotEmpty) {
     final periodFirstDay = DateTime(group.taskMonth.year, group.taskMonth.month, 1);
     final itemsData = group.items.map((item) {
       return <String, dynamic>{

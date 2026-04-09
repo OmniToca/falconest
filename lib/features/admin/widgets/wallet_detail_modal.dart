@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/models/cash_transaction_ui_model.dart';
+import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
 import 'package:falconest/features/admin/admin_layout.dart';
@@ -39,7 +40,9 @@ class WalletDetailModal {
       barrierDismissible: true,
       barrierLabel: 'admin.finance.wallet_detail_title'
           .tr(namedArgs: {'name': workerName}),
-      barrierColor: Colors.black54,
+      // PROČ: modal barrier má být centrálně řízený theme tokenem kvůli
+      // jednotnému overlay vzhledu napříč admin modaly.
+      barrierColor: context.customColors.modalBarrier,
       transitionDuration: const Duration(milliseconds: 250),
       pageBuilder: (_, _, _) => const SizedBox.shrink(),
       transitionBuilder: (_, animation, secondaryAnimation, child) {
@@ -62,6 +65,40 @@ class WalletDetailModal {
           ),
         );
       },
+    );
+  }
+
+  /// Otevře dialog pro převzetí hotovosti (částečný nebo celý výběr).
+  /// Používá se v detailu peněženky i na přehledové obrazovce financí.
+  static void showReceiveCashDialog(
+    BuildContext context,
+    WidgetRef ref,
+    EmployeeCashWalletRow row,
+  ) {
+    final formattedBalance = formatWalletAmount(context, ref, row.balance);
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => _ReceiveCashDialog(
+        row: row,
+        formattedBalance: formattedBalance,
+        parentContext: context,
+      ),
+    );
+  }
+
+  /// Otevře dialog pro vklad základu (float).
+  static void showIssueFloatDialog(
+    BuildContext context,
+    WidgetRef ref,
+    EmployeeCashWalletRow row,
+  ) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => _IssueFloatDialog(
+        row: row,
+        ref: ref,
+        parentContext: context,
+      ),
     );
   }
 
@@ -217,7 +254,7 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
     final hasDebt = (row?.balance ?? 0) > 0;
     final displayName = (row?.workerName ?? widget.workerName).trim().isNotEmpty
         ? (row?.workerName ?? widget.workerName)
-        : '—';
+        : 'common.placeholder_dash'.tr();
 
     return Center(
       child: Material(
@@ -230,11 +267,14 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
           child: Container(
             width: MediaQuery.of(context).size.width * 0.95,
             decoration: BoxDecoration(
-              color: Colors.white,
+              // PROČ: povrch modalu musí respektovat light/dark téma.
+              color: context.colors.surface,
               borderRadius: BorderRadius.circular(24),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.15),
+                  // PROČ: stín navazujeme na modal barrier token, aby byl
+                  // kontrast konzistentní mezi režimy.
+                  color: context.customColors.modalBarrier.withValues(alpha: 0.15),
                   blurRadius: 24,
                   offset: const Offset(0, 8),
                 ),
@@ -259,7 +299,7 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
                         error: (e, _) => Center(
                               child: Text(
                                 'admin.finance.load_error'.tr(),
-                                style: TextStyle(color: Colors.red.shade700),
+                                style: TextStyle(color: context.colors.error),
                                 textAlign: TextAlign.center,
                               ),
                             ),
@@ -291,12 +331,12 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
             child: Center(
               child: Text(
                 'admin.finance.wallet_history_empty'.tr(),
-                style: TextStyle(color: Colors.grey.shade600),
+                style: TextStyle(color: context.colors.onSurfaceVariant),
                 textAlign: TextAlign.center,
               ),
             ),
           ),
-          if (hasDebt && row != null) _buildReceiveButton(context, ref, row),
+          if (row != null) _buildActionButtons(context, ref, row),
         ],
       );
     }
@@ -342,7 +382,7 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
             },
           ),
         ),
-        if (hasDebt && row != null) _buildReceiveButton(context, ref, row),
+        if (row != null) _buildActionButtons(context, ref, row),
       ],
     );
   }
@@ -378,8 +418,8 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
                   fontWeight: FontWeight.w600,
                   color: hasDebt
-                      ? Colors.red.shade800
-                      : Colors.green.shade800,
+                      ? context.colors.error
+                      : context.customColors.success,
                 ),
           ),
         ],
@@ -387,20 +427,39 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
     );
   }
 
-  Widget _buildReceiveButton(BuildContext context, WidgetRef ref, EmployeeCashWalletRow row) {
+  /// Řádek tlačítek: Převzít hotovost (jen když je co převzít) a Vložit základ.
+  Widget _buildActionButtons(BuildContext context, WidgetRef ref, EmployeeCashWalletRow row) {
+    final hasBalance = row.balance > 0;
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: SizedBox(
-          width: double.infinity,
-          child: FilledButton.icon(
-            onPressed: () => _showReceiveCashDialog(context, ref, row),
-            icon: const Icon(Icons.handshake, size: 20),
-            label: Text('admin.finance.receive_btn'.tr()),
-            style: FilledButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 14),
-            ),
-          ),
+        child: Row(
+          children: [
+            if (hasBalance)
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: FilledButton.icon(
+                    onPressed: () => _showReceiveCashDialog(context, ref, row),
+                    icon: const Icon(Icons.handshake, size: 20),
+                    label: Text('admin.finance.receive_btn'.tr()),
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                  ),
+                ),
+              ),
+            Expanded(
+              child: OutlinedButton.icon(
+                  onPressed: () => _showIssueFloatDialog(context, ref, row),
+                  icon: const Icon(Icons.add_circle_outline, size: 20),
+                  label: Text('admin.finance.issue_float_btn'.tr()),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );
@@ -497,7 +556,7 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
               'admin.finance.wallet_detail_title'.tr(namedArgs: {'name': displayName}),
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                     fontWeight: FontWeight.bold,
-                    color: Colors.grey[900],
+                    color: context.colors.onSurface,
                   ),
             ),
           ),
@@ -516,76 +575,419 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
     WidgetRef ref,
     EmployeeCashWalletRow row,
   ) {
-    final formatted = formatWalletAmount(context, ref, row.balance);
+    WalletDetailModal.showReceiveCashDialog(context, ref, row);
+  }
 
+  void _showIssueFloatDialog(
+    BuildContext context,
+    WidgetRef ref,
+    EmployeeCashWalletRow row,
+  ) {
     showDialog<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('admin.finance.receive_confirm_title'.tr()),
-        content: Text(
-          'admin.finance.receive_confirm_message'.tr(
-            namedArgs: {'balance': formatted},
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: Text('common.cancel'.tr()),
-          ),
-          FilledButton(
-            onPressed: () async {
-              Navigator.of(ctx).pop();
-              final tenantId = ref.read(authNotifierProvider).tenantIdForData;
-              final adminProfileId =
-                  ref.read(authNotifierProvider).state.profileId;
-              if (tenantId == null ||
-                  tenantId.isEmpty ||
-                  adminProfileId == null ||
-                  adminProfileId.isEmpty) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        'admin.finance.receive_error_missing'.tr(),
-                      ),
-                    ),
-                  );
-                }
-                return;
-              }
-              try {
-                await CashWalletRepository.instance.receiveCashFromWorker(
-                  walletId: row.id,
-                  workerProfileId: row.profileId,
-                  amountToClear: row.balance,
-                  adminProfileId: adminProfileId,
-                  tenantId: tenantId,
-                );
-                ref.invalidate(employeeCashWalletsProvider);
-                ref.invalidate(walletTransactionsProvider(row.id));
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('admin.finance.receive_success'.tr()),
-                    ),
-                  );
-                  // Jen zavřeme modal – bez context.go, aby nedošlo k přesměrování na Nástěnku
-                  Navigator.of(context).pop();
-                }
-              } catch (e) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('admin.finance.receive_error'.tr()),
-                    ),
-                  );
-                }
-              }
-            },
-            child: Text('admin.finance.receive_btn_confirm'.tr()),
-          ),
-        ],
+      builder: (ctx) => _IssueFloatDialog(
+        row: row,
+        ref: ref,
+        parentContext: context,
       ),
+    );
+  }
+}
+
+/// Rezervace z aktuálního období peněženky (od posledního HANDED) pro volitelnou vazbu při převzetí.
+List<({String id, String label})> _receiveCashReservationOptions(
+  List<CashTransactionUIModel> transactions,
+) {
+  final split = _WalletDetailModalContentState._splitByLastHandover(transactions);
+  final byId = <String, String>{};
+  for (final t in split.current) {
+    if ((t.transactionType ?? '') != 'COLLECTED_FROM_GUEST') continue;
+    final rawAmt = t.raw['amount'];
+    final amount = rawAmt is num
+        ? rawAmt.toDouble()
+        : double.tryParse(rawAmt?.toString() ?? '');
+    if (amount == null || amount <= 0) continue;
+    final rid = t.reservationId;
+    if (rid == null || rid.isEmpty) continue;
+    final parts = <String>[
+      if (t.apartmentName != null && t.apartmentName!.isNotEmpty) t.apartmentName!,
+      if (t.guestName != null && t.guestName!.isNotEmpty) t.guestName!,
+    ];
+    final label = parts.isEmpty
+        ? (rid.length >= 8 ? rid.substring(0, 8) : rid)
+        : parts.join(' · ');
+    byId[rid] = label;
+  }
+  final out = byId.entries.map((e) => (id: e.key, label: e.value)).toList();
+  out.sort((a, b) => a.label.toLowerCase().compareTo(b.label.toLowerCase()));
+  return out;
+}
+
+/// Dialog pro převzetí hotovosti – částečný nebo celý výběr s validací a loading stavem.
+class _ReceiveCashDialog extends ConsumerStatefulWidget {
+  const _ReceiveCashDialog({
+    required this.row,
+    required this.formattedBalance,
+    required this.parentContext,
+  });
+
+  final EmployeeCashWalletRow row;
+  final String formattedBalance;
+  final BuildContext parentContext;
+
+  @override
+  ConsumerState<_ReceiveCashDialog> createState() => _ReceiveCashDialogState();
+}
+
+class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
+  late final TextEditingController _amountController;
+  String? _amountError;
+  bool _isLoading = false;
+  String? _reservationId;
+  bool _userPickedReservation = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _amountController = TextEditingController(
+      text: widget.row.balance.toStringAsFixed(2),
+    );
+  }
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    super.dispose();
+  }
+
+  static double? _parseAmount(String s) {
+    final normalized = s.trim().replaceAll(',', '.');
+    return double.tryParse(normalized);
+  }
+
+  Future<void> _submit() async {
+    final amount = _parseAmount(_amountController.text);
+    if (amount == null || amount <= 0 || amount > widget.row.balance) {
+      setState(() {
+        _amountError = 'admin.finance.receive_amount_error_invalid'.tr();
+      });
+      return;
+    }
+    setState(() {
+      _amountError = null;
+      _isLoading = true;
+    });
+
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    final adminProfileId = ref.read(authNotifierProvider).state.profileId;
+    if (tenantId == null || tenantId.isEmpty || adminProfileId == null || adminProfileId.isEmpty) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(widget.parentContext).showSnackBar(
+          SnackBar(content: Text('admin.finance.receive_error_missing'.tr())),
+        );
+      }
+      return;
+    }
+
+    String? ridForSubmit = _reservationId;
+    final txList = ref.read(walletTransactionsProvider(widget.row.id)).value;
+    if (txList != null) {
+      final opts = _receiveCashReservationOptions(txList);
+      if (ridForSubmit != null && !opts.any((o) => o.id == ridForSubmit)) {
+        ridForSubmit = null;
+      }
+    }
+    final rid = ridForSubmit?.trim();
+    try {
+      await CashWalletRepository.instance.receiveCashFromWorker(
+        walletId: widget.row.id,
+        workerProfileId: widget.row.profileId,
+        amountToClear: amount,
+        adminProfileId: adminProfileId,
+        tenantId: tenantId,
+        reservationId: (rid != null && rid.isNotEmpty) ? rid : null,
+      );
+      ref.invalidate(employeeCashWalletsProvider);
+      ref.invalidate(walletTransactionsProvider(widget.row.id));
+      if (rid != null && rid.isNotEmpty) {
+        ref.invalidate(reservationCashTransitProvider(rid));
+      }
+      if (!mounted) return;
+      if (!widget.parentContext.mounted) return;
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(widget.parentContext).showSnackBar(
+        SnackBar(
+          content: Text('admin.finance.receive_success'.tr()),
+          backgroundColor: context.customColors.success,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        if (widget.parentContext.mounted) {
+          ScaffoldMessenger.of(widget.parentContext).showSnackBar(
+            SnackBar(content: Text('admin.finance.receive_error'.tr())),
+          );
+        }
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final txAsync = ref.watch(walletTransactionsProvider(widget.row.id));
+    final options = txAsync.maybeWhen(
+      data: _receiveCashReservationOptions,
+      orElse: () => <({String id, String label})>[],
+    );
+
+    final reservationDropdownValue = _reservationId != null &&
+            options.any((o) => o.id == _reservationId)
+        ? _reservationId
+        : null;
+
+    if (!_userPickedReservation && options.length == 1) {
+      final only = options.single.id;
+      if (_reservationId != only) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() => _reservationId = only);
+        });
+      }
+    }
+
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: Text('admin.finance.receive_confirm_title'.tr()),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'admin.finance.receive_confirm_message'.tr(
+                namedArgs: {'balance': widget.formattedBalance},
+              ),
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 20),
+            TextFormField(
+              controller: _amountController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                labelText: 'admin.finance.receive_amount_label'.tr(),
+                hintText: 'admin.finance.receive_amount_hint'.tr(
+                  namedArgs: {'balance': widget.formattedBalance},
+                ),
+                errorText: _amountError,
+                border: const OutlineInputBorder(),
+              ),
+              onChanged: (_) => setState(() => _amountError = null),
+            ),
+            if (options.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text(
+                'admin.finance.receive_reservation_label'.tr(),
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'admin.finance.receive_reservation_hint'.tr(),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String?>(
+                // Controlled selection; `initialValue` does not follow stream/async updates.
+                // ignore: deprecated_member_use
+                value: reservationDropdownValue,
+                decoration: const InputDecoration(border: OutlineInputBorder()),
+                items: [
+                  DropdownMenuItem<String?>(
+                    value: null,
+                    child: Text('admin.finance.receive_reservation_none'.tr()),
+                  ),
+                  ...options.map(
+                    (o) => DropdownMenuItem<String?>(
+                      value: o.id,
+                      child: Text(o.label),
+                    ),
+                  ),
+                ],
+                onChanged: _isLoading
+                    ? null
+                    : (v) => setState(() {
+                          _userPickedReservation = true;
+                          _reservationId = v;
+                        }),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isLoading ? null : () => Navigator.of(context).pop(),
+          child: Text('common.cancel'.tr()),
+        ),
+        FilledButton(
+          onPressed: _isLoading ? null : _submit,
+          child: _isLoading
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Text('admin.finance.receive_btn_confirm'.tr()),
+        ),
+      ],
+    );
+  }
+}
+
+/// Dialog pro vklad základu (float) – částka a volitelná poznámka.
+class _IssueFloatDialog extends StatefulWidget {
+  const _IssueFloatDialog({
+    required this.row,
+    required this.ref,
+    required this.parentContext,
+  });
+
+  final EmployeeCashWalletRow row;
+  final WidgetRef ref;
+  final BuildContext parentContext;
+
+  @override
+  State<_IssueFloatDialog> createState() => _IssueFloatDialogState();
+}
+
+class _IssueFloatDialogState extends State<_IssueFloatDialog> {
+  final TextEditingController _amountController = TextEditingController();
+  final TextEditingController _noteController = TextEditingController();
+  String? _amountError;
+  bool _isLoading = false;
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    _noteController.dispose();
+    super.dispose();
+  }
+
+  static double? _parseAmount(String s) {
+    final normalized = s.trim().replaceAll(',', '.');
+    return double.tryParse(normalized);
+  }
+
+  Future<void> _submit() async {
+    final amount = _parseAmount(_amountController.text);
+    if (amount == null || amount <= 0) {
+      setState(() {
+        _amountError = 'admin.finance.issue_float_amount_error'.tr();
+      });
+      return;
+    }
+    setState(() {
+      _amountError = null;
+      _isLoading = true;
+    });
+
+    final tenantId = widget.ref.read(authNotifierProvider).tenantIdForData;
+    final adminProfileId = widget.ref.read(authNotifierProvider).state.profileId;
+    if (tenantId == null || tenantId.isEmpty || adminProfileId == null || adminProfileId.isEmpty) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(widget.parentContext).showSnackBar(
+          SnackBar(content: Text('admin.finance.receive_error_missing'.tr())),
+        );
+      }
+      return;
+    }
+
+    try {
+      await CashWalletRepository.instance.issueFloatToWorker(
+        tenantId: tenantId,
+        profileId: widget.row.profileId,
+        amount: amount,
+        note: _noteController.text.trim().isEmpty ? null : _noteController.text.trim(),
+        adminProfileId: adminProfileId,
+      );
+      widget.ref.invalidate(employeeCashWalletsProvider);
+      widget.ref.invalidate(walletTransactionsProvider(widget.row.id));
+      if (!mounted) return;
+      if (!widget.parentContext.mounted) return;
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(widget.parentContext).showSnackBar(
+        SnackBar(
+          content: Text('admin.finance.issue_float_success'.tr()),
+          backgroundColor: context.customColors.success,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        if (widget.parentContext.mounted) {
+          ScaffoldMessenger.of(widget.parentContext).showSnackBar(
+            SnackBar(content: Text('admin.finance.issue_float_error'.tr())),
+          );
+        }
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: Text('admin.finance.issue_float_title'.tr()),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextFormField(
+              controller: _amountController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                labelText: 'admin.finance.issue_float_amount_label'.tr(),
+                hintText: 'admin.finance.issue_float_amount_hint'.tr(),
+                errorText: _amountError,
+                border: const OutlineInputBorder(),
+              ),
+              onChanged: (_) => setState(() => _amountError = null),
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _noteController,
+              decoration: InputDecoration(
+                labelText: 'admin.finance.issue_float_note_label'.tr(),
+                hintText: 'admin.finance.issue_float_note_hint'.tr(),
+                border: const OutlineInputBorder(),
+              ),
+              maxLines: 2,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isLoading ? null : () => Navigator.of(context).pop(),
+          child: Text('common.cancel'.tr()),
+        ),
+        FilledButton(
+          onPressed: _isLoading ? null : _submit,
+          child: _isLoading
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Text('admin.finance.issue_float_confirm_btn'.tr()),
+        ),
+      ],
     );
   }
 }
@@ -628,7 +1030,7 @@ class _TransactionTile extends StatelessWidget {
         (amount - expectedAmount).abs() > 0.001 &&
         amount < expectedAmount;
 
-    String dateStr = '—';
+    String dateStr = 'common.placeholder_dash'.tr();
     if (createdAt != null) {
       final dt = createdAt is DateTime
           ? createdAt
@@ -646,16 +1048,19 @@ class _TransactionTile extends StatelessWidget {
 
     switch (type) {
       case 'COLLECTED_FROM_GUEST':
-        amountColor = Colors.green.shade800;
+        amountColor = context.customColors.success;
         break;
       case 'HANDED_TO_AGENCY':
-        amountColor = Colors.grey.shade700;
+        amountColor = context.colors.onSurfaceVariant;
         break;
       case 'COMPANY_EXPENSE':
-        amountColor = Colors.red.shade700;
+        amountColor = context.colors.error;
+        break;
+      case 'FLOAT_ISSUED':
+        amountColor = context.customColors.info;
         break;
       default:
-        amountColor = Colors.grey.shade800;
+        amountColor = context.colors.onSurface;
     }
 
     // title: [Název úkolu] - [Jméno hosta/klienta], fallback na typ transakce.
@@ -693,6 +1098,9 @@ class _TransactionTile extends StatelessWidget {
         case 'COMPANY_EXPENSE':
           titleText = 'admin.finance.transaction_expense'.tr();
           break;
+        case 'FLOAT_ISSUED':
+          titleText = 'admin.finance.transaction_float_issued'.tr();
+          break;
         default:
           titleText = type;
       }
@@ -702,21 +1110,21 @@ class _TransactionTile extends StatelessWidget {
     final subtitleParts = <Widget>[
       Text(
         dateStr,
-        style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+        style: TextStyle(color: context.colors.onSurfaceVariant, fontSize: 12),
       ),
     ];
     if (transaction.hasClientContext) {
-      final clientName = transaction.clientName ?? '—';
+      final clientName = transaction.clientName ?? 'common.placeholder_dash'.tr();
       final clientType = transaction.clientType;
       subtitleParts.add(const SizedBox(height: 2));
       subtitleParts.add(
         Row(
           children: [
-            Icon(Icons.person_outline, size: 14, color: Colors.grey.shade600),
+            Icon(Icons.person_outline, size: 14, color: context.colors.onSurfaceVariant),
             const SizedBox(width: 4),
             Text(
               '${'admin.finance.transaction_client_label'.tr()}: $clientName',
-              style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+              style: TextStyle(color: context.colors.onSurface, fontSize: 12),
             ),
             if (clientType != null && clientType.isNotEmpty) ...[
               const SizedBox(width: 6),
@@ -760,14 +1168,14 @@ class _TransactionTile extends StatelessWidget {
               Icon(
                 Icons.warning_amber_rounded,
                 size: 14,
-                color: Colors.red.shade800,
+                color: context.colors.error,
               ),
               const SizedBox(width: 4),
               Expanded(
                 child: Text(
                   breakdownText,
                   style: TextStyle(
-                    color: Colors.red.shade700,
+                    color: context.colors.error,
                     fontSize: 12,
                     fontWeight:
                         isShortfall ? FontWeight.bold : FontWeight.normal,
@@ -782,7 +1190,7 @@ class _TransactionTile extends StatelessWidget {
           Text(
             breakdownText,
             style: TextStyle(
-              color: isShortfall ? Colors.red.shade700 : Colors.grey.shade700,
+              color: isShortfall ? context.colors.error : context.colors.onSurface,
               fontSize: 12,
               fontWeight: isShortfall ? FontWeight.bold : FontWeight.normal,
             ),
@@ -798,14 +1206,14 @@ class _TransactionTile extends StatelessWidget {
               Icon(
                 Icons.warning_amber_rounded,
                 size: 14,
-                color: Colors.red.shade800,
+                color: context.colors.error,
               ),
               const SizedBox(width: 4),
               Expanded(
                 child: Text(
                   note,
                   style: TextStyle(
-                    color: Colors.red.shade700,
+                    color: context.colors.error,
                     fontSize: 12,
                     fontWeight: FontWeight.w500,
                   ),
@@ -857,7 +1265,8 @@ class _TransactionTile extends StatelessWidget {
     }
 
     return ListTile(
-      tileColor: isShortfall ? Colors.red.shade50 : null,
+      // PROČ: nedoplatek zvýrazníme sémantickým error containerem.
+      tileColor: isShortfall ? context.colors.errorContainer : null,
       title: Text(titleText),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -894,16 +1303,16 @@ class _ClientTypeBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
       decoration: BoxDecoration(
-        color: Colors.blue.shade50,
+        color: context.customColors.infoSubtle,
         borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: Colors.blue.shade200),
+        border: Border.all(color: context.customColors.info.withValues(alpha: 0.3)),
       ),
       child: Text(
         _label(),
         style: TextStyle(
           fontSize: 10,
           fontWeight: FontWeight.w500,
-          color: Colors.blue.shade800,
+          color: context.customColors.info,
         ),
       ),
     );

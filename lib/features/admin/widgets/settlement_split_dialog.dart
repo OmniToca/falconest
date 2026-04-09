@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/models/task_commission_model.dart';
 import 'package:falconest/core/models/task_payout_model.dart';
 import 'package:falconest/core/services/currency_service.dart';
+import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/settlements_provider.dart';
@@ -186,7 +187,7 @@ class _SettlementSplitDialogState extends State<SettlementSplitDialog> {
                     namedArgs: {'amount': perWorkerStr},
                   ),
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Colors.grey.shade700,
+                        color: context.colors.onSurface,
                       ),
                 ),
               ],
@@ -273,7 +274,7 @@ class _SettlementSplitDialogState extends State<SettlementSplitDialog> {
               _RowLabel(
                 label: 'admin.settlements.agency_margin'.tr(),
                 value: marginStr,
-                valueColor: Colors.green.shade700,
+                valueColor: context.customColors.success,
               ),
             ],
           ),
@@ -373,7 +374,7 @@ class _SettlementSplitDialogState extends State<SettlementSplitDialog> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('admin.settlements.approve_success'.tr()),
-            backgroundColor: Colors.green.shade700,
+            backgroundColor: context.customColors.success,
           ),
         );
       }
@@ -381,8 +382,10 @@ class _SettlementSplitDialogState extends State<SettlementSplitDialog> {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('$e'),
-            backgroundColor: Colors.red.shade700,
+            content: Text(
+              'common.generic_error_user_friendly'.tr(),
+            ),
+            backgroundColor: context.colors.error,
           ),
         );
       }
@@ -405,7 +408,7 @@ class _TaskInfoCard extends StatelessWidget {
     final dateStr = DateFormat('dd.MM.yyyy HH:mm', context.locale.toString()).format(date);
     final assigned = (task.assignedToName != null && task.assignedToName!.isNotEmpty)
         ? task.assignedToName!
-        : '—';
+        : 'common.placeholder_dash'.tr();
     final isExternal = task.clientId != null && task.clientId!.isNotEmpty;
     final externalStr = isExternal
         ? 'admin.settlements.info_external_client_yes'.tr()
@@ -433,7 +436,7 @@ class _TaskInfoCard extends StatelessWidget {
             child: Text(
               'admin.settlements.info_card_subtitle'.tr(),
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.grey.shade600,
+                    color: context.colors.onSurfaceVariant,
                   ),
             ),
           ),
@@ -467,7 +470,7 @@ class _InfoRow extends StatelessWidget {
           child: Text(
             label,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Colors.grey.shade700,
+                  color: context.colors.onSurface,
                 ),
           ),
         ),

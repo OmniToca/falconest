@@ -107,6 +107,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final formKey = GlobalKey<FormState>();
 
     if (!mounted) return;
+    // PROČ: Po await uvnitř dialogu nepoužíváme BuildContext obrazovky – SnackBar přes instanci zachycenou před dialogem.
+    final scaffoldMessenger = ScaffoldMessenger.of(context);
     await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -158,9 +160,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   email,
                   redirectTo: redirectTo,
                 );
-                if (!ctx.mounted || !context.mounted) return;
+                if (!ctx.mounted) return;
                 Navigator.of(ctx).pop();
-                ScaffoldMessenger.of(context).showSnackBar(
+                scaffoldMessenger.showSnackBar(
                   SnackBar(
                     content: Text('forgot_password.success'.tr()),
                     backgroundColor: Colors.green.shade700,
@@ -168,8 +170,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   ),
                 );
               } catch (_) {
-                if (!ctx.mounted || !context.mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
+                scaffoldMessenger.showSnackBar(
                   SnackBar(
                     content: Text('forgot_password.error'.tr()),
                     backgroundColor: Colors.red.shade700,

@@ -2,9 +2,11 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/features/owner/owner_apartment_detail_screen.dart';
 import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
 import 'package:falconest/features/owner/providers/owner_reservations_provider.dart';
+import 'package:falconest/features/owner/widgets/owner_report_issue_dialog.dart';
 
 /// Jemné barvy pro prémiový design – konzistentní s owner_layout.
 const _cleanColor = Color(0xFF2E7D32);
@@ -23,6 +25,8 @@ class OwnerApartmentsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final apartmentsAsync = ref.watch(ownerApartmentsProvider);
+    final apartments = apartmentsAsync.valueOrNull ?? [];
+    final profileId = ref.read(authNotifierProvider).state.profileId ?? '';
 
     return Scaffold(
       body: apartmentsAsync.when(
@@ -30,6 +34,17 @@ class OwnerApartmentsScreen extends ConsumerWidget {
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (err, _) => _buildError(context, ref),
       ),
+      floatingActionButton: apartments.isEmpty
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: () => openOwnerReportIssueDialog(
+                context,
+                apartments: apartments,
+                profileId: profileId,
+              ),
+              icon: const Icon(Icons.report_problem_outlined),
+              label: Text('owner.report_issue_btn'.tr()),
+            ),
     );
   }
 

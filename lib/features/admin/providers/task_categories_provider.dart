@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/admin/models/task_category_model.dart';
 
 /// Mapuje code na TaskCategory pro bleskové vyhledávání v TaskVisuals.
@@ -36,7 +37,8 @@ class TaskCategoriesRepository {
           .map((e) => TaskCategoryModel.fromJson(e as Map<String, dynamic>))
           .where((c) => c.code.isNotEmpty)
           .toList();
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('TaskCategoriesRepository.fetchAll selhal', e, st);
       return [];
     }
   }

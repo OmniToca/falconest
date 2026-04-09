@@ -1,6 +1,7 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
+import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/services/supabase_service.dart';
@@ -26,6 +27,7 @@ import 'package:falconest/core/database/database_init_stub.dart'
 /// (místo bílého obrazu v Release módu na iOS).
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  tzdata.initializeTimeZones();
 
   // TOTO PŘIDEJ: Inicializace Firebase
   await Firebase.initializeApp(

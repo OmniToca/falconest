@@ -208,9 +208,7 @@ class ZonesListTab extends ConsumerWidget {
                   Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
                   const SizedBox(height: 16),
                   Text(
-                    'common.error_with_message'.tr(
-                      namedArgs: {'message': err.toString()},
-                    ),
+                    'common.generic_error_user_friendly'.tr(),
                     textAlign: TextAlign.center,
                     style: TextStyle(color: Colors.red.shade700),
                   ),

@@ -139,7 +139,7 @@ class _ProfileTab extends ConsumerWidget {
             ? 'super_admin.hq_team_role_super_admin'.tr()
             : staff.role == 'account_manager'
                 ? 'super_admin.hq_team_role_account_manager'.tr()
-                : staff.role ?? '—';
+                : staff.role ?? 'common.placeholder_dash'.tr();
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
@@ -286,7 +286,7 @@ class _ContractTab extends ConsumerWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -413,8 +413,8 @@ class _AbsencesTab extends ConsumerWidget {
                 itemCount: list.length,
                 itemBuilder: (context, index) {
                   final a = list[index];
-                  final fromStr = a.startDate != null ? DateFormat('d.M.yyyy').format(a.startDate!) : '—';
-                  final toStr = a.endDate != null ? DateFormat('d.M.yyyy').format(a.endDate!) : '—';
+                  final fromStr = a.startDate != null ? DateFormat('d.M.yyyy').format(a.startDate!) : 'common.placeholder_dash'.tr();
+                  final toStr = a.endDate != null ? DateFormat('d.M.yyyy').format(a.endDate!) : 'common.placeholder_dash'.tr();
                   return Card(
                     margin: const EdgeInsets.only(bottom: 12),
                     child: ListTile(

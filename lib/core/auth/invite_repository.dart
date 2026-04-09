@@ -108,15 +108,13 @@ class InviteRepository {
       'auth_id': user.id,
       'status': 'active',
     };
-    await SupabaseService.client
-        .from('profiles')
+    await SupabaseService.safeFrom('profiles', inv.tenantId)
         .update(profileUpdate)
         .eq('id', inv.profileId);
 
     // Odstranění případného duplicitního profilu vytvořeného triggerem (stejný auth_id, jiné id).
     try {
-      await SupabaseService.client
-          .from('profiles')
+      await SupabaseService.safeFrom('profiles', inv.tenantId)
           .delete()
           .eq('auth_id', user.id)
           .neq('id', inv.profileId);
@@ -125,10 +123,7 @@ class InviteRepository {
     }
 
     // 3. Smaž záznam z tabulky invitations, aby šel token použít jen jednou.
-    await SupabaseService.client
-        .from('invitations')
-        .delete()
-        .eq('id', inv.id);
+    await SupabaseService.safeFrom('invitations', inv.tenantId).delete().eq('id', inv.id);
 
     // 4. Přesměrování na dashboard zajistí UI po reloadu profilu (AuthNotifier.reloadProfile).
   }

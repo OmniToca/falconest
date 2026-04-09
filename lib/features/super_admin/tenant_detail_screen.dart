@@ -299,7 +299,7 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
 
   /// Formátuje MRR pro záložku Info & Fakturace (per-tenant EUR → zobrazení v měně admina).
   String _formatMrrForTab(double? eur, List<CurrencyRow> currencies, String displayCurrency) {
-    if (eur == null) return '—';
+    if (eur == null) return 'common.placeholder_dash'.tr();
     return CurrencyService.formatPrice(eur, displayCurrency, currencies);
   }
 
@@ -343,6 +343,30 @@ class _TenantDetailScreenState extends ConsumerState<TenantDetailScreen>
 
   @override
   Widget build(BuildContext context) {
+    // P1 (audit): Account Manager smí na detail tenanta jen pokud je Lovec/Farmář u této agentury.
+    // Kontrola je zde (ref.watch v build), aby redirect v GoRouter nepoužíval ref a nevyvolal _didChangeDependency.
+    final auth = ref.watch(authNotifierProvider);
+    if (!widget.isModal && auth.role == 'account_manager') {
+      final tenantsAsync = ref.watch(tenantsWithStatusProvider);
+      if (tenantsAsync.hasValue) {
+        final allowedIds = tenantsAsync.value!.map((t) => t.tenant.id).toSet();
+        if (!allowedIds.contains(widget.tenantId)) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (context.mounted) {
+              GoRouter.of(context).go('/super-admin?access_denied=tenant');
+            }
+          });
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+      } else if (tenantsAsync.isLoading || tenantsAsync.isRefreshing) {
+        return const Scaffold(
+          body: Center(child: CircularProgressIndicator()),
+        );
+      }
+    }
+
     final detailAsync = ref.watch(tenantDetailProvider(widget.tenantId));
     final profilesAsync = ref.watch(tenantProfilesProvider(widget.tenantId));
     final statsAsync = ref.watch(tenantStatsProvider(widget.tenantId));

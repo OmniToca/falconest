@@ -1,15 +1,11 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:uuid/uuid.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
-import 'package:falconest/core/offline/mutation_queue_service.dart';
-import 'package:falconest/core/services/absence_notification_service.dart';
-import 'package:falconest/core/services/supabase_service.dart';
-import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/settings/providers/profile_provider.dart';
+import 'package:falconest/features/worker/widgets/submit_worker_absence_request.dart';
+import 'package:falconest/features/worker/widgets/worker_absence_submit_outcome.dart';
 
 /// Důvody nepřítomnosti – volby pro dropdown.
 const _reasonVacation = 'vacation';
@@ -18,8 +14,8 @@ const _reasonOther = 'other';
 
 /// Dialog pro přidání nové nepřítomnosti (dovolená, nemoc).
 ///
-/// PROČ offline: Worker může hlásit nemoc i v bytě bez signálu. Při síťové chybě
-/// se zápis uloží do MutationQueueService a odešle při obnovení připojení.
+/// PROČ offline (mobil): zápis jde nejdřív do Driftu a do fronty mutací; UI se obnoví streamem
+/// z [workerAbsencesProvider]. Web zůstává u přímého Supabase INSERT (viz podmíněný export submitu).
 class AddAbsenceDialog extends ConsumerStatefulWidget {
   const AddAbsenceDialog({super.key, required this.onSaved});
 
@@ -105,48 +101,34 @@ class _AddAbsenceDialogState extends ConsumerState<AddAbsenceDialog> {
     final profile = await ref.read(currentUserProfileProvider.future);
     final userName = profile.name.trim().isNotEmpty ? profile.name.trim() : 'worker.drawer_my_profile'.tr();
 
-    final startStr = _startDate!.toIso8601String();
-    final endStr = (_endDate ?? _startDate!).toIso8601String();
-    final formattedStart = DateFormat('dd.MM.yyyy').format(_startDate!);
-    final formattedEnd = DateFormat('dd.MM.yyyy').format(_endDate ?? _startDate!);
+    final start = _startDate!;
+    final end = _endDate ?? _startDate!;
 
-    final payload = <String, dynamic>{
-      'id': const Uuid().v4(),
-      'tenant_id': tenantId,
-      'profile_id': profileId,
-      'start_date': startStr,
-      'end_date': endStr,
-      'reason': _reason,
-      'status': staffAbsenceStatusPending,
-    };
+    final (outcome, errorMessage) = await submitWorkerAbsenceRequest(
+      ref: ref,
+      tenantId: tenantId,
+      profileId: profileId,
+      userName: userName,
+      startDate: start,
+      endDate: end,
+      reasonKey: _reason,
+    );
 
-    try {
-      await SupabaseService.safeFrom('staff_absences', tenantId).insert(payload);
-      await AbsenceNotificationService.notifyAdminsAboutAbsenceRequest(
-        tenantId: tenantId,
-        userName: userName,
-        formattedStart: formattedStart,
-        formattedEnd: formattedEnd,
-      );
-      if (!mounted) return;
-      Navigator.of(context).pop();
-      widget.onSaved();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('worker.absence_saved'.tr()),
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: Colors.green.shade700,
-        ),
-      );
-    } catch (e) {
-      // Offline check – fronta mutací pro mobil bez Isar na webu nic nedělá.
-      if (!kIsWeb && MutationQueueService.isNetworkError(e)) {
-        await ref.read(mutationQueueServiceProvider).enqueueMutation(
-              table: 'staff_absences',
-              action: 'INSERT',
-              payload: payload,
-            );
-        if (!mounted) return;
+    if (!mounted) return;
+
+    switch (outcome) {
+      case WorkerAbsenceSubmitOutcome.successOnline:
+        Navigator.of(context).pop();
+        widget.onSaved();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('worker.absence_saved'.tr()),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: Colors.green.shade700,
+          ),
+        );
+        break;
+      case WorkerAbsenceSubmitOutcome.successQueuedOffline:
         Navigator.of(context).pop();
         widget.onSaved();
         ScaffoldMessenger.of(context).showSnackBar(
@@ -156,20 +138,19 @@ class _AddAbsenceDialogState extends ConsumerState<AddAbsenceDialog> {
             backgroundColor: Colors.orange.shade700,
           ),
         );
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('worker.absence_save_error'.tr(namedArgs: {'error': e.toString()})),
-              backgroundColor: Colors.red.shade700,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
-      }
-    } finally {
-      if (mounted) setState(() => _isSaving = false);
+        break;
+      case WorkerAbsenceSubmitOutcome.failure:
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('worker.absence_save_error'.tr(namedArgs: {'error': errorMessage ?? ''})),
+            backgroundColor: Colors.red.shade700,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        break;
     }
+
+    if (mounted) setState(() => _isSaving = false);
   }
 
   @override

@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
-import 'package:falconest/core/services/media_service.dart';
+import 'package:falconest/features/worker/utils/worker_photo_annotation_flow.dart';
 
 /// Znovupoužitelný widget pro pořízení a zobrazení fotek úkolu (např. stav apartmánu, pasy).
 ///
@@ -53,7 +53,8 @@ class _TaskPhotoUploaderState extends State<TaskPhotoUploader> {
 
   Future<void> _addPhoto() async {
     if (kIsWeb || _photoFiles.length >= widget.maxPhotos) return;
-    final file = await MediaService.instance.pickAndCompressImage(
+    final file = await pickWorkerPhotoWithAnnotation(
+      context,
       source: ImageSource.camera,
     );
     if (file != null && mounted) {
@@ -77,21 +78,59 @@ class _TaskPhotoUploaderState extends State<TaskPhotoUploader> {
   @override
   Widget build(BuildContext context) {
     final canAdd = !kIsWeb && _photoFiles.length < widget.maxPhotos;
-    final requiredLabel = widget.isRequired
-        ? 'worker.photo_required_label'.tr()
-        : 'worker.photo_optional_label'.tr();
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(
-          '${'worker.photo_section_title'.tr()} $requiredLabel',
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w600,
-                color: Colors.grey.shade700,
-              ),
+          'worker.photo_section_title'.tr(),
+          style: theme.textTheme.titleSmall?.copyWith(
+            fontWeight: FontWeight.w600,
+            color: cs.onSurface,
+          ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
+        // PROČ: Povinná fotka musí být v UI na první pohled jiná než volitelná dokumentace — snižuje to omyl při dokončení.
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: widget.isRequired
+                ? cs.errorContainer.withValues(alpha: 0.45)
+                : cs.surfaceContainerHighest.withValues(alpha: 0.65),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: widget.isRequired ? cs.error.withValues(alpha: 0.5) : cs.outlineVariant,
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  widget.isRequired ? Icons.priority_high_rounded : Icons.add_photo_alternate_outlined,
+                  size: 22,
+                  color: widget.isRequired ? cs.error : cs.onSurfaceVariant,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    widget.isRequired
+                        ? 'worker.task_photo_required'.tr()
+                        : 'worker.task_photo_optional'.tr(),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontWeight: widget.isRequired ? FontWeight.w600 : FontWeight.w500,
+                      color: widget.isRequired ? cs.onErrorContainer : cs.onSurfaceVariant,
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
         OutlinedButton.icon(
           onPressed: canAdd ? _addPhoto : null,
           icon: const Icon(Icons.camera_alt_outlined),

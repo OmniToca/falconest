@@ -102,6 +102,7 @@ Hlavní layout: `AdminLayout` (spodní navigace / sekce).
 | **Checklisty – šablony** | Seznam šablon checklistů. | `checklistTemplatesListProvider` |
 | **Checklisty – editor** | Editace jedné šablony. | `checklistTemplateEditorProvider` |
 | **Checklist u úkolu (admin)** | Položky instance u konkrétního úkolu. | `taskChecklistItemsProvider` |
+| **Globální Omnibox (CMD/CTRL+K)** | Cross-modul fulltext vyhledávání (Klienti, Byty, Úkoly) v modálním dialogu, napojené na FTS (`search_vector`) a rychlý proklik do detailu přes `AdminLayout`. | `omniboxSearchQueryProvider`, `omniboxSearchResultsProvider` |
 | **Název tenanta / realtime** | Banner, jméno agentury. | `currentTenantNameProvider`, `currentTenantAnnouncementProvider`, `currentTenantWithRealtimeProvider` |
 | **Automations seeder** | Seed výchozích pravidel (servisní). | — (voláno z kódu, ne provider) |
 

@@ -12,18 +12,23 @@ Future<void> processOfflineCashCollection(Map<String, dynamic> payload) async {
   final profileId = payload['profile_id']?.toString();
   final taskId = payload['task_id']?.toString();
   final amountRaw = payload['amount'];
+  // PROČ: Neplatný payload nesmí vést k tišému smazání mutace z fronty – výjimka zastaví deleteById v processQueue.
   if (tenantId == null ||
       tenantId.isEmpty ||
       profileId == null ||
       profileId.isEmpty ||
       taskId == null ||
       taskId.isEmpty) {
-    return;
+    throw Exception(
+      'processOfflineCashCollection: chybí tenant_id, profile_id nebo task_id',
+    );
   }
   final amount = (amountRaw is num)
       ? amountRaw.toDouble()
       : (amountRaw != null ? double.tryParse(amountRaw.toString()) : null);
-  if (amount == null || amount <= 0) return;
+  if (amount == null || amount <= 0) {
+    throw Exception('processOfflineCashCollection: neplatná částka amount=$amountRaw');
+  }
 
   // PROČ: expected_amount pro výpočet spropitného – uloží se do transakce při sync.
   final expectedRaw = payload['expected_amount'];
@@ -33,6 +38,8 @@ Future<void> processOfflineCashCollection(Map<String, dynamic> payload) async {
 
   final note = payload['note']?.toString().trim();
 
+  final presetTx = (payload['transaction_id']?.toString() ?? '').trim();
+
   await CashWalletRepository.instance.recordCashCollection(
     tenantId: tenantId,
     profileId: profileId,
@@ -40,5 +47,6 @@ Future<void> processOfflineCashCollection(Map<String, dynamic> payload) async {
     amount: amount,
     expectedAmount: (expectedAmount != null && expectedAmount > 0) ? expectedAmount : null,
     note: (note != null && note.isNotEmpty) ? note : null,
+    presetTransactionId: presetTx.isNotEmpty ? presetTx : null,
   );
 }

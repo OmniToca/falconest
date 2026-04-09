@@ -1,6 +1,7 @@
 import 'package:easy_localization/easy_localization.dart';
 
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 
 /// Sdílená služba pro odeslání notifikací adminům o nové žádosti o absenci (zvoneček).
 ///
@@ -20,11 +21,8 @@ class AbsenceNotificationService {
     required String formattedEnd,
   }) async {
     try {
-      final client = SupabaseService.client;
-      final adminsRes = await client
-          .from('profiles')
+      final adminsRes = await SupabaseService.safeFrom('profiles', tenantId)
           .select('id')
-          .eq('tenant_id', tenantId)
           .inFilter('role', ['admin', 'manager'])
           .isFilter('deleted_at', null);
       final admins = List<dynamic>.from(adminsRes as List);
@@ -42,7 +40,6 @@ class AbsenceNotificationService {
         final adminId = (m['id'] as String?)?.trim();
         if (adminId == null || adminId.isEmpty) continue;
         payloads.add({
-          'tenant_id': tenantId,
           'profile_id': adminId,
           'title': title,
           'message': message,
@@ -50,8 +47,13 @@ class AbsenceNotificationService {
         });
       }
       if (payloads.isEmpty) return;
-      await client.from('notifications').insert(payloads);
-    } catch (_) {}
+      final safeRows = payloads
+          .map((p) => SupabaseService.safeInsertPayload(tenantId, p))
+          .toList();
+      await SupabaseService.safeFrom('notifications', tenantId).insert(safeRows);
+    } catch (e, st) {
+      AppLogger.error('AbsenceNotificationService: odeslání notifikací adminům o absenci selhalo', e, st);
+    }
   }
 
   /// Vyčte z payloadu staff_absences (tenant_id, profile_id, start_date, end_date, status),
@@ -70,8 +72,7 @@ class AbsenceNotificationService {
     String userName = 'worker.drawer_my_profile'.tr();
     if (profileId != null && profileId.isNotEmpty) {
       try {
-        final res = await SupabaseService.client
-            .from('profiles')
+        final res = await SupabaseService.safeFrom('profiles', tenantId)
             .select('name, first_name, last_name')
             .eq('id', profileId)
             .maybeSingle();
@@ -87,13 +88,15 @@ class AbsenceNotificationService {
             if (combined.isNotEmpty) userName = combined;
           }
         }
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('AbsenceNotificationService: načtení jména profilu pro notifikaci absence selhalo', e, st);
+      }
     }
 
     final startStr = (payload['start_date'] as String?)?.trim();
     final endStr = (payload['end_date'] as String?)?.trim();
-    String formattedStart = '—';
-    String formattedEnd = '—';
+    String formattedStart = 'common.placeholder_dash'.tr();
+    String formattedEnd = 'common.placeholder_dash'.tr();
     if (startStr != null && startStr.isNotEmpty) {
       final startDt = DateTime.tryParse(startStr);
       if (startDt != null) {

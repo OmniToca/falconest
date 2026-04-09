@@ -7,131 +7,74 @@ import 'package:falconest/core/widgets/sync_status_icon.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
 import 'package:falconest/features/worker/utils/cash_collection_dialog.dart';
 import 'package:falconest/features/worker/widgets/issue_reporter_dialog.dart';
-import 'package:falconest/features/worker/widgets/task_complete_with_photo_section.dart';
-import 'package:falconest/features/worker/widgets/task_countdown_timer.dart';
 import 'package:falconest/features/worker/widgets/worker_task_shared_header.dart';
 
-/// MVP obrazovka pro úkoly typu Úklid.
-/// Jednoduché zobrazení dat a tlačítko Dokončit.
-class CleaningTaskScreen extends ConsumerWidget {
-  const CleaningTaskScreen({super.key, required this.taskId});
+/// Obsah scrollu pro úklid – bez Scaffold; master layout drží [WorkerTaskDetailScreen].
+abstract final class CleaningTaskScreen {
+  CleaningTaskScreen._();
 
-  final String taskId;
+  static const Color backgroundColor = Color(0xFFF3E5F5);
 
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final detailAsync = ref.watch(workerTaskDetailProvider(taskId));
-
-    return detailAsync.when(
-      data: (detail) {
-        if (detail == null) {
-          return Scaffold(
-            body: Center(child: Text('worker.task_detail_not_found'.tr())),
+  static List<Widget> buildAppBarActions(
+    BuildContext context,
+    WidgetRef ref,
+    String taskId,
+    WorkerTaskDetail detail,
+  ) {
+    return [
+      const SyncStatusIcon(),
+      IconButton(
+        icon: const Icon(Icons.account_balance_wallet_outlined),
+        tooltip: 'worker.cash_enter_button_tooltip'.tr(),
+        onPressed: () async {
+          await maybeShowCashCollectionDialog(
+            context,
+            ref,
+            detail,
+            taskId: taskId,
+            onCompleted: () {},
+            forceShowForExtraOnly: true,
+            completeTaskOnConfirm: false,
           );
-        }
-        return Scaffold(
-          backgroundColor: const Color(0xFFF3E5F5),
-          appBar: AppBar(
-            title: Text(
-              _appBarTitle(detail),
-              style: const TextStyle(color: Colors.black87),
-            ),
-            backgroundColor: Colors.transparent,
-            foregroundColor: Colors.black87,
-            elevation: 0,
-            iconTheme: const IconThemeData(color: Colors.black87),
-            actions: [
-              const SyncStatusIcon(),
-              IconButton(
-                icon: const Icon(Icons.account_balance_wallet_outlined),
-                tooltip: 'worker.cash_enter_button_tooltip'.tr(),
-                onPressed: () async {
-                  await maybeShowCashCollectionDialog(
-                    context,
-                    ref,
-                    detail,
-                    taskId: taskId,
-                    onCompleted: () {},
-                    forceShowForExtraOnly: true,
-                    completeTaskOnConfirm: false,
-                  );
-                },
-              ),
-              IconButton(
-                icon: const Icon(Icons.report_problem_outlined),
-                onPressed: () {
-                  final tenantId = ref.read(authNotifierProvider).tenantIdForData;
-                  if (tenantId == null || tenantId.isEmpty) return;
-                  showDialog(
-                    context: context,
-                    builder: (ctx) => IssueReporterDialog(
-                      tenantId: tenantId,
-                      apartmentId: detail.apartmentId,
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-          body: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        WorkerTaskSharedHeader(
-                          title: detail.title.isNotEmpty ? detail.title : detail.apartmentName ?? '—',
-                          scheduledStart: detail.scheduledStart,
-                          apartmentAddress: detail.apartmentAddress,
-                          startedAt: detail.startedAt,
-                          completedAt: detail.completedAt,
-                          estimatedMinutes: parseTaskEstimateMinutes(
-                            detail.description,
-                            detail.metadata,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        // PROČ: Kód schránky a poznámky majitele – kritické pro vstup do bytu (bez kontaktu na hosta).
-                        ..._buildKeyboxAndOwnerNotes(detail),
-                        const SizedBox(height: 12),
-                        // PROČ: Odhad času z description (např. "Odhad: 180 min") – uklízečka potřebuje plánovat čas.
-                        ..._buildTimeEstimateCard(detail.description),
-                        // PROČ: custom_note a instructions z metadat – důležité instrukce v odlišené kartě (žlutá = důraz).
-                        ..._buildCleaningMetadata(detail.metadata ?? {}),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TaskCompleteWithPhotoSection(
-                  taskId: taskId,
-                  detail: detail,
-                  finishKey: 'worker.task_detail_finish',
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-      loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
-      error: (_, _) => Scaffold(
-        body: Center(child: Text('worker.task_detail_not_found'.tr())),
+        },
       ),
-    );
+      IconButton(
+        icon: const Icon(Icons.report_problem_outlined),
+        onPressed: () {
+          final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+          if (tenantId == null || tenantId.isEmpty) return;
+          showDialog(
+            context: context,
+            builder: (ctx) => IssueReporterDialog(
+              tenantId: tenantId,
+              apartmentId: detail.apartmentId,
+            ),
+          );
+        },
+      ),
+    ];
   }
 
-  static String _appBarTitle(dynamic detail) {
-    final base = detail.title.isNotEmpty ? detail.title : (detail.apartmentName ?? '—');
-    final ref = detail.referenceNumber?.trim();
-    return (ref != null && ref.isNotEmpty) ? '$base • #$ref' : base;
+  static List<Widget> buildScrollChildren(
+    BuildContext context,
+    WidgetRef ref,
+    WorkerTaskDetail detail,
+  ) {
+    return [
+      WorkerTaskAddressContextBar(
+        address: detail.displayAddress,
+        latitude: detail.latitude,
+        longitude: detail.longitude,
+      ),
+      const SizedBox(height: 16),
+      ..._buildKeyboxAndOwnerNotes(detail),
+      const SizedBox(height: 12),
+      ..._buildTimeEstimateCard(detail.description),
+      ..._buildCleaningMetadata(detail.metadata ?? {}),
+    ];
   }
 
-  /// Kód schránky a poznámky majitele – uklízečka potřebuje klíče a instrukce.
-  List<Widget> _buildKeyboxAndOwnerNotes(WorkerTaskDetail detail) {
+  static List<Widget> _buildKeyboxAndOwnerNotes(WorkerTaskDetail detail) {
     final widgets = <Widget>[];
     final keybox = detail.keybox?.trim();
     final notes = detail.ownerNotes?.trim();
@@ -146,7 +89,7 @@ class CleaningTaskScreen extends ConsumerWidget {
     return widgets;
   }
 
-  Widget _buildInfoCard(String label, String value, IconData icon) {
+  static Widget _buildInfoCard(String label, String value, IconData icon) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -177,13 +120,13 @@ class CleaningTaskScreen extends ConsumerWidget {
     );
   }
 
-  /// Parsuje odhad času z description (např. "Odhad: 180 min" dle AUDIT_TASK_GENERATOR).
-  /// Regex zachytí i vícejazyčné varianty "X min" pro flexibilitu.
-  List<Widget> _buildTimeEstimateCard(String description) {
+  static List<Widget> _buildTimeEstimateCard(String description) {
     if (description.trim().isEmpty) return [];
     final match = RegExp(r'(?:Odhad|Estimate|Estimación)[:\s]*(\d+)\s*min|(\d+)\s*min')
         .firstMatch(description.trim());
-    final minutes = match != null ? (int.tryParse(match.group(1) ?? '') ?? int.tryParse(match.group(2) ?? '')) : null;
+    final minutes = match != null
+        ? (int.tryParse(match.group(1) ?? '') ?? int.tryParse(match.group(2) ?? ''))
+        : null;
     if (minutes == null || minutes <= 0) return [];
 
     return [
@@ -222,13 +165,12 @@ class CleaningTaskScreen extends ConsumerWidget {
     ];
   }
 
-  /// Vykreslení metadat pro Úklid – custom_note a instructions. Bezpečnost: žádné finance.
-  /// Žluté pozadí = vizuální důraz na důležité instrukce. Pokud prázdné, karta se nezobrazí.
-  List<Widget> _buildCleaningMetadata(Map<String, dynamic> meta) {
+  static List<Widget> _buildCleaningMetadata(Map<String, dynamic> meta) {
     final note = meta['custom_note'];
     final instructions = meta['instructions'];
     final noteText = note is String ? note.trim() : (note?.toString().trim() ?? '');
-    final instructionsText = instructions is String ? instructions.trim() : (instructions?.toString().trim() ?? '');
+    final instructionsText =
+        instructions is String ? instructions.trim() : (instructions?.toString().trim() ?? '');
     final combined = [noteText, instructionsText].where((s) => s.isNotEmpty).join('\n\n');
     if (combined.isEmpty) return [];
 
@@ -238,8 +180,7 @@ class CleaningTaskScreen extends ConsumerWidget {
     ];
   }
 
-  /// Karta vlastních instrukcí – světle žluté pozadí pro vizuální důraz, ikona info.
-  Widget _buildCustomInstructionsCard(String text) {
+  static Widget _buildCustomInstructionsCard(String text) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(

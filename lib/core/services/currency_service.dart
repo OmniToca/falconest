@@ -49,7 +49,32 @@ class CurrencyRow {
 class CurrencyService {
   CurrencyService._();
 
-  /// Načte všechny měny z DB (cache přes [currenciesProvider]).
+  /// In-memory cache kurzů – snižuje opakované dotazy na Supabase (viz [fetchCurrenciesCached]).
+  static List<CurrencyRow>? _currenciesCache;
+  static DateTime? _currenciesCacheAt;
+  static const Duration _currenciesCacheTtl = Duration(hours: 1);
+
+  /// Vymaže cache kurzů. Volat před [ref.invalidate(currenciesProvider)] po změně kurzovního lístku.
+  static void invalidateCurrenciesCache() {
+    _currenciesCache = null;
+    _currenciesCacheAt = null;
+  }
+
+  /// Vrátí kurzy z DB nebo z cache platné max. [_currenciesCacheTtl] od posledního stažení.
+  static Future<List<CurrencyRow>> fetchCurrenciesCached() async {
+    final now = DateTime.now();
+    if (_currenciesCache != null &&
+        _currenciesCacheAt != null &&
+        now.difference(_currenciesCacheAt!) < _currenciesCacheTtl) {
+      return _currenciesCache!;
+    }
+    final list = await fetchCurrencies();
+    _currenciesCache = list;
+    _currenciesCacheAt = now;
+    return list;
+  }
+
+  /// Načte všechny měny z DB (přímý dotaz bez TTL – pro vynucené obnovení uvnitř [fetchCurrenciesCached]).
   static Future<List<CurrencyRow>> fetchCurrencies() async {
     final res = await SupabaseService.client
         .from('currencies')
@@ -211,7 +236,8 @@ String formatTransactionDateShort(BuildContext context, DateTime date) {
 }
 
 
-/// Cache kurzů z DB. Invaliduj při změně v Nastavení (Kurzovní lístek).
+/// Cache kurzů z DB (TTL 1 h v [CurrencyService.fetchCurrenciesCached]).
+/// Po změně kurzů v Nastavení volat [CurrencyService.invalidateCurrenciesCache] + invalidate provideru.
 final currenciesProvider = FutureProvider<List<CurrencyRow>>((ref) async {
-  return CurrencyService.fetchCurrencies();
+  return CurrencyService.fetchCurrenciesCached();
 });

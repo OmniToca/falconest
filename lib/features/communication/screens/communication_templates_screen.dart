@@ -2,10 +2,14 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/features/admin/models/task_category_model.dart';
+import 'package:falconest/features/admin/providers/task_categories_provider.dart';
 import 'package:falconest/features/communication/models/message_template_row.dart';
 import 'package:falconest/features/communication/providers/message_templates_admin_provider.dart';
+import 'package:falconest/core/theme/premium_card_decoration.dart';
 import 'package:falconest/features/communication/utils/communication_error_helper.dart';
 import 'package:falconest/features/communication/widgets/template_editor_dialog.dart';
+import 'package:falconest/utils/task_visuals.dart';
 
 /// Administrativní obrazovka správy šablon zpráv (Komunikace).
 ///
@@ -42,7 +46,7 @@ class CommunicationTemplatesScreen extends ConsumerWidget {
               Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
               const SizedBox(height: 16),
               Text(
-                'common.error_with_message'.tr(namedArgs: {'message': err.toString()}),
+                'common.generic_error_user_friendly'.tr(),
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.red.shade700),
               ),
@@ -70,15 +74,15 @@ class CommunicationTemplatesScreen extends ConsumerWidget {
                 Text(
                   'communication.title'.tr(),
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   'communication.subtitle'.tr(),
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Colors.grey.shade600,
-                      ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyMedium?.copyWith(color: Colors.grey.shade600),
                 ),
               ],
             ),
@@ -98,13 +102,17 @@ class CommunicationTemplatesScreen extends ConsumerWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.chat_bubble_outline, size: 64, color: Colors.grey.shade400),
+          Icon(
+            Icons.chat_bubble_outline,
+            size: 64,
+            color: Colors.grey.shade400,
+          ),
           const SizedBox(height: 16),
           Text(
             'communication.empty_list'.tr(),
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: Colors.grey.shade600,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(color: Colors.grey.shade600),
             textAlign: TextAlign.center,
           ),
         ],
@@ -117,60 +125,73 @@ class CommunicationTemplatesScreen extends ConsumerWidget {
     WidgetRef ref,
     List<MessageTemplateRow> templates,
   ) {
+    final categoriesByCode =
+        ref.watch(taskCategoriesProvider).valueOrNull ??
+        <String, TaskCategoryModel>{};
     return ListView.builder(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
       itemCount: templates.length,
       itemBuilder: (context, index) {
         final t = templates[index];
-        return Card(
-          margin: const EdgeInsets.only(bottom: 12),
-          child: ListTile(
-            leading: CircleAvatar(
-              backgroundColor: Colors.green.shade100,
-              child: Icon(Icons.chat, color: Colors.green.shade800),
-            ),
-            title: Text(
-              t.name,
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    _TriggerChip(value: t.triggerContext),
-                    const SizedBox(width: 8),
-                    _LanguageChip(value: t.languageCode),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  t.body.length > 100 ? '${t.body.substring(0, 100)}…' : t.body,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.grey.shade600,
+        // PROČ: Stejný prémiový obal jako Automatizace / nástěnka — žádné zastaralé Material Card.
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: premiumCardShell(
+            context,
+            child: ListTile(
+              leading: CircleAvatar(
+                backgroundColor: Colors.green.shade100,
+                child: Icon(Icons.chat, color: Colors.green.shade800),
+              ),
+              title: Text(
+                t.name,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      _TriggerChip(
+                        value: t.triggerContext,
+                        categoriesByCode: categoriesByCode,
+                      ),
+                      const SizedBox(width: 8),
+                      _ChannelChip(channel: t.channel),
+                    ],
                   ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-            isThreeLine: true,
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.edit_outlined),
-                  onPressed: () => _showEditorDialog(context, ref, template: t),
-                  tooltip: 'communication.edit_template'.tr(),
-                ),
-                IconButton(
-                  icon: Icon(Icons.delete_outline, color: Colors.red.shade700),
-                  onPressed: () => _showDeleteConfirm(context, ref, t),
-                  tooltip: 'admin.apartments_delete'.tr(),
-                ),
-              ],
+                  const SizedBox(height: 4),
+                  Text(
+                    t.previewSnippet.isEmpty ? '–' : t.previewSnippet,
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+              isThreeLine: true,
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.edit_outlined),
+                    onPressed: () =>
+                        _showEditorDialog(context, ref, template: t),
+                    tooltip: 'communication.edit_template'.tr(),
+                  ),
+                  IconButton(
+                    icon: Icon(
+                      Icons.delete_outline,
+                      color: Colors.red.shade700,
+                    ),
+                    onPressed: () => _showDeleteConfirm(context, ref, t),
+                    tooltip: 'admin.apartments_delete'.tr(),
+                  ),
+                ],
+              ),
             ),
           ),
         );
@@ -186,7 +207,6 @@ class CommunicationTemplatesScreen extends ConsumerWidget {
     showDialog<void>(
       context: context,
       builder: (ctx) => TemplateEditorDialog(
-        ref: ref,
         template: template,
         onSaved: () => ref.invalidate(messageTemplatesAdminProvider),
       ),
@@ -201,7 +221,7 @@ class CommunicationTemplatesScreen extends ConsumerWidget {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('admin.apartments_delete'.tr()),
+        title: Text('communication.template_delete_title'.tr()),
         content: Text('communication.delete_confirm'.tr()),
         actions: [
           TextButton(
@@ -212,7 +232,9 @@ class CommunicationTemplatesScreen extends ConsumerWidget {
             style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
             onPressed: () async {
               try {
-                await ref.read(messageTemplatesAdminNotifierProvider.notifier).delete(template.id);
+                await ref
+                    .read(messageTemplatesAdminNotifierProvider.notifier)
+                    .delete(template.id);
                 if (ctx.mounted) {
                   Navigator.of(ctx).pop();
                   ref.invalidate(messageTemplatesAdminProvider);
@@ -230,7 +252,9 @@ class CommunicationTemplatesScreen extends ConsumerWidget {
                   ScaffoldMessenger.of(ctx).showSnackBar(
                     SnackBar(
                       content: Text(
-                        'communication.delete_error'.tr(namedArgs: {'error': userFacingCommunicationError(e)}),
+                        'communication.delete_error'.tr(
+                          namedArgs: {'error': userFacingCommunicationError(e)},
+                        ),
                       ),
                       backgroundColor: Colors.red.shade700,
                       behavior: SnackBarBehavior.floating,
@@ -239,7 +263,7 @@ class CommunicationTemplatesScreen extends ConsumerWidget {
                 }
               }
             },
-            child: Text('admin.apartments_delete'.tr()),
+            child: Text('communication.template_delete_button'.tr()),
           ),
         ],
       ),
@@ -247,20 +271,72 @@ class CommunicationTemplatesScreen extends ConsumerWidget {
   }
 }
 
-/// Malý chip pro zobrazení trigger kontextu.
+/// Malý chip pro zobrazení trigger kontextu (kategorie úkolu z task_categories).
+/// Překlad přes admin.task_type_{code}, barva a ikona z TaskVisuals.
 class _TriggerChip extends StatelessWidget {
-  const _TriggerChip({this.value});
+  const _TriggerChip({this.value, this.categoriesByCode});
 
   final String? value;
+  final Map<String, TaskCategoryModel>? categoriesByCode;
 
   @override
   Widget build(BuildContext context) {
-    final display = switch (value?.toLowerCase()) {
-      'transfer' => 'communication.template_trigger_transfer'.tr(),
-      'check_in' => 'communication.template_trigger_check_in'.tr(),
-      'check_out' => 'communication.template_trigger_check_out'.tr(),
-      _ => 'communication.template_trigger_general'.tr(),
-    };
+    final isGeneral = value == null || value!.trim().isEmpty;
+    final display = isGeneral
+        ? 'communication.template_trigger_general'.tr()
+        : 'admin.task_type_$value'.tr();
+    final bgColor = isGeneral
+        ? Colors.grey.shade100
+        : TaskVisuals.getBackgroundColor(
+            value,
+            categoriesByCode: categoriesByCode,
+          );
+    final fgColor = isGeneral
+        ? Colors.grey.shade700
+        : TaskVisuals.getBorderColor(value, categoriesByCode: categoriesByCode);
+    final icon = isGeneral
+        ? Icons.chat_bubble_outline
+        : TaskVisuals.getIcon(value, categoriesByCode: categoriesByCode);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: fgColor),
+          const SizedBox(width: 4),
+          Text(display, style: TextStyle(fontSize: 11, color: fgColor)),
+        ],
+      ),
+    );
+  }
+}
+
+/// Malý chip pro zobrazení komunikačního kanálu šablony.
+class _ChannelChip extends StatelessWidget {
+  const _ChannelChip({required this.channel});
+
+  final String channel;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = channel.trim().toLowerCase();
+    String labelKey;
+    switch (c) {
+      case 'sms':
+        labelKey = 'communication.channel_sms';
+        break;
+      case 'email':
+        labelKey = 'communication.channel_email';
+        break;
+      case 'whatsapp':
+      default:
+        labelKey = 'communication.channel_whatsapp';
+        break;
+    }
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
@@ -268,33 +344,8 @@ class _TriggerChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text(
-        display,
-        style: TextStyle(fontSize: 11, color: Colors.blue.shade800),
-      ),
-    );
-  }
-}
-
-/// Malý chip pro zobrazení jazyka.
-class _LanguageChip extends StatelessWidget {
-  const _LanguageChip({this.value});
-
-  final String? value;
-
-  @override
-  Widget build(BuildContext context) {
-    final display = value == null || value!.isEmpty
-        ? 'communication.template_language_default'.tr()
-        : value!.toUpperCase();
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: Colors.amber.shade50,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(
-        display,
-        style: TextStyle(fontSize: 11, color: Colors.amber.shade900),
+        labelKey.tr(),
+        style: TextStyle(fontSize: 11, color: Colors.blue.shade900),
       ),
     );
   }

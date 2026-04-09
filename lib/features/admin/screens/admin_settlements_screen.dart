@@ -1,9 +1,10 @@
 import 'package:easy_localization/easy_localization.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:falconest/core/presentation/widgets/app_card.dart';
 import 'package:falconest/core/services/currency_service.dart';
+import 'package:falconest/core/theme/premium_card_decoration.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/settlements_provider.dart';
 import 'package:falconest/features/admin/widgets/payout_history_content.dart';
@@ -32,8 +33,8 @@ class AdminSettlementsScreen extends ConsumerWidget {
                   Text(
                     'admin.settlements.menu_title'.tr(),
                     style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ],
               ),
@@ -74,9 +75,9 @@ class _QueueTabContent extends ConsumerWidget {
             padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
             child: Text(
               'admin.settlements.pending_title'.tr(),
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: Colors.grey.shade700,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(color: Colors.grey.shade700),
             ),
           ),
         ),
@@ -97,8 +98,8 @@ class _QueueTabContent extends ConsumerWidget {
                       Text(
                         'admin.settlements.empty_pending'.tr(),
                         style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                              color: Colors.grey.shade600,
-                            ),
+                          color: Colors.grey.shade600,
+                        ),
                         textAlign: TextAlign.center,
                       ),
                     ],
@@ -107,44 +108,44 @@ class _QueueTabContent extends ConsumerWidget {
               );
             }
             return SliverList(
-              delegate: SliverChildBuilderDelegate(
-                (context, index) {
-                  final task = tasks[index];
-                  return _SettlementPendingTaskCard(
-                    task: task,
-                    onTap: () {
-                      SettlementSplitDialog.show(
-                        context,
-                        ref: ref,
-                        task: task,
-                      );
-                    },
-                    formatAmount: (v) => formatWalletAmount(context, ref, v),
-                  );
-                },
-                childCount: tasks.length,
-              ),
+              delegate: SliverChildBuilderDelegate((context, index) {
+                final task = tasks[index];
+                return _SettlementPendingTaskCard(
+                  task: task,
+                  onTap: () {
+                    SettlementSplitDialog.show(context, ref: ref, task: task);
+                  },
+                  formatAmount: (v) => formatWalletAmount(context, ref, v),
+                );
+              }, childCount: tasks.length),
             );
           },
           loading: () => const SliverFillRemaining(
             child: Center(child: CircularProgressIndicator()),
           ),
-          error: (e, _) => SliverFillRemaining(
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
-                  const SizedBox(height: 16),
-                  Text(
-                    e.toString(),
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                ],
+          error: (e, _) {
+            if (kDebugMode) debugPrint('settlements queue tab error: $e');
+            return SliverFillRemaining(
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.error_outline,
+                      size: 48,
+                      color: Colors.red.shade700,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'common.generic_error_user_friendly'.tr(),
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ),
+            );
+          },
         ),
         const SliverToBoxAdapter(child: SizedBox(height: 24)),
       ],
@@ -170,13 +171,17 @@ class _PayrollTabContent extends ConsumerWidget {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.check_circle_outline, size: 64, color: Colors.green.shade400),
+                      Icon(
+                        Icons.check_circle_outline,
+                        size: 64,
+                        color: Colors.green.shade400,
+                      ),
                       const SizedBox(height: 16),
                       Text(
                         'admin.settlements.empty_payroll'.tr(),
                         style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                              color: Colors.grey.shade600,
-                            ),
+                          color: Colors.grey.shade600,
+                        ),
                         textAlign: TextAlign.center,
                       ),
                     ],
@@ -184,138 +189,197 @@ class _PayrollTabContent extends ConsumerWidget {
                 );
               }
               return ListView(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 16,
+                ),
                 children: [
                   // Karta celkového zisku agentury (marže) – souhrn po schválení výplat
                   Padding(
                     padding: const EdgeInsets.only(bottom: 16),
-                    child: AppCard(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'admin.settlements.agency_margin_total_title'.tr(),
-                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                ),
-                          ),
-                          if ('admin.settlements.agency_margin_total_subtitle'.tr().isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 4),
-                              child: Text(
-                                'admin.settlements.agency_margin_total_subtitle'.tr(),
-                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                      color: Colors.grey.shade600,
-                                    ),
-                              ),
+                    child: premiumCardShell(
+                      context,
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'admin.settlements.agency_margin_total_title'
+                                  .tr(),
+                              style: Theme.of(context).textTheme.titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.bold),
                             ),
-                          const SizedBox(height: 8),
-                          Text(
-                            formatWalletAmount(context, ref, data.agencyMarginTotal),
-                            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.green.shade700,
-                                ),
-                          ),
-                          const Divider(height: 24),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                'admin.settlements.margin_breakdown_invoiced'.tr(),
-                                style: TextStyle(color: Colors.grey.shade700),
-                              ),
-                              Text(
-                                formatWalletAmount(context, ref, data.totalTaskValue),
-                                style: const TextStyle(fontWeight: FontWeight.w500),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                'admin.settlements.margin_breakdown_costs'.tr(),
-                                style: TextStyle(color: Colors.grey.shade700),
-                              ),
-                              Text(
-                                '- ${formatWalletAmount(context, ref, data.totalPayouts)}',
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w500,
-                                  color: Colors.red,
+                            if ('admin.settlements.agency_margin_total_subtitle'
+                                .tr()
+                                .isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  'admin.settlements.agency_margin_total_subtitle'
+                                      .tr(),
+                                  style: Theme.of(context).textTheme.bodySmall
+                                      ?.copyWith(color: Colors.grey.shade600),
                                 ),
                               ),
-                            ],
-                          ),
-                          if (data.taskMargins.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              formatWalletAmount(
+                                context,
+                                ref,
+                                data.agencyMarginTotal,
+                              ),
+                              style: Theme.of(context).textTheme.headlineSmall
+                                  ?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.green.shade700,
+                                  ),
+                            ),
                             const Divider(height: 24),
-                            ExpansionTile(
-                              tilePadding: EdgeInsets.zero,
-                              childrenPadding: const EdgeInsets.only(top: 8, bottom: 4),
-                              title: Text(
-                                'admin.settlements.margin_show_details'.tr(),
-                                style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                                      color: Theme.of(context).colorScheme.primary,
-                                    ),
-                              ),
+                            Row(
                               children: [
-                                ListView.separated(
-                                  shrinkWrap: true,
-                                  physics: const NeverScrollableScrollPhysics(),
-                                  itemCount: data.taskMargins.length,
-                                  separatorBuilder: (_, _) => const SizedBox(height: 8),
-                                  itemBuilder: (context, index) {
-                                    final t = data.taskMargins[index];
-                                    final marginColor = t.margin >= 0
-                                        ? Colors.green.shade700
-                                        : Colors.red.shade700;
-                                    return Padding(
-                                      padding: const EdgeInsets.symmetric(vertical: 4),
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Row(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Expanded(
-                                                child: Text(
-                                                  t.taskTitle,
-                                                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                                        fontWeight: FontWeight.w500,
-                                                      ),
-                                                  maxLines: 2,
-                                                  overflow: TextOverflow.ellipsis,
-                                                ),
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Text(
-                                                formatWalletAmount(context, ref, t.margin),
-                                                style: TextStyle(
-                                                  fontWeight: FontWeight.w600,
-                                                  color: marginColor,
-                                                  fontSize: 14,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 2),
-                                          Text(
-                                            '${'admin.settlements.margin_breakdown_invoiced'.tr()}: ${formatWalletAmount(context, ref, t.invoiced)} | ${'admin.settlements.margin_breakdown_costs'.tr()}: ${formatWalletAmount(context, ref, t.costs)}',
-                                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                                  color: Colors.grey.shade600,
-                                                ),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                  },
+                                Expanded(
+                                  child: Text(
+                                    'admin.settlements.margin_breakdown_invoiced'
+                                        .tr(),
+                                    style: TextStyle(
+                                      color: Colors.grey.shade700,
+                                    ),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  formatWalletAmount(
+                                    context,
+                                    ref,
+                                    data.totalTaskValue,
+                                  ),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w500,
+                                  ),
                                 ),
                               ],
                             ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    'admin.settlements.margin_breakdown_costs'
+                                        .tr(),
+                                    style: TextStyle(
+                                      color: Colors.grey.shade700,
+                                    ),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  '- ${formatWalletAmount(context, ref, data.totalPayouts)}',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w500,
+                                    color: Colors.red,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (data.taskMargins.isNotEmpty) ...[
+                              const Divider(height: 24),
+                              ExpansionTile(
+                                tilePadding: EdgeInsets.zero,
+                                childrenPadding: const EdgeInsets.only(
+                                  top: 8,
+                                  bottom: 4,
+                                ),
+                                title: Text(
+                                  'admin.settlements.margin_show_details'.tr(),
+                                  style: Theme.of(context).textTheme.labelLarge
+                                      ?.copyWith(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.primary,
+                                      ),
+                                ),
+                                children: [
+                                  ListView.separated(
+                                    shrinkWrap: true,
+                                    physics:
+                                        const NeverScrollableScrollPhysics(),
+                                    itemCount: data.taskMargins.length,
+                                    separatorBuilder: (_, _) =>
+                                        const SizedBox(height: 8),
+                                    itemBuilder: (context, index) {
+                                      final t = data.taskMargins[index];
+                                      final marginColor = t.margin >= 0
+                                          ? Colors.green.shade700
+                                          : Colors.red.shade700;
+                                      return Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 4,
+                                        ),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Expanded(
+                                                  child: Text(
+                                                    t.taskTitle,
+                                                    style: Theme.of(context)
+                                                        .textTheme
+                                                        .bodyMedium
+                                                        ?.copyWith(
+                                                          fontWeight:
+                                                              FontWeight.w500,
+                                                        ),
+                                                    maxLines: 2,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Text(
+                                                  formatWalletAmount(
+                                                    context,
+                                                    ref,
+                                                    t.margin,
+                                                  ),
+                                                  style: TextStyle(
+                                                    fontWeight: FontWeight.w600,
+                                                    color: marginColor,
+                                                    fontSize: 14,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              '${'admin.settlements.margin_breakdown_invoiced'.tr()}: ${formatWalletAmount(context, ref, t.invoiced)} | ${'admin.settlements.margin_breakdown_costs'.tr()}: ${formatWalletAmount(context, ref, t.costs)}',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                    color: Colors.grey.shade600,
+                                                  ),
+                                              maxLines: 3,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ],
                           ],
-                        ],
+                        ),
                       ),
                     ),
                   ),
@@ -323,34 +387,46 @@ class _PayrollTabContent extends ConsumerWidget {
                     (group) => _PayrollGroupCard(
                       group: group,
                       formatAmount: (v) => formatWalletAmount(context, ref, v),
-                      onMarkAsPaid: () => _handleMarkAsPaid(context, ref, group),
+                      onMarkAsPaid: () =>
+                          _handleMarkAsPaid(context, ref, group),
                     ),
                   ),
                 ],
               );
             },
             loading: () => const Center(child: CircularProgressIndicator()),
-            error: (e, _) => Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
-                  const SizedBox(height: 16),
-                  Text(
-                    e.toString(),
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                ],
-              ),
-            ),
+            error: (e, _) {
+              if (kDebugMode) debugPrint('settlements payroll tab error: $e');
+              return Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.error_outline,
+                      size: 48,
+                      color: Colors.red.shade700,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'common.generic_error_user_friendly'.tr(),
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
         ),
       ],
     );
   }
 
-  Future<void> _handleMarkAsPaid(BuildContext context, WidgetRef ref, PayoutGroup group) async {
+  Future<void> _handleMarkAsPaid(
+    BuildContext context,
+    WidgetRef ref,
+    PayoutGroup group,
+  ) async {
     try {
       await markPayoutGroupAsPaid(ref: ref, group: group);
       if (context.mounted) {
@@ -359,10 +435,11 @@ class _PayrollTabContent extends ConsumerWidget {
         );
       }
     } catch (e) {
+      if (kDebugMode) debugPrint('markPayoutGroupAsPaid: $e');
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(e.toString()),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red.shade700,
           ),
         );
@@ -389,13 +466,15 @@ class _PayrollGroupCard extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: AppCard(
-        padding: EdgeInsets.zero,
+      child: premiumCardShell(
+        context,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Theme(
-              data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+              data: Theme.of(
+                context,
+              ).copyWith(dividerColor: Colors.transparent),
               child: ExpansionTile(
                 initiallyExpanded: false,
                 tilePadding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
@@ -403,13 +482,17 @@ class _PayrollGroupCard extends StatelessWidget {
                 leading: Icon(
                   group.isEmployee ? Icons.person : Icons.business,
                   size: 20,
-                  color: group.isEmployee ? Colors.blue.shade700 : Colors.purple.shade700,
+                  color: group.isEmployee
+                      ? Colors.blue.shade700
+                      : Colors.purple.shade700,
                 ),
                 title: Text(
                   group.recipientName,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+                    fontWeight: FontWeight.w600,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                 ),
                 subtitle: Padding(
                   padding: const EdgeInsets.only(top: 4),
@@ -418,17 +501,18 @@ class _PayrollGroupCard extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        DateFormat.yMMMM(context.locale.toString()).format(group.taskMonth),
-                        style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                              color: Colors.grey.shade600,
-                            ),
+                        DateFormat.yMMMM(
+                          context.locale.toString(),
+                        ).format(group.taskMonth),
+                        style: Theme.of(context).textTheme.labelMedium
+                            ?.copyWith(color: Colors.grey.shade600),
                       ),
                       Text(
                         formatAmount(group.totalAmount),
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.green.shade700,
-                            ),
+                          fontWeight: FontWeight.bold,
+                          color: Colors.green.shade700,
+                        ),
                       ),
                     ],
                   ),
@@ -442,27 +526,31 @@ class _PayrollGroupCard extends StatelessWidget {
                               flex: 2,
                               child: Text(
                                 'admin.settlements.payroll_item_task'.tr(),
-                                style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                                      color: Colors.grey.shade600,
-                                    ),
+                                style: Theme.of(context).textTheme.labelMedium
+                                    ?.copyWith(color: Colors.grey.shade600),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
                               ),
                             ),
-                            SizedBox(
-                              width: 100,
+                            Expanded(
+                              flex: 1,
                               child: Text(
                                 'admin.settlements.payroll_item_date'.tr(),
-                                style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                                      color: Colors.grey.shade600,
-                                    ),
+                                style: Theme.of(context).textTheme.labelMedium
+                                    ?.copyWith(color: Colors.grey.shade600),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
                               ),
                             ),
-                            SizedBox(
-                              width: 90,
+                            Expanded(
+                              flex: 1,
                               child: Text(
                                 'admin.settlements.payroll_item_amount'.tr(),
-                                style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                                      color: Colors.grey.shade600,
-                                    ),
+                                textAlign: TextAlign.end,
+                                style: Theme.of(context).textTheme.labelMedium
+                                    ?.copyWith(color: Colors.grey.shade600),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
                               ),
                             ),
                           ],
@@ -476,30 +564,40 @@ class _PayrollGroupCard extends StatelessWidget {
                                 Expanded(
                                   flex: 2,
                                   child: Text(
-                                    item.taskTitle.isEmpty ? '—' : item.taskTitle,
-                                    style: Theme.of(context).textTheme.bodySmall,
+                                    item.taskTitle.isEmpty
+                                        ? 'common.placeholder_dash'.tr()
+                                        : item.taskTitle,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.bodySmall,
                                     maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
-                                SizedBox(
-                                  width: 100,
+                                Expanded(
+                                  flex: 1,
                                   child: Text(
                                     item.date != null
-                                        ? DateFormat('dd.MM.yyyy', context.locale.toString()).format(item.date!)
-                                        : '—',
-                                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                          color: Colors.grey.shade700,
-                                        ),
+                                        ? DateFormat(
+                                            'dd.MM.yyyy',
+                                            context.locale.toString(),
+                                          ).format(item.date!)
+                                        : 'common.placeholder_dash'.tr(),
+                                    style: Theme.of(context).textTheme.bodySmall
+                                        ?.copyWith(color: Colors.grey.shade700),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
-                                SizedBox(
-                                  width: 90,
+                                Expanded(
+                                  flex: 1,
                                   child: Text(
                                     formatAmount(item.amount),
-                                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                          fontWeight: FontWeight.w500,
-                                        ),
+                                    textAlign: TextAlign.end,
+                                    style: Theme.of(context).textTheme.bodySmall
+                                        ?.copyWith(fontWeight: FontWeight.w500),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
                               ],
@@ -570,14 +668,14 @@ class _SettlementPendingTaskCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final totalStr = _totalTaskPrice > 0
         ? formatAmount(_totalTaskPrice)
-        : '—';
+        : 'common.placeholder_dash'.tr();
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
-      child: InkWell(
+      child: premiumCardShell(
+        context,
         onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-            child: AppCard(
+        child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
             children: [
@@ -591,9 +689,10 @@ class _SettlementPendingTaskCard extends StatelessWidget {
                         Expanded(
                           child: Text(
                             task.title,
-                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                ),
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w600),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                         if (_isExternalTask) ...[
@@ -601,13 +700,16 @@ class _SettlementPendingTaskCard extends StatelessWidget {
                           Chip(
                             label: Text(
                               'admin.settlements.external_client_badge'.tr(),
-                              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                                    color: Colors.orange.shade800,
-                                  ),
+                              style: Theme.of(context).textTheme.labelSmall
+                                  ?.copyWith(color: Colors.orange.shade800),
                             ),
                             backgroundColor: Colors.orange.shade50,
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 0),
-                            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 0,
+                            ),
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
                             visualDensity: VisualDensity.compact,
                           ),
                         ],
@@ -619,45 +721,38 @@ class _SettlementPendingTaskCard extends StatelessWidget {
                       Text(
                         '${'admin.settlements.task_date_label'.tr()}: ${DateFormat('dd.MM.yyyy HH:mm', context.locale.toString()).format(_displayDate!)}',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Colors.grey.shade600,
-                            ),
+                          color: Colors.grey.shade600,
+                        ),
                       ),
                     ],
                     const SizedBox(height: 4),
                     Row(
                       children: [
-                        if (task.apartmentName != null &&
-                            task.apartmentName!.isNotEmpty)
-                          Text(
-                            task.apartmentName!,
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                  color: Colors.grey.shade600,
-                                ),
+                        Expanded(
+                          child: Text(
+                            <String>[
+                              if (task.apartmentName != null &&
+                                  task.apartmentName!.trim().isNotEmpty)
+                                task.apartmentName!.trim(),
+                              if (task.assignedToName != null &&
+                                  task.assignedToName!.trim().isNotEmpty)
+                                task.assignedToName!.trim(),
+                            ].join(' • '),
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: Colors.grey.shade600),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
-                        if (task.assignedToName != null &&
-                            task.assignedToName!.isNotEmpty) ...[
-                          if (task.apartmentName != null &&
-                              task.apartmentName!.isNotEmpty)
-                            Text(
-                              ' • ',
-                              style: TextStyle(color: Colors.grey.shade600),
-                            ),
-                          Text(
-                            task.assignedToName!,
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                  color: Colors.grey.shade600,
-                                ),
-                          ),
-                        ],
+                        ),
                       ],
                     ),
                     const SizedBox(height: 4),
                     Text(
                       totalStr,
                       style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.green.shade700,
-                          ),
+                        fontWeight: FontWeight.bold,
+                        color: Colors.green.shade700,
+                      ),
                     ),
                   ],
                 ),

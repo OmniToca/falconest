@@ -29,17 +29,18 @@ import 'package:falconest/features/admin/admin_zones_screen.dart';
 import 'package:falconest/features/settings/settings_screen.dart';
 import 'package:falconest/features/super_admin/audit_log_screen.dart';
 import 'package:falconest/features/super_admin/onboarding_wizard_screen.dart';
-import 'package:falconest/features/super_admin/providers/all_tenants_provider.dart';
 import 'package:falconest/features/super_admin/super_admin_dashboard.dart';
 import 'package:falconest/features/super_admin/tenant_detail_screen.dart';
 import 'package:falconest/features/worker/screens/worker_absences_screen.dart';
 import 'package:falconest/features/worker/screens/worker_dashboard_screen.dart';
+import 'package:falconest/features/worker/screens/worker_mutation_queue_screen.dart';
 import 'package:falconest/features/worker/screens/worker_earnings_screen.dart';
 import 'package:falconest/features/worker/screens/worker_wallet_screen.dart';
 import 'package:falconest/features/worker/screens/worker_task_detail_screen.dart';
 import 'package:falconest/features/owner/owner_apartment_detail_screen.dart';
 import 'package:falconest/features/owner/owner_layout.dart';
 import 'package:falconest/features/tasks/task_detail_screen.dart';
+import 'package:falconest/features/admin/checklists/screens/checklist_templates_screen.dart';
 import 'package:falconest/shared/widgets/placeholder_screen.dart';
 
 /// Provider pro GoRouter – závisí na [authNotifierProvider].
@@ -56,15 +57,17 @@ final goRouterProvider = Provider<GoRouter>((ref) {
     initialLocation: '/',
     // BUGFIX: Oprava definice rout pro klientský portál (zamezení fallback redirectu).
     debugLogDiagnostics: kDebugMode,
+    // BUGFIX (_didChangeDependency): V redirect callbacku NESMÍ být ref.read ani ref – volá se
+    // při refreshListenable (např. AuthNotifier.notifyListeners) a Riverpod v tu chvíli může
+    // přehodnocovat závislosti. uiMode bereme z již načteného uiModeNotifier (ref.watch výše).
     redirect: (context, state) async {
-      final uiMode = ref.read(uiModeNotifierProvider).mode;
+      final uiMode = uiModeNotifier.mode;
       return _redirectLogic(
         context,
         state,
         authNotifier,
         pinUnlocked,
         uiMode,
-        ref,
       );
     },
     routes: [
@@ -193,6 +196,11 @@ final goRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const WorkerEarningsScreen(),
           ),
           GoRoute(
+            path: 'mutation-queue',
+            name: 'workerMutationQueue',
+            builder: (context, state) => const WorkerMutationQueueScreen(),
+          ),
+          GoRoute(
             path: 'task/:id',
             name: 'workerTaskDetail',
             builder: (context, state) {
@@ -212,6 +220,12 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         },
       ),
       // REFACTOR: Přechod z ShellRoute na IndexedStack pro stabilnější navigaci v Klientském portálu.
+      // Konkrétnější cesta musí být před obecnou `/owner`, aby se správně matchovala.
+      GoRoute(
+        path: '/owner/dashboard',
+        name: 'ownerDashboard',
+        builder: (context, state) => const OwnerLayout(initialTabIndex: 0),
+      ),
       GoRoute(
         path: '/owner',
         name: 'owner',
@@ -230,6 +244,11 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         path: '/home',
         name: 'home',
         builder: (context, state) => const PlaceholderScreen(),
+      ),
+      GoRoute(
+        path: '/admin/checklist-templates',
+        name: 'adminChecklistTemplates',
+        builder: (context, state) => const ChecklistTemplatesScreen(),
       ),
       GoRoute(
         path: '/admin',
@@ -328,14 +347,14 @@ Future<String?> _getRedirectTargetForRole(
 /// 2. Přihlášený na /: čeká na profil, pak podle role
 /// 3. /pin-setup: povoleno když isLoggedIn (mobilní flow)
 /// 4. Worker/admin/owner – přístupové omezení
-/// 5. P1 (audit): Account Manager smí na detail tenanta jen pokud je Lovec/Farmář u této agentury.
+/// P1 (audit) Account Manager: kontrola přístupu k detailu tenanta je v [TenantDetailScreen]
+/// (ref.watch v build), aby redirect nepoužíval ref a nevyvolal _didChangeDependency.
 Future<String?> _redirectLogic(
   BuildContext context,
   GoRouterState state,
   AuthNotifier authNotifier,
   bool pinUnlocked,
   AdminUiMode uiMode,
-  Ref ref,
 ) async {
   final location = state.matchedLocation;
   final uri = state.uri;
@@ -373,28 +392,6 @@ Future<String?> _redirectLogic(
       return '/auth-loading';
     }
     return null; // Zůstat na loading obrazovce
-  }
-
-  // Pravidlo P1 (audit): Account Manager smí na detail tenanta jen pokud je Lovec/Farmář u této agentury.
-  // Bez této pojistky by mohl někdo zkusit přístup k cizí agentuře přes přímou URL.
-  if (isLoggedIn && role == 'account_manager' && location.startsWith('/super-admin/tenant/')) {
-    final match = RegExp(r'^/super-admin/tenant/([^/]+)').firstMatch(location);
-    final tenantId = match?.group(1)?.trim();
-    if (tenantId != null && tenantId.isNotEmpty) {
-      try {
-        final allowed = await ref.read(tenantsWithStatusProvider.future);
-        final allowedIds = allowed.map((t) => t.tenant.id).toSet();
-        if (!allowedIds.contains(tenantId)) {
-          if (kDebugMode) {
-            // ignore: avoid_print
-            print('Router (P1): Account Manager nemá přístup k agentuře $tenantId → přesměrování na nástěnku.');
-          }
-          return '/super-admin?access_denied=tenant';
-        }
-      } catch (_) {
-        return '/super-admin?access_denied=tenant';
-      }
-    }
   }
 
   // Pravidlo 1: Nepřihlášený smí na login (/), registraci (/register),

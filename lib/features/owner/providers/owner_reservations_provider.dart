@@ -1,7 +1,15 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
+import 'package:falconest/features/owner/providers/owner_planning_calendar_apartment_filter_provider.dart';
+
+/// Konstantní text ukládaný do [reservations.guest_name] pro blokaci termínu majitelem.
+///
+/// PROČ: Stabilní identifikace v DB a v reportech; UI může zobrazit lokalizovaný popisek zvlášť.
+const String kOwnerStayGuestNameDb = 'Vlastní pobyt majitele';
 
 /// Model jedné rezervace z tabulky reservations.
 ///
@@ -22,6 +30,7 @@ class OwnerReservation {
     this.guestChildren = 0,
     this.arrivalTime,
     this.departureTime,
+    this.metadata,
   });
 
   final String id;
@@ -29,6 +38,7 @@ class OwnerReservation {
   final DateTime startDate;
   final DateTime endDate;
   final String? specialRequests;
+
   /// Životní cyklus: new, confirmed, checked_in, checked_out, cancelled.
   final String status;
   final String? guestName;
@@ -38,6 +48,11 @@ class OwnerReservation {
   final int guestChildren;
   final DateTime? arrivalTime;
   final DateTime? departureTime;
+
+  /// Rozšíření z DB (např. is_owner_stay pro blokace).
+  final Map<String, dynamic>? metadata;
+
+  bool get isOwnerStay => metadata?['is_owner_stay'] == true;
 
   /// Vrací true, pokud [day] spadá do intervalu [startDate, endDate] (včetně).
   bool containsDay(DateTime day) {
@@ -52,29 +67,113 @@ class OwnerReservation {
 
 /// Provider načítající rezervace majitele ze Supabase.
 ///
-/// Dotaz na tabulku reservations včetně joinu apartments pro Kanban board.
-/// RLS na backendu zajistí, že majitel vidí jen rezervace u bytů z apartment_owners.
-final ownerReservationsProvider =
-    FutureProvider<List<OwnerReservation>>((ref) async {
-  final response = await SupabaseService.client
-      .from('reservations')
+/// SECURITY: Striktní filtr na apartment_id – načteme jen ID vlastněných bytů
+/// z apartment_owners (ownerApartmentsProvider) a dotaz omezíme na ně.
+/// Obrana v hloubce k RLS (reservations_property_owner_select).
+final ownerReservationsProvider = FutureProvider<List<OwnerReservation>>((
+  ref,
+) async {
+  final apartments = await ref.read(ownerApartmentsProvider.future);
+  final ownedApartmentIds = apartments
+      .map((a) => a.id)
+      .where((id) => id.isNotEmpty)
+      .toList();
+
+  if (ownedApartmentIds.isEmpty) return [];
+
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return [];
+
+  final response = await SupabaseService.safeFrom('reservations', tenantId)
       .select(
         'id, apartment_id, start_date, end_date, special_requests, status, '
         'guest_name, guest_phone, guest_adults, guest_children, arrival_time, departure_time, '
-        'apartments(name)',
+        'metadata, apartments(name)',
       )
+      .inFilter('apartment_id', ownedApartmentIds)
       .isFilter('deleted_at', null)
       .order('start_date', ascending: true);
 
   final list = response as List;
   final reservations = list.map(_parseReservation).toList();
 
-  /// Fallback: pokud join nevrátil jméno bytu, načteme z ownerApartmentsProvider.
-  final apartments = await ref.read(ownerApartmentsProvider.future);
+  /// Fallback: pokud join nevrátil jméno bytu, doplníme z načtených apartmánů.
+  return _mergeApartmentNames(reservations, apartments);
+});
+
+/// ISO datum `YYYY-MM-DD` pro filtry Supabase nad sloupci typu `date`.
+String _reservationDateToSql(DateTime localDate) {
+  final y = localDate.year.toString().padLeft(4, '0');
+  final m = localDate.month.toString().padLeft(2, '0');
+  final d = localDate.day.toString().padLeft(2, '0');
+  return '$y-$m-$d';
+}
+
+/// Rezervace majitele pro plánovací kalendář – pouze překryv s kalendářním měsícem [weekStart].
+///
+/// PROČ: [ownerReservationsProvider] tahá celou historii; kalendář potřebuje jen měsíc (all-day + týdny).
+/// Dotaz: `end_date >= první_den_měsíce` a `start_date <= poslední_den_měsíce` (stejná logika překryvu jako v admin repozitáři).
+final ownerReservationsForPlanningCalendarProvider = FutureProvider.autoDispose
+    .family<List<OwnerReservation>, DateTime>((ref, weekStart) async {
+      ref.watch(ownerPlanningCalendarApartmentFilterProvider);
+
+      final apartments = await ref.read(ownerApartmentsProvider.future);
+      final ownedApartmentIds = apartments
+          .map((a) => a.id)
+          .where((id) => id.isNotEmpty)
+          .toList();
+
+      if (ownedApartmentIds.isEmpty) return [];
+
+      final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+      if (tenantId == null || tenantId.isEmpty) return [];
+
+      final filterApartmentId = ref.watch(ownerPlanningCalendarApartmentFilterProvider);
+      final apartmentIdsForQuery =
+          (filterApartmentId != null &&
+                  filterApartmentId.isNotEmpty &&
+                  ownedApartmentIds.contains(filterApartmentId))
+              ? <String>[filterApartmentId]
+              : ownedApartmentIds;
+
+      final anchor = DateTime(weekStart.year, weekStart.month, weekStart.day);
+      final monthStart = DateTime(anchor.year, anchor.month, 1);
+      final monthEnd = DateTime(anchor.year, anchor.month + 1, 0);
+      final rangeStart = _reservationDateToSql(monthStart);
+      final rangeEnd = _reservationDateToSql(monthEnd);
+
+      try {
+        final response = await SupabaseService.safeFrom('reservations', tenantId)
+            .select(
+              'id, apartment_id, start_date, end_date, special_requests, status, '
+              'guest_name, guest_phone, guest_adults, guest_children, arrival_time, departure_time, '
+              'metadata, apartments(name)',
+            )
+            .inFilter('apartment_id', apartmentIdsForQuery)
+            .isFilter('deleted_at', null)
+            .gte('end_date', rangeStart)
+            .lte('start_date', rangeEnd)
+            .order('start_date', ascending: true);
+
+        final list = response as List;
+        final reservations = list.map(_parseReservation).toList();
+        return _mergeApartmentNames(reservations, apartments);
+      } catch (e, st) {
+        AppLogger.error('ownerReservationsForPlanningCalendarProvider: dotaz rezervací selhal', e, st);
+        return [];
+      }
+    });
+
+/// Doplnění názvu bytu z cache apartmánů (stejně jako u plného provideru).
+List<OwnerReservation> _mergeApartmentNames(
+  List<OwnerReservation> reservations,
+  List<OwnerApartmentWithStatus> apartments,
+) {
   final nameById = {for (final a in apartments) a.id: a.name};
 
   return reservations.map((r) {
-    if ((r.apartmentName == null || r.apartmentName!.isEmpty) && nameById.containsKey(r.apartmentId)) {
+    if ((r.apartmentName == null || r.apartmentName!.isEmpty) &&
+        nameById.containsKey(r.apartmentId)) {
       return OwnerReservation(
         id: r.id,
         apartmentId: r.apartmentId,
@@ -89,11 +188,12 @@ final ownerReservationsProvider =
         guestChildren: r.guestChildren,
         arrivalTime: r.arrivalTime,
         departureTime: r.departureTime,
+        metadata: r.metadata,
       );
     }
     return r;
   }).toList();
-});
+}
 
 /// Parsuje jeden řádek z odpovědi Supabase do [OwnerReservation].
 OwnerReservation _parseReservation(dynamic raw) {
@@ -104,7 +204,13 @@ OwnerReservation _parseReservation(dynamic raw) {
   final endStr = map['end_date'] as String?;
   final specialRequests = map['special_requests'] as String?;
   final statusRaw = (map['status'] as String?)?.trim();
-  const validStatuses = ['new', 'confirmed', 'checked_in', 'checked_out', 'cancelled'];
+  const validStatuses = [
+    'new',
+    'confirmed',
+    'checked_in',
+    'checked_out',
+    'cancelled',
+  ];
   final status = (statusRaw != null && validStatuses.contains(statusRaw))
       ? statusRaw
       : 'new';
@@ -124,6 +230,12 @@ OwnerReservation _parseReservation(dynamic raw) {
   final startDate = _parseDate(startStr) ?? DateTime.now();
   final endDate = _parseDate(endStr) ?? DateTime.now();
 
+  Map<String, dynamic>? meta;
+  final rawMeta = map['metadata'];
+  if (rawMeta is Map) {
+    meta = Map<String, dynamic>.from(rawMeta);
+  }
+
   return OwnerReservation(
     id: id,
     apartmentId: apartmentId,
@@ -138,6 +250,7 @@ OwnerReservation _parseReservation(dynamic raw) {
     guestChildren: guestChildren,
     arrivalTime: arrivalTime,
     departureTime: departureTime,
+    metadata: meta,
   );
 }
 

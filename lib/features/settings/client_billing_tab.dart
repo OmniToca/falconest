@@ -137,7 +137,7 @@ class _ClientBillingTabState extends ConsumerState<ClientBillingTab>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'settings.billing_save_error'.tr(namedArgs: {'message': e.toString()}),
+              'common.generic_error_user_friendly'.tr(),
             ),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
@@ -195,7 +195,7 @@ class _ClientBillingTabState extends ConsumerState<ClientBillingTab>
       error: (e, _) => Padding(
         padding: const EdgeInsets.all(24),
         child: Text(
-          'common.error_with_message'.tr(namedArgs: {'message': e.toString()}),
+          'common.generic_error_user_friendly'.tr(),
           style: TextStyle(color: Colors.red.shade700),
         ),
       ),
@@ -468,7 +468,7 @@ class _ClientBillingTabState extends ConsumerState<ClientBillingTab>
                           )
                         : (module.price != null
                             ? '${module.price!.toStringAsFixed(2)} €'
-                            : '—');
+                            : 'common.placeholder_dash'.tr());
                     return SizedBox(
                       width: width,
                       child: _BillingModuleCard(

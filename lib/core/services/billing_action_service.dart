@@ -20,7 +20,8 @@ class BillingActionService {
   /// - client_name, currency – metadata pro PDF.
   /// - total_to_invoice, total_expenses, final_to_invoice – součty.
   /// - items – pole úkolů (task_id, title, scheduled_start, completed_at,
-  ///   charged_price, payer_type, reservation_id, media_urls).
+  ///   charged_price, payer_type, reservation_id, media_urls,
+  ///   assigned_to, assigned_user_ids, requires_photo).
   /// Zmražení zaručuje neměnnost – budoucí změny ceníku neovlivní historická vyúčtování.
   static Future<void> lockBillingMonth(
     List<BillingGroup> groups,
@@ -69,6 +70,9 @@ class BillingActionService {
           'media_urls': t.mediaUrls,
           'cash_shortfall_missing_amount': t.cashShortfallMissingAmount,
           'is_shortfall_resolved': t.isShortfallResolved,
+          'assigned_to': t.assignedTo,
+          'assigned_user_ids': t.assignedUserIds,
+          'requires_photo': t.requiresPhoto,
         };
       }).toList();
 
@@ -109,8 +113,11 @@ class BillingActionService {
     }
 
     try {
-      await SupabaseService.client.from('billing_snapshots').upsert(
-        snapshotsToInsert,
+      final safeSnapshots = snapshotsToInsert
+          .map((r) => SupabaseService.safeInsertPayload(tenantId, Map<String, dynamic>.from(r)))
+          .toList();
+      await SupabaseService.safeFrom('billing_snapshots', tenantId).upsert(
+        safeSnapshots,
         onConflict: 'tenant_id,client_id,billing_period',
       );
 
@@ -128,10 +135,8 @@ class BillingActionService {
   ) async {
     if (taskIds.isEmpty) return;
 
-    await SupabaseService.client
-        .from('tasks')
+    await SupabaseService.safeFrom('tasks', tenantId)
         .update({'invoiced_at': invoicedAt})
-        .eq('tenant_id', tenantId)
         .inFilter('id', taskIds);
   }
 }

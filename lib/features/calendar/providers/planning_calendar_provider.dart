@@ -6,7 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
-import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 
 /// Speciální ID pro řádek "Nepřiřazeno" – phantom profil.
 const String kUnassignedResourceId = '__unassigned__';
@@ -28,6 +27,7 @@ class PlanningTask {
     required this.description,
     required this.taskType,
     required this.scheduledStart,
+    this.dueDate,
     this.assignedTo,
     this.assignedUserIds = const [],
     this.apartmentId,
@@ -35,6 +35,7 @@ class PlanningTask {
     this.assignedUserName,
     this.apartmentName,
     this.metadata,
+    this.mediaUrls = const [],
   });
 
   final String id;
@@ -42,6 +43,8 @@ class PlanningTask {
   final String description;
   final String taskType;
   final DateTime scheduledStart;
+  /// Konec plánovaného okna z DB (`due_date`) – pro výšku bloku v kalendáři (rozdíl oproti začátku).
+  final DateTime? dueDate;
   final String? assignedTo;
   /// Další přiřazení pracovníci – pro sdílení úkolu.
   final List<String> assignedUserIds;
@@ -51,6 +54,8 @@ class PlanningTask {
   final String? apartmentName;
   /// JSONB metadata z tasks (custom_note, amount_to_collect, expected_audit_total, collection_breakdown).
   final Map<String, dynamic>? metadata;
+  /// URL fotek z tasks.media_urls – pro read-only detail u majitele (úklid, závady).
+  final List<String> mediaUrls;
 
   /// Unikátní spojení assignedTo (pokud existuje) a prvků z assignedUserIds.
   List<String> get allAssignees {
@@ -66,6 +71,8 @@ class PlanningTask {
     String? assignedUserName,
     String? apartmentName,
     List<String>? assignedUserIds,
+    List<String>? mediaUrls,
+    DateTime? dueDate,
   }) =>
       PlanningTask(
         id: id,
@@ -73,6 +80,7 @@ class PlanningTask {
         description: description,
         taskType: taskType,
         scheduledStart: scheduledStart,
+        dueDate: dueDate ?? this.dueDate,
         assignedTo: assignedTo,
         assignedUserIds: assignedUserIds ?? this.assignedUserIds,
         apartmentId: apartmentId,
@@ -80,26 +88,26 @@ class PlanningTask {
         assignedUserName: assignedUserName ?? this.assignedUserName,
         apartmentName: apartmentName ?? this.apartmentName,
         metadata: metadata,
-      );
-
-  TaskRow toTaskRow({DateTime? roundedDueDate}) => TaskRow(
-        id: id,
-        apartmentId: apartmentId ?? '',
-        assignedTo: assignedTo,
-        assignedUserIds: assignedUserIds,
-        title: title,
-        description: description,
-        status: status ?? 'pending',
-        taskType: taskType,
-        dueDate: roundedDueDate ?? scheduledStart,
-        apartmentName: apartmentName,
-        assignedToName: assignedUserName,
-        metadata: metadata,
+        mediaUrls: mediaUrls ?? this.mediaUrls,
       );
 }
 
 /// Parsuje assigned_user_ids z DB (List / JSON).
 List<String> _parseUuidList(dynamic raw) {
+  if (raw == null) return const [];
+  if (raw is List) {
+    final list = <String>[];
+    for (final e in raw) {
+      final s = e?.toString().trim();
+      if (s != null && s.isNotEmpty) list.add(s);
+    }
+    return list;
+  }
+  return const [];
+}
+
+/// Parsuje media_urls (pole text z PostgreSQL) – vrací seznam URL řetězců.
+List<String> _parseMediaUrls(dynamic raw) {
   if (raw == null) return const [];
   if (raw is List) {
     final list = <String>[];
@@ -147,6 +155,41 @@ int parseDurationMinutesFromDescription(String? description) {
     minutes += int.parse(minMatch.group(1) ?? '0');
   }
   return minutes > 0 ? minutes : 60;
+}
+
+/// Čte kladný odhad v minutách z metadata úkolu (stejné klíče jako reporty / worker).
+///
+/// PROČ: Bezpečné parsování – Supabase může vracet int, double nebo string.
+int? _estimatedMinutesFromMetadata(Map<String, dynamic>? meta) {
+  if (meta == null) return null;
+  final raw = meta['estimated_minutes'] ?? meta['estimate_minutes'];
+  if (raw == null) return null;
+  if (raw is int) return raw > 0 ? raw : null;
+  if (raw is num) {
+    final n = raw.round();
+    return n > 0 ? n : null;
+  }
+  final p = int.tryParse(raw.toString().trim());
+  return p != null && p > 0 ? p : null;
+}
+
+/// Délka bloku v plánovacím kalendáři (minuty) – primárně z DB/metadat, ne z textu popisu.
+///
+/// PROČ: Po úpravě trvání v adminu platí `metadata` a interval `scheduled_start`–`due_date`;
+/// parsování `description` je jen záchrana pro stará data bez metadat a bez rozlišeného konce.
+int planningTaskBlockDurationMinutes(PlanningTask task) {
+  final fromMeta = _estimatedMinutesFromMetadata(task.metadata);
+  if (fromMeta != null) return fromMeta;
+
+  final due = task.dueDate;
+  if (due != null) {
+    final diff = due.difference(task.scheduledStart).inMinutes;
+    if (diff > 0) return diff;
+  }
+
+  final fromDesc = parseDurationMinutesFromDescription(task.description);
+  if (fromDesc > 0) return fromDesc;
+  return 60;
 }
 
 /// Parsuje metadata z JSONB – může přijít jako Map nebo null.
@@ -209,12 +252,21 @@ List<PlanningTask> _parseTasksFromResponse(dynamic res) {
       final taskTypeRaw = (map['task_type']?.toString() ?? '').trim();
       final taskType = taskTypeRaw.isEmpty ? otherLabel : taskTypeRaw;
 
+      DateTime? dueParsed;
+      final dueRaw = map['due_date'];
+      if (dueRaw != null) {
+        dueParsed = dueRaw is DateTime
+            ? dueRaw.toLocal()
+            : (dueRaw is String ? DateTime.tryParse(dueRaw)?.toLocal() : null);
+      }
+
       tasks.add(PlanningTask(
         id: idStr,
         title: (map['title']?.toString() ?? '').trim(),
         description: (map['description']?.toString() ?? '').trim(),
         taskType: taskType,
         scheduledStart: start,
+        dueDate: dueParsed,
         assignedTo: (map['assigned_to']?.toString() ?? '').trim().isEmpty
             ? null
             : (map['assigned_to']?.toString() ?? '').trim(),
@@ -228,6 +280,7 @@ List<PlanningTask> _parseTasksFromResponse(dynamic res) {
         assignedUserName: workerName,
         apartmentName: aptName == unknownLabel ? null : aptName,
         metadata: _parseMetadata(map['metadata']),
+        mediaUrls: _parseMediaUrls(map['media_urls']),
       ));
     } catch (e) {
       if (kDebugMode) {
@@ -300,7 +353,7 @@ List<WeekProcessedTask> getProcessedTasksForWeek(
 
     final events = dayTasks.map((t) {
       final m = t.scheduledStart.hour * 60 + t.scheduledStart.minute - startMin;
-      final dur = parseDurationMinutesFromDescription(t.description);
+      final dur = planningTaskBlockDurationMinutes(t);
       return (task: t, start: m.toDouble(), end: (m + dur).toDouble());
     }).where((e) => e.end > 0).toList();
     events.sort((a, b) => a.start.compareTo(b.start));
@@ -342,7 +395,7 @@ Set<String> detectConflicts(List<PlanningTask> tasks) {
     for (final t in resourceTasks) {
       final dayKey = t.scheduledStart.year * 10000 + t.scheduledStart.month * 100 + t.scheduledStart.day;
       final startMin = t.scheduledStart.hour * 60 + t.scheduledStart.minute;
-      final dur = parseDurationMinutesFromDescription(t.description);
+      final dur = planningTaskBlockDurationMinutes(t);
       byDay.putIfAbsent(dayKey, () => []).add((
         task: t,
         start: startMin.toDouble(),
@@ -376,11 +429,10 @@ final planningCalendarAllTasksProvider =
 
   try {
     // PROČ: Archivace. Vyfakturované úkoly (invoiced_at != null) schováváme z aktivních pohledů.
-    final res = await SupabaseService.client
-        .from('tasks')
+    // Bezpečnostní vynucení tenant_id klauzule přes safeFrom (admin plánovací kalendář).
+    final res = await SupabaseService.safeFrom('tasks', tenantId)
         .select(
             'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, assigned_user_ids, apartment_id, metadata, profiles!tasks_assigned_to_fkey(first_name, last_name, name), apartments(name)')
-        .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
         .isFilter('invoiced_at', null)
         .gte('scheduled_start', start.toUtc().toIso8601String())
@@ -408,11 +460,9 @@ final planningCalendarAllTasksForMonthProvider =
 
   try {
     // PROČ: Archivace. Vyfakturované úkoly (invoiced_at != null) schováváme z aktivních pohledů.
-    final res = await SupabaseService.client
-        .from('tasks')
+    final res = await SupabaseService.safeFrom('tasks', tenantId)
         .select(
             'id, title, description, task_type, scheduled_start, due_date, status, assigned_to, assigned_user_ids, apartment_id, metadata, profiles!tasks_assigned_to_fkey(first_name, last_name, name), apartments(name)')
-        .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
         .isFilter('invoiced_at', null)
         .gte('scheduled_start', start.toUtc().toIso8601String())
@@ -533,3 +583,16 @@ final planningCalendarDataForMonthProvider =
     pastelColorByResourceId: pastelColorByResourceId,
   );
 });
+
+/// Jednotná invalidace cache plánovacího kalendáře po uložení nebo hromadné změně úkolů.
+///
+/// PROČ: FutureProvider se sám neobnoví; po úpravě z Dashboardu / seznamu úkolů musíme invalidovat
+/// všechny varianty (týden + měsíc), aby se načetly aktuální `scheduled_start`, `due_date` a metadata.
+///
+/// [ref] — [WidgetRef] z UI nebo [Ref] z `AsyncNotifier` (oba exponují `invalidate`).
+void invalidatePlanningCalendarCaches(dynamic ref) {
+  ref.invalidate(planningCalendarAllTasksProvider);
+  ref.invalidate(planningCalendarAllTasksForMonthProvider);
+  ref.invalidate(planningCalendarDataProvider);
+  ref.invalidate(planningCalendarDataForMonthProvider);
+}

@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:falconest/core/utils/app_logger.dart';
+
 /// Služba pro lokální cache profilu uživatele (offline-first záchranná síť).
 ///
 /// PROČ EXISTUJE:
@@ -27,6 +29,7 @@ class CachedProfile {
     this.preferredCurrency,
     this.isTenantActive,
     this.paidUntil,
+    this.tenantTimezone,
     required this.cachedAt,
   });
 
@@ -38,6 +41,8 @@ class CachedProfile {
   final String? preferredCurrency;
   final bool? isTenantActive;
   final DateTime? paidUntil;
+  /// IANA zóna z tenants (offline náhled šablon).
+  final String? tenantTimezone;
   final DateTime cachedAt;
 
   Map<String, dynamic> toJson() => {
@@ -49,6 +54,7 @@ class CachedProfile {
         'preferred_currency': preferredCurrency,
         'is_tenant_active': isTenantActive,
         'paid_until': paidUntil?.toIso8601String(),
+        'tenant_timezone': tenantTimezone,
         'cached_at': cachedAt.toIso8601String(),
       };
 
@@ -68,6 +74,9 @@ class CachedProfile {
       preferredCurrency: map['preferred_currency']?.toString().trim().toUpperCase(),
       isTenantActive: map['is_tenant_active'] as bool?,
       paidUntil: map['paid_until'] != null ? DateTime.tryParse(map['paid_until'].toString()) : null,
+      tenantTimezone: map['tenant_timezone']?.toString().trim().isNotEmpty == true
+          ? map['tenant_timezone'].toString().trim()
+          : null,
       cachedAt: DateTime.tryParse(map['cached_at']?.toString() ?? '') ?? DateTime.now().toUtc(),
     );
   }
@@ -88,8 +97,9 @@ class ProfileCacheService {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_cacheKey, jsonEncode(profile.toJson()));
-    } catch (_) {
+    } catch (e, st) {
       // Nepřerušovat auth flow – cache je záchranná síť, ne kritická cesta
+      AppLogger.error('ProfileCacheService.save: zápis do SharedPreferences selhal', e, st);
     }
   }
 
@@ -110,7 +120,8 @@ class ProfileCacheService {
       if (profile == null || profile.authId != authId) return null;
 
       return profile;
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('ProfileCacheService.load: čtení nebo parsování cache profilu selhalo', e, st);
       return null;
     }
   }
@@ -122,6 +133,8 @@ class ProfileCacheService {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_cacheKey);
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('ProfileCacheService.clear: odstranění cache z SharedPreferences selhalo', e, st);
+    }
   }
 }

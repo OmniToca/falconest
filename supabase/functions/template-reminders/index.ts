@@ -27,13 +27,22 @@ async function getFcmAccessToken(): Promise<string> {
   return token.access_token
 }
 
-/** Odešle FCM zprávu na jeden token (HTTP v1 API). */
-async function sendFcmMessage(
+/** Klíče pro nativní překlady (Android strings.xml / iOS Localizable.strings). */
+const TITLE_LOC_KEY = "fcm_template_reminder_title"
+const BODY_LOC_KEY = "fcm_template_reminder_body"
+
+/**
+ * Odešle FCM přes HTTP v1 – lokalizované klíče (Android + APNS), bez pevných textů v TS.
+ * @see https://firebase.google.com/docs/cloud-messaging/customize-messages/localize-messages
+ */
+async function sendFcmLocalizedMessage(
   projectId: string,
   accessToken: string,
   fcmToken: string,
-  title: string,
-  body: string,
+  titleLocKey: string,
+  titleLocArgs: string[],
+  bodyLocKey: string,
+  bodyLocArgs: string[],
 ): Promise<boolean> {
   const url = `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`
   const res = await fetch(url, {
@@ -43,11 +52,34 @@ async function sendFcmMessage(
       "Authorization": `Bearer ${accessToken}`,
     },
     body: JSON.stringify({
-      message: { token: fcmToken, notification: { title, body } },
+      message: {
+        token: fcmToken,
+        android: {
+          notification: {
+            title_loc_key: titleLocKey,
+            title_loc_args: titleLocArgs,
+            body_loc_key: bodyLocKey,
+            body_loc_args: bodyLocArgs,
+          },
+        },
+        apns: {
+          payload: {
+            aps: {
+              alert: {
+                "title-loc-key": titleLocKey,
+                "title-loc-args": titleLocArgs,
+                "loc-key": bodyLocKey,
+                "loc-args": bodyLocArgs,
+              },
+            },
+          },
+        },
+      },
     }),
   })
   if (!res.ok) {
-    console.error(`FCM failed for ${fcmToken.slice(0, 20)}...: ${res.status} ${await res.text()}`)
+    const text = await res.text()
+    console.error(`FCM failed for ${fcmToken.slice(0, 20)}...: ${res.status} ${text}`)
     return false
   }
   return true
@@ -129,29 +161,26 @@ function getMadridOffsetMs(forDate: Date): number {
   return diffHours * 60 * 60 * 1000
 }
 
-/** Formátuje čas letu pro notifikaci (např. "14:30"). */
+/** Formátuje čas letu pro placeholder v notifikaci (neutrální 24h, bez pevného locale v TS). */
 function formatFlightTime(iso: string | null): string {
   if (!iso) return "—"
   const d = new Date(iso)
-  return d.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit", hour12: false })
+  return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
 }
 
 type EventType = "T1" | "T2" | "T3"
 
-/** Vrací text body notifikace podle typu události. */
-function getNotificationBody(
-  eventType: EventType,
-  flightTime: string,
-): string {
+/** Krok šablony jako číslice pro loc-args (1 = 48h, 2 = 24h, 3 = 1h před letem). */
+function templateStepForEvent(eventType: EventType): string {
   switch (eventType) {
     case "T1":
-      return `Let v ${flightTime} (za 2 dny). Pošlete 1. šablonu (48h).`
+      return "1"
     case "T2":
-      return `Let v ${flightTime} (zítra). Pošlete 2. šablonu (Instrukce).`
+      return "2"
     case "T3":
-      return `Let v ${flightTime} (blíží se). Pošlete 3. šablonu (Po přistání).`
+      return "3"
     default:
-      return `Let v ${flightTime}. Pošlete šablonu zprávy.`
+      return "1"
   }
 }
 
@@ -176,7 +205,9 @@ Deno.serve(async (req) => {
     // Transfer úkoly: task_type IN ('transfer_in', 'transfer_out', 'transfer')
     const { data: allTasks, error: tasksErr } = await supabase
       .from("tasks")
-      .select("id, assigned_to, scheduled_start, reservation_id, client_id, custom_title, metadata")
+      .select(
+        "id, tenant_id, assigned_to, scheduled_start, reservation_id, client_id, custom_title, metadata",
+      )
       .in("task_type", ["transfer_in", "transfer_out", "transfer"])
       .eq("status", "assigned")
       .not("assigned_to", "is", null)
@@ -240,37 +271,112 @@ Deno.serve(async (req) => {
 
     const firebaseProjectId = Deno.env.get("FIREBASE_PROJECT_ID")
     const serviceAccountJson = Deno.env.get("FIREBASE_SERVICE_ACCOUNT_JSON")
-    if (!firebaseProjectId || !serviceAccountJson) {
-      return new Response(
-        JSON.stringify({ error: "FIREBASE_PROJECT_ID nebo FIREBASE_SERVICE_ACCOUNT_JSON chybí" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      )
+    let fcmAccessToken: string | null = null
+    async function ensureFcmAccessToken(): Promise<string | null> {
+      if (fcmAccessToken) return fcmAccessToken
+      if (!firebaseProjectId?.trim() || !serviceAccountJson?.trim()) {
+        console.error("template-reminders: FCM push vyžaduje FIREBASE_PROJECT_ID a FIREBASE_SERVICE_ACCOUNT_JSON")
+        return null
+      }
+      try {
+        fcmAccessToken = await getFcmAccessToken()
+        return fcmAccessToken
+      } catch (e) {
+        console.error("FCM token error:", e)
+        return null
+      }
     }
 
-    let accessToken: string
-    try {
-      accessToken = await getFcmAccessToken()
-    } catch (e) {
-      console.error("FCM token error:", e)
-      return new Response(
-        JSON.stringify({ error: "Nelze získat FCM access token: " + String(e) }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      )
-    }
+    let totalPushSent = 0
+    let totalWebInserted = 0
+    let totalEmailQueued = 0
 
-    let totalSent = 0
     for (const { task, eventType, guestName } of toNotify) {
       const profileId = (task.assigned_to as string)?.trim()
       if (!profileId) continue
 
       const { data: prefs } = await supabase
         .from("notification_preferences")
-        .select("template_reminders_enabled")
+        .select("template_reminders_web, template_reminders_push, template_reminders_email")
         .eq("profile_id", profileId)
         .maybeSingle()
 
-      const enabled = prefs?.template_reminders_enabled ?? true
-      if (!enabled) continue
+      const webEnabled = prefs?.template_reminders_web ?? true
+      const pushEnabled = prefs?.template_reminders_push ?? true
+      const emailEnabled = prefs?.template_reminders_email ?? true
+
+      const flightTime = formatFlightTime(task.scheduled_start)
+      const step = templateStepForEvent(eventType)
+      const stepCz = eventType === "T1"
+        ? "48 h před letem"
+        : eventType === "T2"
+        ? "24 h před letem"
+        : "1 h před letem"
+      const titleLocArgs = [guestName]
+      const bodyLocArgs = [guestName, flightTime, step]
+
+      const inAppTitle = "Připomenutí transferu"
+      const inAppMessage =
+        `Host: ${guestName}. Čas letu ${flightTime}. ${stepCz}.`
+
+      const tenantId = task.tenant_id as string
+
+      if (webEnabled) {
+        const { error: notifErr } = await supabase.from("notifications").insert({
+          tenant_id: tenantId,
+          profile_id: profileId,
+          title: inAppTitle,
+          message: inAppMessage,
+          type: "template_reminder",
+          is_read: false,
+          metadata: {
+            entity: "task",
+            task_id: String(task.id),
+          },
+        })
+        if (notifErr) {
+          console.error("notifications insert (template_reminder):", notifErr)
+        } else {
+          totalWebInserted++
+        }
+      }
+
+      if (emailEnabled) {
+        const { data: prof } = await supabase
+          .from("profiles")
+          .select("email")
+          .eq("id", profileId)
+          .eq("tenant_id", tenantId)
+          .maybeSingle()
+        const workerEmail = (prof?.email as string | undefined)?.trim()
+        if (workerEmail) {
+          const { error: qErr } = await supabase.from("automation_message_queue").insert({
+            tenant_id: tenantId,
+            rule_id: null,
+            entity_id: task.id,
+            entity_type: "task",
+            scheduled_for: new Date().toISOString(),
+            channel: "email",
+            recipient_contact: workerEmail,
+            editable_payload: {
+              email_subject: inAppTitle,
+              text: `${inAppMessage}\n\n— FalcoNest`,
+              task_id: String(task.id),
+              source: "template_reminder",
+            },
+          })
+          if (qErr) {
+            console.error("automation_message_queue (template_reminder email):", qErr)
+          } else {
+            totalEmailQueued++
+          }
+        }
+      }
+
+      if (!pushEnabled) continue
+
+      const accessToken = await ensureFcmAccessToken()
+      if (!accessToken || !firebaseProjectId) continue
 
       const { data: devices } = await supabase
         .from("user_devices")
@@ -279,15 +385,19 @@ Deno.serve(async (req) => {
 
       if (!devices || devices.length === 0) continue
 
-      const flightTime = formatFlightTime(task.scheduled_start)
-      const title = `📱 Čas na zprávu: ${guestName}`
-      const body = getNotificationBody(eventType, flightTime)
-
       for (const d of devices) {
         const token = (d.fcm_token as string)?.trim()
         if (!token) continue
-        const ok = await sendFcmMessage(firebaseProjectId, accessToken, token, title, body)
-        if (ok) totalSent++
+        const ok = await sendFcmLocalizedMessage(
+          firebaseProjectId,
+          accessToken,
+          token,
+          TITLE_LOC_KEY,
+          titleLocArgs,
+          BODY_LOC_KEY,
+          bodyLocArgs,
+        )
+        if (ok) totalPushSent++
       }
     }
 
@@ -297,7 +407,9 @@ Deno.serve(async (req) => {
         window: { start: windowStart.toISOString(), end: windowEnd.toISOString() },
         tasksEvaluated: allTasks.length,
         notificationsQueued: toNotify.length,
-        totalSent,
+        totalPushSent,
+        totalWebInserted,
+        totalEmailQueued,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     )

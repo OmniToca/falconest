@@ -8,17 +8,17 @@ import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/providers/current_tenant_name_provider.dart';
 import 'package:falconest/features/settings/providers/profile_provider.dart';
 
-/// První záložka v Nastavení – vizitka identity a změna hesla.
-///
-/// Zobrazení identity aktuálního uživatele a jeho domovské agentury.
-class UserProfileTab extends ConsumerStatefulWidget {
-  const UserProfileTab({super.key});
+/// Vizitka identity, zabezpečení – v záložce Obecné (dříve samostatná záložka „Můj profil“).
+class UserProfileSettingsSection extends ConsumerStatefulWidget {
+  const UserProfileSettingsSection({super.key});
 
   @override
-  ConsumerState<UserProfileTab> createState() => _UserProfileTabState();
+  ConsumerState<UserProfileSettingsSection> createState() =>
+      _UserProfileSettingsSectionState();
 }
 
-class _UserProfileTabState extends ConsumerState<UserProfileTab>
+class _UserProfileSettingsSectionState
+    extends ConsumerState<UserProfileSettingsSection>
     with AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => true;
@@ -149,18 +149,7 @@ class _UserProfileTabState extends ConsumerState<UserProfileTab>
     final profile = profileAsync.valueOrNull;
 
     return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.08),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
+      padding: const EdgeInsets.symmetric(vertical: 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -191,12 +180,12 @@ class _UserProfileTabState extends ConsumerState<UserProfileTab>
           const SizedBox(height: 16),
           _ProfileRow(
             icon: Icons.person_rounded,
-            label: profile?.name ?? '—',
+            label: profile?.name ?? 'common.placeholder_dash'.tr(),
           ),
           const SizedBox(height: 8),
           _ProfileRow(
             icon: Icons.email_rounded,
-            label: profile?.email ?? '—',
+            label: profile?.email ?? 'common.placeholder_dash'.tr(),
           ),
           const SizedBox(height: 8),
           _ProfileRow(
@@ -210,99 +199,85 @@ class _UserProfileTabState extends ConsumerState<UserProfileTab>
 
   /// Sekce Zabezpečení účtu – formulář pro změnu hesla.
   Widget _buildSecuritySection(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.08),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
+    return Form(
+      key: _formKey,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'settings.profile_security_section'.tr(),
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: Colors.grey[900],
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: _newPasswordController,
+            obscureText: _obscureNew,
+            decoration: InputDecoration(
+              labelText: 'settings.profile_field_new_password'.tr(),
+              hintText: 'settings.profile_hint_password'.tr(),
+              border: const OutlineInputBorder(),
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _obscureNew ? Icons.visibility_off : Icons.visibility,
+                  size: 20,
+                ),
+                onPressed: () =>
+                    setState(() => _obscureNew = !_obscureNew),
+              ),
+            ),
+            validator: (v) {
+              if (v == null || v.trim().isEmpty) {
+                return 'settings.profile_validation_password_required'.tr();
+              }
+              if (v.trim().length < 6) {
+                return 'settings.profile_validation_password_min'.tr();
+              }
+              return null;
+            },
+          ),
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: _confirmPasswordController,
+            obscureText: _obscureConfirm,
+            decoration: InputDecoration(
+              labelText: 'settings.profile_field_confirm_password'.tr(),
+              hintText: 'settings.profile_hint_password'.tr(),
+              border: const OutlineInputBorder(),
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _obscureConfirm ? Icons.visibility_off : Icons.visibility,
+                  size: 20,
+                ),
+                onPressed: () =>
+                    setState(() => _obscureConfirm = !_obscureConfirm),
+              ),
+            ),
+            validator: (v) {
+              if (v == null || v.trim().isEmpty) {
+                return 'settings.profile_validation_password_required'.tr();
+              }
+              if (v.trim() != _newPasswordController.text.trim()) {
+                return 'settings.profile_validation_password_mismatch'.tr();
+              }
+              return null;
+            },
+          ),
+          const SizedBox(height: 20),
+          FilledButton.icon(
+            onPressed: _isChangingPassword ? null : _onChangePassword,
+            icon: _isChangingPassword
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.lock_reset),
+            label: Text('settings.profile_btn_change_password'.tr()),
           ),
         ],
-      ),
-      child: Form(
-        key: _formKey,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'settings.profile_security_section'.tr(),
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: Colors.grey[900],
-                    fontWeight: FontWeight.w600,
-                  ),
-            ),
-            const SizedBox(height: 16),
-            TextFormField(
-              controller: _newPasswordController,
-              obscureText: _obscureNew,
-              decoration: InputDecoration(
-                labelText: 'settings.profile_field_new_password'.tr(),
-                hintText: 'settings.profile_hint_password'.tr(),
-                border: const OutlineInputBorder(),
-                suffixIcon: IconButton(
-                  icon: Icon(
-                    _obscureNew ? Icons.visibility_off : Icons.visibility,
-                    size: 20,
-                  ),
-                  onPressed: () =>
-                      setState(() => _obscureNew = !_obscureNew),
-                ),
-              ),
-              validator: (v) {
-                if (v == null || v.trim().isEmpty) {
-                  return 'settings.profile_validation_password_required'.tr();
-                }
-                if (v.trim().length < 6) {
-                  return 'settings.profile_validation_password_min'.tr();
-                }
-                return null;
-              },
-            ),
-            const SizedBox(height: 16),
-            TextFormField(
-              controller: _confirmPasswordController,
-              obscureText: _obscureConfirm,
-              decoration: InputDecoration(
-                labelText: 'settings.profile_field_confirm_password'.tr(),
-                hintText: 'settings.profile_hint_password'.tr(),
-                border: const OutlineInputBorder(),
-                suffixIcon: IconButton(
-                  icon: Icon(
-                    _obscureConfirm ? Icons.visibility_off : Icons.visibility,
-                    size: 20,
-                  ),
-                  onPressed: () =>
-                      setState(() => _obscureConfirm = !_obscureConfirm),
-                ),
-              ),
-              validator: (v) {
-                if (v == null || v.trim().isEmpty) {
-                  return 'settings.profile_validation_password_required'.tr();
-                }
-                if (v.trim() != _newPasswordController.text.trim()) {
-                  return 'settings.profile_validation_password_mismatch'.tr();
-                }
-                return null;
-              },
-            ),
-            const SizedBox(height: 20),
-            FilledButton.icon(
-              onPressed: _isChangingPassword ? null : _onChangePassword,
-              icon: _isChangingPassword
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.lock_reset),
-              label: Text('settings.profile_btn_change_password'.tr()),
-            ),
-          ],
-        ),
       ),
     );
   }

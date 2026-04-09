@@ -10,6 +10,7 @@ class WorkerSyncService {
     String tenantId, {
     void Function(String)? onSyncError,
     Object? driftRepos,
+    void Function()? onSmartMergeApplied,
   }) async {
     // Web je vždy online – Drift nepotřebuje.
   }
@@ -17,11 +18,14 @@ class WorkerSyncService {
   static Future<void> pushPendingUpdates(
     String tenantId, {
     void Function(String)? onSyncError,
+    Object? driftRepos,
+    void Function()? onSmartMergeApplied,
   }) async {}
 
   static Future<void> pushPendingReservationUpdates(
     String tenantId, {
     void Function(String)? onSyncError,
+    Object? driftRepos,
   }) async {}
 
   /// Na webu vždy 0 – není lokální databáze.

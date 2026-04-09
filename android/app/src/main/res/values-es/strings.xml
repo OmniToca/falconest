@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="push_daily_summary_title">Resumen matutino de tareas</string>
+    <string name="push_daily_summary_body_singular">Hoy tienes %1$s tarea. ¡Que tengas un gran día!</string>
+    <string name="push_daily_summary_body_few">Hoy tienes %1$s tareas. ¡Que tengas un gran día!</string>
+    <string name="push_daily_summary_body_many">Hoy tienes %1$s tareas. ¡Que tengas un gran día!</string>
+    <string name="fcm_template_reminder_title">📱 Hora de enviar un mensaje: %1$s</string>
+    <string name="fcm_template_reminder_body">%1$s — Vuelo a las %2$s — Envía la plantilla de WhatsApp (paso %3$s: 1=48h, 2=24h, 3=1h).</string>
+</resources>

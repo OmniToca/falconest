@@ -9,19 +9,24 @@ import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/core/offline/mutation_queue_service.dart';
 import 'package:falconest/core/offline/network_error_helper.dart';
 import 'package:falconest/core/services/media_service.dart';
+import 'package:falconest/features/worker/models/worker_task_checklist_line.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
+import 'package:falconest/features/worker/providers/worker_task_checklist_provider.dart';
 import 'package:falconest/features/worker/widgets/task_photo_uploader.dart';
 
 const _storageModuleTasks = 'tasks';
 
-/// Sdílená sekce pro dokončení úkolu s podporou requires_photo.
+/// Sdílená sekce pro dokončení úkolu s podporou requires_photo a dynamickým checklistem.
 ///
 /// PROČ: DRY – blokace tlačítka Dokončit při requires_photo bez fotek, SnackBar,
-/// TaskPhotoUploader a upload před voláním updateStatus. Používá se ve všech
-/// worker task screens (cleaning, default, checkin, checkout, transfer, …).
+/// TaskPhotoUploader a upload před voláním updateStatus.
+///
+/// **Checklist:** vykresluje ho master [WorkerTaskDetailScreen] nad scrollem (karta nahoře);
+/// tato sekce jen blokuje Dokončit přes [workerTaskChecklistAllowsCompletion] z Driftu.
 /// Callback před dokončením – např. CashCollectionDialog u Check-in.
 /// Vrací: true = úkol byl dokončen v rámci callbacku (pop), null = pokračuj standardním flow.
 /// [localPhotoPaths] – při offline flow cesty k zkopírovaným fotkám pro zpožděný upload.
@@ -62,35 +67,43 @@ class _TaskCompleteWithPhotoSectionState
 
   @override
   Widget build(BuildContext context) {
-    final s = widget.detail.status.trim().toLowerCase();
-    final isInProgress = s == 'in_progress' || s == 'probíhá';
-    final isCompleted =
-        s == 'completed' || s == 'done' || s == 'dokončeno' || s == 'hotovo';
+    final d = widget.detail;
+    final isInProgress = d.isInProgress;
+    final isCompleted = d.isCompleted;
     final requiresPhoto =
         widget.detail.metadata?['requires_photo'] == true;
     final hasPhotos = _photoFiles.isNotEmpty ||
         (widget.detail.mediaUrls.isNotEmpty);
-    final canComplete = !requiresPhoto || hasPhotos;
+    // PROČ: Dynamic Checklists – dokončení je blokované, dokud nejsou splněné body i povinné fotky u položek (Drift).
+    final checklistAsync = ref.watch(workerTaskChecklistProvider(widget.taskId));
+    final checklistOk = checklistAsync.when(
+      data: workerTaskChecklistAllowsCompletion,
+      loading: () => false,
+      error: (_, _) => false,
+    );
+    final canComplete = checklistOk && (!requiresPhoto || hasPhotos);
 
-    if (isCompleted) {
-      return SizedBox(
-        width: double.infinity,
-        child: FilledButton(
-          onPressed: () => context.pop(),
-          style: FilledButton.styleFrom(
-            backgroundColor: Colors.grey,
-            foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(vertical: 16),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (isCompleted) ...[
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: () => context.pop(),
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.grey,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+              child: Text('common.back'.tr()),
+            ),
           ),
-          child: Text('common.back'.tr()),
-        ),
-      );
-    }
-
-    if (isInProgress) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
+        ] else if (isInProgress) ...[
+          // PROČ: Fotodokumentaci zobrazujeme vždy — pracovník může přiložit snímky i bez requires_photo;
+          // [isRequired] pouze mění vizuál a validace zůstává v [canComplete] (!requiresPhoto || hasPhotos).
           TaskPhotoUploader(
             onFilesChanged: _onFilesChanged,
             maxPhotos: 3,
@@ -103,7 +116,7 @@ class _TaskCompleteWithPhotoSectionState
             child: FilledButton(
               onPressed: canComplete
                   ? () => _onCompletePressed(context)
-                  : () => _showRequiresPhotoSnackBar(context),
+                  : () => _onBlockedCompletePressed(context, checklistOk: checklistOk),
               style: FilledButton.styleFrom(
                 backgroundColor: canComplete ? _primaryBlue : Colors.grey.shade400,
                 foregroundColor: Colors.white,
@@ -112,21 +125,22 @@ class _TaskCompleteWithPhotoSectionState
               child: Text(widget.finishKey.tr()),
             ),
           ),
+        ] else ...[
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: () => _onStartPressed(context),
+              style: FilledButton.styleFrom(
+                backgroundColor: _primaryBlue,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+              child: Text('worker.task_detail_start_work'.tr()),
+            ),
+          ),
         ],
-      );
-    }
-
-    return SizedBox(
-      width: double.infinity,
-      child: FilledButton(
-        onPressed: () => _onStartPressed(context),
-        style: FilledButton.styleFrom(
-          backgroundColor: _primaryBlue,
-          foregroundColor: Colors.white,
-          padding: const EdgeInsets.symmetric(vertical: 16),
-        ),
-        child: Text('worker.task_detail_start_work'.tr()),
-      ),
+      ],
     );
   }
 
@@ -151,7 +165,9 @@ class _TaskCompleteWithPhotoSectionState
       try {
         await file.copy(targetPath);
         result.add(targetPath);
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('TaskCompleteWithPhotoSection: kopie fotky do offline_task_photos selhala', e, st);
+      }
     }
     return result;
   }
@@ -164,6 +180,21 @@ class _TaskCompleteWithPhotoSectionState
         backgroundColor: Colors.amber.shade800,
       ),
     );
+  }
+
+  /// PROČ: Rozlišíme blokaci kvůli checklistu vs. kvůli fotce u úkolu (requires_photo).
+  void _onBlockedCompletePressed(BuildContext context, {required bool checklistOk}) {
+    if (!checklistOk) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('tasks.checklist_not_completed_error'.tr()),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.red.shade700,
+        ),
+      );
+      return;
+    }
+    _showRequiresPhotoSnackBar(context);
   }
 
   Future<void> _onStartPressed(BuildContext context) async {
@@ -193,6 +224,21 @@ class _TaskCompleteWithPhotoSectionState
   }
 
   Future<void> _onCompletePressed(BuildContext context) async {
+    // PROČ: Obrana proti race – tlačítko musí být šedé, ale dvojitá kontrola z Drift stavu checklistu.
+    final checklistSnap = ref.read(workerTaskChecklistProvider(widget.taskId));
+    final lines = checklistSnap.valueOrNull ?? [];
+    if (!workerTaskChecklistAllowsCompletion(lines)) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('tasks.checklist_not_completed_error'.tr()),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.red.shade700,
+        ),
+      );
+      return;
+    }
+
     List<String> mediaUrls = List.from(widget.detail.mediaUrls);
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
 
@@ -224,6 +270,7 @@ class _TaskCompleteWithPhotoSectionState
             return;
           }
           if (widget.beforeComplete != null) {
+            if (!context.mounted) return;
             final done = await widget.beforeComplete!(
               context,
               ref,
@@ -233,6 +280,7 @@ class _TaskCompleteWithPhotoSectionState
             if (done == true && context.mounted) context.pop();
             if (done != null) return;
           }
+          if (!context.mounted) return;
           final ok = await showDialog<bool>(
             context: context,
             builder: (ctx) => AlertDialog(
@@ -286,11 +334,13 @@ class _TaskCompleteWithPhotoSectionState
     if (!context.mounted) return;
 
     if (widget.beforeComplete != null) {
+      if (!context.mounted) return;
       final done = await widget.beforeComplete!(context, ref, mediaUrls);
       if (done == true && context.mounted) context.pop();
       if (done != null) return;
     }
 
+    if (!context.mounted) return;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(

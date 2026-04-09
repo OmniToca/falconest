@@ -255,7 +255,7 @@ class _BillingDataRow extends StatelessWidget {
         : '${row.netTotalEur.toStringAsFixed(2)} €';
     final locale = context.locale.toString();
     final billingMonthStr = DateFormat.yMMMM(locale).format(DateTime.now());
-    final discountStr = row.discountPercentage > 0 ? '${row.discountPercentage} %' : '—';
+    final discountStr = row.discountPercentage > 0 ? '${row.discountPercentage} %' : 'common.placeholder_dash'.tr();
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 16.0, horizontal: 8.0),

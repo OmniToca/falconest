@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:drift/drift.dart';
 import 'package:falconest_drift/app_database.dart' as db;
 
@@ -16,7 +18,6 @@ class DriftMessageTemplateRepository {
   final db.AppDatabase _db;
 
   /// Načte všechny šablony tenanta, seřazené podle [orderIndex].
-  /// Volitelně lze filtrovat podle [triggerContext] (např. transfer, check_in).
   Future<List<MessageTemplateLocal>> getAllByTenantId(
     String tenantId, {
     String? triggerContext,
@@ -65,7 +66,6 @@ class DriftMessageTemplateRepository {
   }
 
   /// Uloží nebo aktualizuje šablonu z mapy ze Supabase (sync).
-  /// Klíče: id, tenant_id, key, name, body, channel, language_code, trigger_context, order_index.
   Future<void> upsertFromSupabaseMap(Map<String, dynamic> map) async {
     final supabaseId = map['id']?.toString().trim();
     if (supabaseId == null || supabaseId.isEmpty) return;
@@ -80,11 +80,24 @@ class DriftMessageTemplateRepository {
 
     final key = (map['key']?.toString() ?? '').trim();
     final name = (map['name']?.toString() ?? '').trim();
-    final body = (map['body']?.toString() ?? '').trim();
     final channel = (map['channel'] as String?)?.trim();
-    final languageCode = (map['language_code'] as String?)?.trim();
+    final emailSubject = (map['email_subject'] as String?)?.trim();
+    final trRaw = map['translations'];
+    String? translationsJson;
+    if (trRaw != null) {
+      try {
+        if (trRaw is String) {
+          final s = trRaw.trim();
+          translationsJson = s.isEmpty ? null : s;
+        } else {
+          translationsJson = jsonEncode(trRaw);
+        }
+      } catch (_) {
+        translationsJson = null;
+      }
+    }
     final triggerContext = (map['trigger_context'] as String?)?.trim();
-    int orderIndex = 0;
+    var orderIndex = 0;
     final rawOrder = map['order_index'];
     if (rawOrder != null) {
       if (rawOrder is int) {
@@ -104,11 +117,10 @@ class DriftMessageTemplateRepository {
               tenantId: tenantId,
               key: key,
               name: name,
-              body: body,
               channel: (channel != null && channel.isNotEmpty) ? channel : null,
-              languageCode: (languageCode != null && languageCode.isNotEmpty)
-                  ? languageCode
-                  : null,
+              emailSubject:
+                  (emailSubject != null && emailSubject.isNotEmpty) ? emailSubject : null,
+              translationsJson: translationsJson,
               triggerContext: (triggerContext != null && triggerContext.isNotEmpty)
                   ? triggerContext
                   : null,
@@ -124,11 +136,11 @@ class DriftMessageTemplateRepository {
               supabaseId: Value(supabaseId),
               key: Value(key),
               name: Value(name),
-              body: Value(body),
               channel: Value((channel != null && channel.isNotEmpty) ? channel : null),
-              languageCode: Value((languageCode != null && languageCode.isNotEmpty)
-                  ? languageCode
-                  : null),
+              emailSubject: Value(
+                (emailSubject != null && emailSubject.isNotEmpty) ? emailSubject : null,
+              ),
+              translationsJson: Value(translationsJson),
               triggerContext: Value((triggerContext != null &&
                       triggerContext.isNotEmpty)
                   ? triggerContext
@@ -147,9 +159,9 @@ class DriftMessageTemplateRepository {
       ..tenantId = row.tenantId
       ..key = row.key
       ..name = row.name
-      ..body = row.body
       ..channel = row.channel
-      ..languageCode = row.languageCode
+      ..emailSubject = row.emailSubject
+      ..translationsJson = row.translationsJson
       ..triggerContext = row.triggerContext
       ..orderIndex = row.orderIndex
       ..syncStatus = row.syncStatus == 1 ? SyncStatus.pending : SyncStatus.synced

@@ -4,8 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/models/cash_transaction_ui_model.dart';
 import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
+import 'package:falconest/core/repositories/cash/reservation_cash_transit_repository.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
+import 'package:falconest/features/admin/providers/finance_cash_enrich_supabase.dart';
+
+export 'finance_cash_worker_wallet.dart';
 
 /// Realtime stream peněženek zaměstnanců (Zaměstnanecká pokladna) pro aktuální tenanta.
 ///
@@ -50,67 +55,6 @@ double? _toDouble(dynamic v) {
   return double.tryParse(v.toString());
 }
 
-/// Peněženka aktuálně přihlášeného pracovníka (Worker UI).
-///
-/// BEZPEČNOST: Filtrujeme striktně podle profile_id přihlášeného uživatele.
-/// Pracovník nikdy nevidí peněženky ostatních.
-final myCashWalletProvider =
-    StreamProvider<EmployeeCashWalletRow?>((ref) async* {
-  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
-  final profileId = ref.watch(authNotifierProvider).state.profileId;
-  if (tenantId == null || tenantId.isEmpty || profileId == null || profileId.isEmpty) {
-    yield null;
-    return;
-  }
-
-  await for (final rawList
-      in CashWalletRepository.instance.watchWalletsRaw(tenantId)) {
-    final match = rawList.cast<Map<String, dynamic>>().where((raw) {
-      final pid = (raw['profile_id'] as String?)?.trim() ?? '';
-      return pid == profileId;
-    }).toList();
-    if (match.isEmpty) {
-      yield null;
-      continue;
-    }
-    final raw = match.first;
-    yield EmployeeCashWalletRow(
-      id: (raw['id'] as String?)?.trim() ?? '',
-      profileId: (raw['profile_id'] as String?)?.trim() ?? '',
-      balance: _toDouble(raw['balance']) ?? 0,
-      workerName: '', // Worker vidí vlastní peněženku – jméno není potřeba
-    );
-  }
-});
-
-/// Transakce aktuálně přihlášeného pracovníka (Worker UI) – obohacené o kontext z úkolů.
-///
-/// BEZPEČNOST: Pouze transakce vlastní peněženky (wallet_id z myCashWalletProvider).
-/// Seřazeno od nejnovějších. Načítá apartmentName a guestName z tasks pro COLLECTED_FROM_GUEST.
-final myCashTransactionsProvider =
-    StreamProvider<List<CashTransactionUIModel>>((ref) async* {
-  final walletAsync = ref.watch(myCashWalletProvider);
-  final wallet = walletAsync.valueOrNull;
-  if (wallet == null || wallet.id.isEmpty) {
-    yield [];
-    return;
-  }
-
-  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
-  if (tenantId == null || tenantId.isEmpty) {
-    yield [];
-    return;
-  }
-
-  await for (final rows
-      in CashWalletRepository.instance.watchTransactionsRawForWallet(
-    tenantId,
-    wallet.id,
-  )) {
-    yield await _enrichTransactions(tenantId, rows);
-  }
-});
-
 /// Realtime stream transakcí pro konkrétní peněženku zaměstnance – obohacené o kontext z úkolů.
 ///
 /// PROČ: Detail peněženky v Admin UI – historie výběrů, odevzdání, firemních výdajů.
@@ -129,116 +73,9 @@ final walletTransactionsProvider =
     tenantId,
     walletId,
   )) {
-    yield await _enrichTransactions(tenantId, rows);
+    yield await enrichCashTransactionsWithSupabase(tenantId, rows);
   }
 });
-
-/// Obohací syrové transakce o kontext z úkolů (apartmán, host) a klientů (jméno, typ).
-///
-/// PROČ: Supabase stream neumožňuje join v realtime. Po obdržení transakcí
-/// načteme tasks s apartments(name) a reservations(guest_name) jedním dotazem,
-/// a clients (name, client_type) pro transakce s client_id.
-Future<List<CashTransactionUIModel>> _enrichTransactions(
-  String tenantId,
-  List<Map<String, dynamic>> rows,
-) async {
-  final taskIds = rows
-      .map((r) => (r['task_id'] as String?)?.trim())
-      .whereType<String>()
-      .where((id) => id.isNotEmpty)
-      .toSet()
-      .toList();
-
-  final taskInfo = <String, ({String? apartmentName, String? guestName, String? taskTitle})>{};
-
-  if (taskIds.isNotEmpty) {
-    try {
-      final res = await SupabaseService.safeFrom('tasks', tenantId)
-          .select('id, title, apartments(name), reservations(guest_name)')
-          .inFilter('id', taskIds)
-          .isFilter('deleted_at', null);
-
-      for (final t in res as List) {
-        final m = Map<String, dynamic>.from(t);
-        final id = (m['id'] as String?)?.trim();
-        if (id == null || id.isEmpty) continue;
-
-        String? apartmentName;
-        String? guestName;
-        String? taskTitle;
-
-        final title = (m['title'] as String?)?.trim();
-        if (title != null && title.isNotEmpty) taskTitle = title;
-
-        final apt = m['apartments'];
-        if (apt != null && apt is Map) {
-          apartmentName = (apt['name'] as String?)?.trim();
-          if (apartmentName?.isEmpty == true) apartmentName = null;
-        }
-        final resData = m['reservations'];
-        if (resData != null && resData is Map) {
-          guestName = (resData['guest_name'] as String?)?.trim();
-          if (guestName?.isEmpty == true) guestName = null;
-        }
-
-        taskInfo[id] = (apartmentName: apartmentName, guestName: guestName, taskTitle: taskTitle);
-      }
-    } catch (_) {
-      // BACKWARD COMPATIBILITY: Selhání enrichementu nesmí rozbít UI – vrátíme transakce bez kontextu.
-    }
-  }
-
-  // Načtení kontextu klientů – pro transakce s client_id (např. externí platba).
-  final clientIds = rows
-      .map((r) => (r['client_id'] as String?)?.trim())
-      .whereType<String>()
-      .where((id) => id.isNotEmpty)
-      .toSet()
-      .toList();
-
-  final clientInfo = <String, ({String? name, String? clientType})>{};
-
-  if (clientIds.isNotEmpty) {
-    try {
-      final res = await SupabaseService.safeFrom('clients', tenantId)
-          .select('id, name, client_type')
-          .inFilter('id', clientIds)
-          .isFilter('deleted_at', null);
-
-      for (final c in res as List) {
-        final m = Map<String, dynamic>.from(c);
-        final id = (m['id'] as String?)?.trim();
-        if (id == null || id.isEmpty) continue;
-
-        final name = (m['name'] as String?)?.trim();
-        final clientType = (m['client_type'] as String?)?.trim();
-
-        clientInfo[id] = (
-          name: name != null && name.isNotEmpty ? name : null,
-          clientType: clientType != null && clientType.isNotEmpty ? clientType : null,
-        );
-      }
-    } catch (_) {
-      // BACKWARD COMPATIBILITY: Selhání enrichementu klientů nesmí rozbít UI.
-    }
-  }
-
-  return rows.map((r) {
-    final taskId = (r['task_id'] as String?)?.trim();
-    final clientId = (r['client_id'] as String?)?.trim();
-    final taskCtx = taskId != null && taskId.isNotEmpty ? taskInfo[taskId] : null;
-    final clientCtx = clientId != null && clientId.isNotEmpty ? clientInfo[clientId] : null;
-
-    return CashTransactionUIModel(
-      raw: Map<String, dynamic>.from(r),
-      apartmentName: taskCtx?.apartmentName,
-      guestName: taskCtx?.guestName,
-      taskTitle: taskCtx?.taskTitle,
-      clientName: clientCtx?.name,
-      clientType: clientCtx?.clientType,
-    );
-  }).toList();
-}
 
 /// Řádek úkolu s nevybranou hotovostí – pro sekci alertů v Zaměstnanecké pokladně.
 class FailedCashCollectionRow {
@@ -291,7 +128,7 @@ final failedCashCollectionsProvider =
           : (amountRaw != null ? double.tryParse(amountRaw.toString()) : null);
       if (amount == null || amount <= 0) continue;
 
-      final title = (map['title'] as String?)?.trim() ?? '—';
+      final title = (map['title'] as String?)?.trim() ?? 'common.placeholder_dash'.tr();
       String workerName = 'common.removed_user'.tr();
       // BUGFIX: PostgREST vrací pod profiles!tasks_assigned_to_fkey při explicitním FK.
       final profilesData = map['profiles'] ?? map['profiles!tasks_assigned_to_fkey'];
@@ -326,7 +163,8 @@ final failedCashCollectionsProvider =
       ));
     }
     return rows;
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('failedCashCollectionsProvider: načtení nevybrané hotovosti selhalo', e, st);
     return [];
   }
 });
@@ -394,3 +232,27 @@ final cashShortfallsCountProvider = StreamProvider<int>((ref) async* {
     yield count;
   }
 });
+
+/// Průtoková hotovost za ubytování – lidský stav pro jednu rezervaci (ledger + settlement).
+final reservationCashTransitProvider =
+    FutureProvider.autoDispose.family<ReservationCashTransitSnapshot, String>((ref, reservationId) async {
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty || reservationId.trim().isEmpty) {
+    return const ReservationCashTransitSnapshot(phase: ReservationCashTransitPhase.notApplicable);
+  }
+  return ReservationCashTransitRepository.resolve(
+    tenantId: tenantId,
+    reservationId: reservationId.trim(),
+  );
+});
+
+extension ReservationCashTransitPhaseX on ReservationCashTransitPhase {
+  /// Klíč pro EasyLocalization (`finance.cash_transit_phase_*`).
+  String get labelTranslationKey => switch (this) {
+        ReservationCashTransitPhase.notApplicable => 'finance.cash_transit_phase_not_applicable',
+        ReservationCashTransitPhase.awaitingCollection => 'finance.cash_transit_phase_awaiting_collection',
+        ReservationCashTransitPhase.withWorker => 'finance.cash_transit_phase_with_worker',
+        ReservationCashTransitPhase.atAgencyVault => 'finance.cash_transit_phase_at_agency',
+        ReservationCashTransitPhase.settledToOwner => 'finance.cash_transit_phase_settled',
+      };
+}

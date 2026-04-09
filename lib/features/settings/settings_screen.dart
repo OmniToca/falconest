@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:easy_localization/easy_localization.dart';
@@ -6,6 +7,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/constants/iana_timezones.dart';
+import 'package:falconest/features/communication/services/template_placeholder_service.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/features/admin/models/module_model.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
@@ -15,8 +18,16 @@ import 'package:falconest/features/settings/pricing_type_label.dart';
 import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
 import 'package:falconest/features/settings/service_editor_dialog.dart';
 import 'package:falconest/features/settings/supported_languages.dart';
+import 'package:falconest/features/admin/checklists/screens/checklist_templates_screen.dart';
 import 'package:falconest/features/settings/client_billing_tab.dart';
-import 'package:falconest/features/settings/user_profile_tab.dart';
+import 'package:falconest/features/settings/integrations_tab.dart';
+import 'package:falconest/core/models/notification_preferences_model.dart';
+import 'package:falconest/core/theme/app_palette_defaults.dart';
+import 'package:falconest/features/settings/providers/tenant_colors_provider.dart';
+import 'package:falconest/features/settings/widgets/app_color_picker_dialog.dart';
+import 'package:falconest/features/settings/providers/notification_preferences_provider.dart';
+import 'package:falconest/features/settings/user_profile_tab.dart'
+    show UserProfileSettingsSection;
 import 'package:falconest/features/settings/zones_list_tab.dart';
 import 'package:falconest/features/settings/models/tenant_service_model.dart';
 import 'package:falconest/features/super_admin/services/super_admin_service.dart';
@@ -31,7 +42,8 @@ class SettingsModal {
     return showGeneralDialog<void>(
       context: hostContext,
       barrierDismissible: true,
-      barrierLabel: 'Settings',
+      // PROČ: barrierLabel čtou čtečky obrazovky; musí být lokalizovaný, ne anglický natvrdo.
+      barrierLabel: 'settings.title'.tr(),
       barrierColor: Colors.black54,
       transitionDuration: const Duration(milliseconds: 250),
       pageBuilder: (_, _, _) => const SizedBox.shrink(),
@@ -41,7 +53,10 @@ class SettingsModal {
           child: FadeTransition(
             opacity: animation,
             child: ScaleTransition(
-              scale: CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+              scale: CurvedAnimation(
+                parent: animation,
+                curve: Curves.easeOutCubic,
+              ),
               child: _SettingsModalContent(
                 pushContext: hostContext,
                 isDialogMode: true,
@@ -56,10 +71,7 @@ class SettingsModal {
 
 /// Sdílený obsah modalu – buď v dialogu (isDialogMode + pushContext), nebo na route (SettingsScreen).
 class _SettingsModalContent extends ConsumerWidget {
-  const _SettingsModalContent({
-    this.pushContext,
-    this.isDialogMode = false,
-  });
+  const _SettingsModalContent({this.pushContext, this.isDialogMode = false});
 
   /// Kontext volajícího – v režimu dialogu se použije pro pop + push (zavřít modal, otevřít editor).
   final BuildContext? pushContext;
@@ -68,45 +80,62 @@ class _SettingsModalContent extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     // Záložka Fakturace jen pro admin a manager – mají kontext tenanta pro správu fakturačních údajů.
-    final showBillingTab = ref.watch(authNotifierProvider).state.isAdminOrManager;
-    final isSuperAdmin = ref.watch(authNotifierProvider).state.role == 'super_admin';
+    final showBillingTab = ref
+        .watch(authNotifierProvider)
+        .state
+        .isAdminOrManager;
+    final isSuperAdmin =
+        ref.watch(authNotifierProvider).state.role == 'super_admin';
 
     final tabs = <Widget>[];
     final tabViews = <Widget>[];
 
     if (isSuperAdmin) {
-      // Super Admin: Profil + Moduly (pouze katalog modulů, bez Služeb a Oblasti)
-      tabs.add(Tab(text: 'settings.tab_profile'.tr()));
-      tabViews.add(const UserProfileTab());
+      // Super Admin: Obecné, Oznámení, Profil + Moduly (pouze katalog modulů, bez Služeb a Oblasti)
+      tabs.add(Tab(text: 'settings.tab_general'.tr()));
+      tabViews.add(const _GeneralSettingsTab());
+      tabs.add(Tab(text: 'settings.tab_notifications'.tr()));
+      tabViews.add(const _NotificationsSettingsTab());
       tabs.add(Tab(text: 'settings.catalog_modules'.tr()));
-      tabViews.add(_ServicesTabContent(
-        onAddService: () => _onAddService(context),
-        onEditService: (s) => _onEditService(context, s),
-        onAddModule: () => _onAddModule(context),
-        onEditModule: (m) => _onEditModule(context, m),
-        pushContext: pushContext,
-        isDialogMode: isDialogMode,
-        showOnlyModules: true,
-      ));
+      tabViews.add(
+        _ServicesTabContent(
+          onAddService: () => _onAddService(context),
+          onEditService: (s) => _onEditService(context, s),
+          onAddModule: () => _onAddModule(context),
+          onEditModule: (m) => _onEditModule(context, m),
+          pushContext: pushContext,
+          isDialogMode: isDialogMode,
+          showOnlyModules: true,
+        ),
+      );
     } else {
-      // Běžný Admin/Worker: Profil, Služby, Oblasti, volitelně Fakturace
-      tabs.add(Tab(text: 'settings.tab_profile'.tr()));
-      tabViews.add(const UserProfileTab());
+      // Běžný Admin/Worker: Obecné, Oznámení, Profil, Služby, Checklisty, Oblasti, volitelně Fakturace
+      tabs.add(Tab(text: 'settings.tab_general'.tr()));
+      tabViews.add(const _GeneralSettingsTab());
+      tabs.add(Tab(text: 'settings.tab_notifications'.tr()));
+      tabViews.add(const _NotificationsSettingsTab());
       tabs.add(Tab(text: 'settings.tab_services'.tr()));
-      tabViews.add(_ServicesTabContent(
-        onAddService: () => _onAddService(context),
-        onEditService: (s) => _onEditService(context, s),
-        onAddModule: () => _onAddModule(context),
-        onEditModule: (m) => _onEditModule(context, m),
-        pushContext: pushContext,
-        isDialogMode: isDialogMode,
-        showOnlyModules: false,
-      ));
+      tabViews.add(
+        _ServicesTabContent(
+          onAddService: () => _onAddService(context),
+          onEditService: (s) => _onEditService(context, s),
+          onAddModule: () => _onAddModule(context),
+          onEditModule: (m) => _onEditModule(context, m),
+          pushContext: pushContext,
+          isDialogMode: isDialogMode,
+          showOnlyModules: false,
+        ),
+      );
+      tabs.add(Tab(text: 'settings.tab_checklists'.tr()));
+      tabViews.add(const _ChecklistTemplatesSettingsTab());
       tabs.add(Tab(text: 'settings.tab_zones'.tr()));
       tabViews.add(const _ZonesTabContent());
       if (showBillingTab) {
         tabs.add(Tab(text: 'settings.tab_billing'.tr()));
         tabViews.add(const ClientBillingTab());
+        // PROČ: Stejná role jako Fakturace – jen admin/manager smí spravovat API klíče agentury.
+        tabs.add(Tab(text: 'settings.tab_integrations'.tr()));
+        tabViews.add(const IntegrationsTab());
       }
     }
 
@@ -134,23 +163,22 @@ class _SettingsModalContent extends ConsumerWidget {
               ],
             ),
             clipBehavior: Clip.antiAlias,
+            // PROČ: min + Flexible uvnitř Containeru bez pevné výšky často končí „bottom overflow“;
+            // hlavička zůstane nahoře a zbytek vyplní Expanded, takže TabBarView má vždy konečné rozměry.
             child: Column(
-              mainAxisSize: MainAxisSize.min,
               children: [
                 _buildHeader(context),
-                Flexible(
+                Expanded(
                   child: DefaultTabController(
                     length: tabCount,
                     child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 24),
-                          child: _buildProfileSection(context, ref),
-                        ),
-                        const SizedBox(height: 16),
+                        // PROČ: TabBar hned pod nadpisem – jazyk/měna/barvy přesunuty do záložky „Obecné“.
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 24),
                           child: TabBar(
+                            isScrollable: true,
                             labelColor: Theme.of(context).colorScheme.primary,
                             unselectedLabelColor: Colors.grey.shade600,
                             indicatorColor: Theme.of(context).colorScheme.primary,
@@ -158,11 +186,7 @@ class _SettingsModalContent extends ConsumerWidget {
                           ),
                         ),
                         const SizedBox(height: 8),
-                        Expanded(
-                          child: TabBarView(
-                            children: tabViews,
-                          ),
-                        ),
+                        Expanded(child: TabBarView(children: tabViews)),
                       ],
                     ),
                   ),
@@ -193,10 +217,8 @@ class _SettingsModalContent extends ConsumerWidget {
   void _onEditModule(BuildContext context, ModuleModel module) {
     showDialog<void>(
       context: context,
-      builder: (ctx) => ModuleEditorScreen(
-        existingModule: module,
-        asDialog: true,
-      ),
+      builder: (ctx) =>
+          ModuleEditorScreen(existingModule: module, asDialog: true),
     );
   }
 
@@ -225,9 +247,9 @@ class _SettingsModalContent extends ConsumerWidget {
             child: Text(
               'settings.title'.tr(),
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.grey[900],
-                  ),
+                fontWeight: FontWeight.bold,
+                color: Colors.grey[900],
+              ),
             ),
           ),
           IconButton(
@@ -240,100 +262,233 @@ class _SettingsModalContent extends ConsumerWidget {
     );
   }
 
-  Widget _buildProfileSection(BuildContext context, WidgetRef ref) {
-    final auth = ref.watch(authNotifierProvider);
-    final languageCode = auth.state.languageCode ?? 'cs';
-    final preferredCurrency = auth.state.preferredCurrency ?? 'CZK';
-    final currenciesAsync = ref.watch(currenciesProvider);
+}
 
-    return IntrinsicHeight(
-      child: Row(
+/// Záložka Obecné – jazyk, měna, barvy aplikace (dříve horní blok modalu).
+class _GeneralSettingsTab extends ConsumerWidget {
+  const _GeneralSettingsTab();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final authNotifier = ref.watch(authNotifierProvider);
+    final auth = authNotifier.state;
+    final languageCode = auth.languageCode ?? 'cs';
+    final preferredCurrency = auth.preferredCurrency ?? 'CZK';
+    final currenciesAsync = ref.watch(currenciesProvider);
+    final dataTenantId = authNotifier.tenantIdForData;
+    final canEditAgencyTimezone = dataTenantId != null &&
+        dataTenantId.isNotEmpty &&
+        (auth.isAdminOrManager || auth.isSuperAdmin || auth.role == 'account_manager');
+    final effectiveTz = auth.effectiveTenantTimezone;
+    final timezoneChoices = <String>{
+      ...kIanaTimezonesForPicker,
+      effectiveTz,
+      TemplatePlaceholderService.defaultTenantTimezone,
+    }.toList()
+      ..sort();
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(
-            child: _SettingsProfileCard(
-              icon: Icons.language_rounded,
-              color: Colors.blue,
-              title: 'settings.language_label'.tr(),
-              child: DropdownButtonFormField<String>(
-                initialValue: supportedLanguages.any((e) => e['code'] == languageCode) ? languageCode : 'cs',
-                decoration: InputDecoration(
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                ),
-                items: supportedLanguages.map((e) {
-                  final code = e['code']!;
-                  final label = e['label']!;
-                  final flag = _flagForCode(code);
-                  return DropdownMenuItem<String>(value: code, child: Text('$flag $label'));
-                }).toList(),
-                onChanged: (String? newCode) async {
-                  if (newCode == null || newCode == languageCode) return;
-                  await ref.read(authNotifierProvider.notifier).updateLanguageCode(newCode);
-                  if (context.mounted) await context.setLocale(Locale(newCode));
-                },
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: _SettingsProfileCard(
-              icon: Icons.attach_money_rounded,
-              color: Colors.green,
-              title: 'settings.currency_label'.tr(),
-              child: currenciesAsync.when(
-                data: (currencies) {
-                  final codes = currencies.isEmpty ? <String>['CZK', 'EUR', 'USD'] : currencies.map((c) => c.code).toList();
-                  String labelFor(String code) {
-                    for (final c in currencies) {
-                      if (c.code == code) return '${c.code} ${c.symbol}';
-                    }
-                    return code;
-                  }
-                  final value = codes.contains(preferredCurrency) ? preferredCurrency : (codes.isNotEmpty ? codes.first : 'CZK');
-                  return DropdownButtonFormField<String>(
-                    initialValue: value,
-                    decoration: InputDecoration(
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: _SettingsProfileCard(
+                    icon: Icons.language_rounded,
+                    color: Colors.blue,
+                    title: 'settings.language_label'.tr(),
+                    child: DropdownButtonFormField<String>(
+                      initialValue:
+                          supportedLanguages.any((e) => e['code'] == languageCode)
+                          ? languageCode
+                          : 'cs',
+                      decoration: InputDecoration(
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                      ),
+                      items: supportedLanguages.map((e) {
+                        final code = e['code']!;
+                        final label = e['label']!;
+                        final flag = _flagForLanguageCode(code);
+                        return DropdownMenuItem<String>(
+                          value: code,
+                          child: Text('$flag $label'),
+                        );
+                      }).toList(),
+                      onChanged: (String? newCode) async {
+                        if (newCode == null || newCode == languageCode) return;
+                        await authNotifier.updateLanguageCode(newCode);
+                        if (context.mounted) {
+                          await context.setLocale(Locale(newCode));
+                        }
+                      },
                     ),
-                    items: codes.map((code) => DropdownMenuItem<String>(value: code, child: Text(labelFor(code)))).toList(),
-                    onChanged: (String? newCode) async {
-                      if (newCode == null || newCode == preferredCurrency) return;
-                      await ref.read(authNotifierProvider.notifier).updatePreferredCurrency(newCode);
-                    },
-                  );
-                },
-                loading: () => DropdownButtonFormField<String>(
-                  initialValue: preferredCurrency,
-                  decoration: InputDecoration(
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   ),
-                  items: ['CZK', 'EUR', 'USD'].map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-                  onChanged: null,
                 ),
-                error: (_, _) => DropdownButtonFormField<String>(
-                  initialValue: preferredCurrency,
-                  decoration: InputDecoration(
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _SettingsProfileCard(
+                    icon: Icons.attach_money_rounded,
+                    color: Colors.green,
+                    title: 'settings.currency_label'.tr(),
+                    child: currenciesAsync.when(
+                      data: (currencies) {
+                        final codes = currencies.isEmpty
+                            ? <String>['CZK', 'EUR', 'USD']
+                            : currencies.map((c) => c.code).toList();
+                        String labelFor(String code) {
+                          for (final c in currencies) {
+                            if (c.code == code) return '${c.code} ${c.symbol}';
+                          }
+                          return code;
+                        }
+
+                        final value = codes.contains(preferredCurrency)
+                            ? preferredCurrency
+                            : (codes.isNotEmpty ? codes.first : 'CZK');
+                        return DropdownButtonFormField<String>(
+                          initialValue: value,
+                          decoration: InputDecoration(
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                          ),
+                          items: codes
+                              .map(
+                                (code) => DropdownMenuItem<String>(
+                                  value: code,
+                                  child: Text(labelFor(code)),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: (String? newCode) async {
+                            if (newCode == null || newCode == preferredCurrency) {
+                              return;
+                            }
+                            await ref
+                                .read(authNotifierProvider.notifier)
+                                .updatePreferredCurrency(newCode);
+                          },
+                        );
+                      },
+                      loading: () => DropdownButtonFormField<String>(
+                        initialValue: preferredCurrency,
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                        ),
+                        items: ['CZK', 'EUR', 'USD']
+                            .map(
+                              (c) => DropdownMenuItem(value: c, child: Text(c)),
+                            )
+                            .toList(),
+                        onChanged: null,
+                      ),
+                      error: (_, _) => DropdownButtonFormField<String>(
+                        initialValue: preferredCurrency,
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                        ),
+                        items: ['CZK', 'EUR', 'USD']
+                            .map(
+                              (c) => DropdownMenuItem(value: c, child: Text(c)),
+                            )
+                            .toList(),
+                        onChanged: (String? newCode) async {
+                          if (newCode == null || newCode == preferredCurrency) {
+                            return;
+                          }
+                          await ref
+                              .read(authNotifierProvider.notifier)
+                              .updatePreferredCurrency(newCode);
+                        },
+                      ),
+                    ),
                   ),
-                  items: ['CZK', 'EUR', 'USD'].map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-                  onChanged: (String? newCode) async {
-                    if (newCode == null || newCode == preferredCurrency) return;
-                    await ref.read(authNotifierProvider.notifier).updatePreferredCurrency(newCode);
-                  },
                 ),
-              ),
+              ],
             ),
           ),
+          if (canEditAgencyTimezone) ...[
+            const SizedBox(height: 12),
+            _SettingsProfileCard(
+              icon: Icons.schedule_rounded,
+              color: Colors.deepPurple,
+              title: 'settings.timezone_label'.tr(),
+              child: DropdownButtonFormField<String>(
+                key: ValueKey<String>(effectiveTz),
+                initialValue: timezoneChoices.contains(effectiveTz)
+                    ? effectiveTz
+                    : TemplatePlaceholderService.defaultTenantTimezone,
+                decoration: InputDecoration(
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                ),
+                isExpanded: true,
+                items: timezoneChoices
+                    .map(
+                      (z) => DropdownMenuItem<String>(
+                        value: z,
+                        child: Text(z, overflow: TextOverflow.ellipsis),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (String? z) async {
+                  if (z == null || z == effectiveTz) return;
+                  await authNotifier.updateTenantTimezone(z);
+                },
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          const _CompactAppColorsRow(),
+          const SizedBox(height: 28),
+          const Divider(height: 1),
+          const SizedBox(height: 20),
+          Text(
+            'settings.section_personal_details'.tr(),
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey.shade800,
+                ),
+          ),
+          const SizedBox(height: 16),
+          const UserProfileSettingsSection(),
         ],
       ),
     );
   }
 
-  static String _flagForCode(String code) {
+  static String _flagForLanguageCode(String code) {
     switch (code) {
       case 'cs':
         return '🇨🇿';
@@ -344,6 +499,479 @@ class _SettingsModalContent extends ConsumerWidget {
       default:
         return '🌐';
     }
+  }
+}
+
+/// Předvolby z [notification_preferences] – matice kanálů (web / push / e-mail), ukládání upsertem.
+class _NotificationsSettingsTab extends ConsumerWidget {
+  const _NotificationsSettingsTab();
+
+  Future<void> _save(
+    BuildContext context,
+    WidgetRef ref,
+    NotificationPreferencesModel next,
+  ) async {
+    final ok =
+        await ref.read(notificationPreferencesProvider.notifier).save(next);
+    if (!context.mounted || ok) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('settings.notifications_save_error'.tr())),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final auth = ref.watch(authNotifierProvider).state;
+    final asyncPrefs = ref.watch(notificationPreferencesProvider);
+    final showAdminSection = auth.isAdminOrManager;
+
+    return asyncPrefs.when(
+      loading: () => const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: CircularProgressIndicator(),
+        ),
+      ),
+      error: (e, _) => SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              e.toString(),
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.tonal(
+              onPressed: () => ref.invalidate(notificationPreferencesProvider),
+              child: Text('common.retry'.tr()),
+            ),
+          ],
+        ),
+      ),
+      data: (model) {
+        if (model == null) {
+          return SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+            child: Text(
+              'settings.notifications_unavailable'.tr(),
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    color: Colors.grey.shade700,
+                    height: 1.4,
+                  ),
+            ),
+          );
+        }
+
+        return SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'settings.notifications_section_channels'.tr(),
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              const SizedBox(height: 10),
+              _NotificationChannelsMatrixHeader(),
+              const Divider(height: 24),
+              _NotificationEventChannelRow(
+                title: 'settings.notifications_daily_summary'.tr(),
+                subtitle: 'settings.notifications_daily_summary_sub'.tr(),
+                channels: model.channelsFor(NotificationEventKind.dailySummary),
+                onToggle: (ch, v) => _save(
+                  context,
+                  ref,
+                  model.setChannel(NotificationEventKind.dailySummary, ch, v),
+                ),
+              ),
+              const Divider(height: 1),
+              _NotificationEventChannelRow(
+                title: 'settings.notifications_new_task'.tr(),
+                subtitle: 'settings.notifications_new_task_sub'.tr(),
+                channels: model.channelsFor(NotificationEventKind.newTaskAssigned),
+                onToggle: (ch, v) => _save(
+                  context,
+                  ref,
+                  model.setChannel(NotificationEventKind.newTaskAssigned, ch, v),
+                ),
+              ),
+              const Divider(height: 1),
+              _NotificationEventChannelRow(
+                title: 'settings.notifications_upcoming_task'.tr(),
+                subtitle: 'settings.notifications_upcoming_task_sub'.tr(),
+                channels: model.channelsFor(NotificationEventKind.upcomingTask),
+                onToggle: (ch, v) => _save(
+                  context,
+                  ref,
+                  model.setChannel(NotificationEventKind.upcomingTask, ch, v),
+                ),
+              ),
+              const Divider(height: 1),
+              _NotificationEventChannelRow(
+                title: 'settings.notifications_template_reminders'.tr(),
+                subtitle: 'settings.notifications_template_reminders_sub'.tr(),
+                channels:
+                    model.channelsFor(NotificationEventKind.templateReminders),
+                onToggle: (ch, v) => _save(
+                  context,
+                  ref,
+                  model.setChannel(
+                    NotificationEventKind.templateReminders,
+                    ch,
+                    v,
+                  ),
+                ),
+              ),
+              if (showAdminSection) ...[
+                const SizedBox(height: 24),
+                Text(
+                  'settings.notifications_section_admin'.tr(),
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    Icons.build_circle_outlined,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  title: Text(
+                    'settings.notifications_admin_maintenance_title'.tr(),
+                  ),
+                  subtitle: Text(
+                    'settings.notifications_admin_maintenance_body'.tr(),
+                  ),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    Icons.payments_outlined,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  title: Text(
+                    'settings.notifications_admin_finance_title'.tr(),
+                  ),
+                  subtitle: Text(
+                    'settings.notifications_admin_finance_body'.tr(),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _NotificationChannelsMatrixHeader extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    const w = _NotificationEventChannelRow.channelColWidth * 3;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        const Expanded(child: SizedBox()),
+        SizedBox(
+          width: w,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              Tooltip(
+                message: 'settings.notifications_channel_web'.tr(),
+                child: Text(
+                  '💻',
+                  style: TextStyle(
+                    fontSize: 18,
+                    color: Colors.grey.shade800,
+                  ),
+                ),
+              ),
+              Tooltip(
+                message: 'settings.notifications_channel_push'.tr(),
+                child: Text(
+                  '📱',
+                  style: TextStyle(
+                    fontSize: 18,
+                    color: Colors.grey.shade800,
+                  ),
+                ),
+              ),
+              Tooltip(
+                message: 'settings.notifications_channel_email'.tr(),
+                child: Text(
+                  '✉️',
+                  style: TextStyle(
+                    fontSize: 18,
+                    color: Colors.grey.shade800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _NotificationEventChannelRow extends StatelessWidget {
+  const _NotificationEventChannelRow({
+    required this.title,
+    required this.subtitle,
+    required this.channels,
+    required this.onToggle,
+  });
+
+  final String title;
+  final String subtitle;
+  final NotificationChannels channels;
+  final Future<void> Function(
+    NotificationDeliveryChannel channel,
+    bool value,
+  ) onToggle;
+
+  static const double channelColWidth = 40;
+
+  @override
+  Widget build(BuildContext context) {
+    const w = channelColWidth * 3;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                        fontWeight: FontWeight.w500,
+                        color: Colors.grey.shade900,
+                      ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.grey.shade600,
+                        height: 1.35,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(
+            width: w,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                Tooltip(
+                  message: 'settings.notifications_channel_web'.tr(),
+                  child: SizedBox(
+                    width: channelColWidth,
+                    height: 36,
+                    child: Center(
+                      child: Checkbox(
+                        value: channels.web,
+                        onChanged: (v) => unawaited(
+                          onToggle(NotificationDeliveryChannel.web, v ?? false),
+                        ),
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ),
+                ),
+                Tooltip(
+                  message: 'settings.notifications_channel_push'.tr(),
+                  child: SizedBox(
+                    width: channelColWidth,
+                    height: 36,
+                    child: Center(
+                      child: Checkbox(
+                        value: channels.push,
+                        onChanged: (v) => unawaited(
+                          onToggle(
+                            NotificationDeliveryChannel.push,
+                            v ?? false,
+                          ),
+                        ),
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ),
+                ),
+                Tooltip(
+                  message: 'settings.notifications_channel_email'.tr(),
+                  child: SizedBox(
+                    width: channelColWidth,
+                    height: 36,
+                    child: Center(
+                      child: Checkbox(
+                        value: channels.email,
+                        onChanged: (v) => unawaited(
+                          onToggle(
+                            NotificationDeliveryChannel.email,
+                            v ?? false,
+                          ),
+                        ),
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Jedna řada: název, dvě kolečka (primární / sekundární), vpravo obnovení výchozích barev.
+class _CompactAppColorsRow extends ConsumerWidget {
+  const _CompactAppColorsRow();
+
+  static const double _dotSize = 28;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final asyncColors = ref.watch(tenantColorsProvider);
+    final theme = Theme.of(context);
+    final primaryPreview =
+        asyncColors.valueOrNull?.resolvedPrimaryColor() ??
+            AppPaletteDefaults.primary;
+    final secondaryPreview =
+        asyncColors.valueOrNull?.resolvedSecondaryColor() ??
+            AppPaletteDefaults.secondary;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Flexible(
+            child: Text(
+              'settings.colors_section_title'.tr(),
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: Colors.grey.shade800,
+                fontWeight: FontWeight.w500,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Tooltip(
+            message: 'settings.colors_primary'.tr(),
+            child: _PaletteColorDot(
+              color: primaryPreview,
+              size: _dotSize,
+              onTap: () async {
+                final picked = await showAppColorPickerDialog(
+                  context: context,
+                  initialColor: primaryPreview,
+                );
+                if (picked != null && context.mounted) {
+                  await ref
+                      .read(tenantColorsProvider.notifier)
+                      .updatePrimaryColor(picked);
+                }
+              },
+            ),
+          ),
+          const SizedBox(width: 10),
+          Tooltip(
+            message: 'settings.colors_secondary'.tr(),
+            child: _PaletteColorDot(
+              color: secondaryPreview,
+              size: _dotSize,
+              onTap: () async {
+                final picked = await showAppColorPickerDialog(
+                  context: context,
+                  initialColor: secondaryPreview,
+                );
+                if (picked != null && context.mounted) {
+                  await ref
+                      .read(tenantColorsProvider.notifier)
+                      .updateSecondaryColor(picked);
+                }
+              },
+            ),
+          ),
+          const Spacer(),
+          TextButton(
+            onPressed: () =>
+                ref.read(tenantColorsProvider.notifier).resetToDefaults(),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: Text('settings.colors_reset'.tr()),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PaletteColorDot extends StatelessWidget {
+  const _PaletteColorDot({
+    required this.color,
+    required this.size,
+    required this.onTap,
+  });
+
+  final Color color;
+  final double size;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        customBorder: const CircleBorder(),
+        child: SizedBox(
+          width: size + 8,
+          height: size + 8,
+          child: Center(
+            child: Container(
+              width: size,
+              height: size,
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+                border: Border.all(color: theme.dividerColor),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.06),
+                    blurRadius: 3,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -366,11 +994,13 @@ class _ServicesTabContent extends ConsumerStatefulWidget {
   final void Function(ModuleModel) onEditModule;
   final BuildContext? pushContext;
   final bool isDialogMode;
+
   /// True = Super Admin záložka "Moduly" – zobrazí pouze katalog modulů, bez Katalog služeb agentury.
   final bool showOnlyModules;
 
   @override
-  ConsumerState<_ServicesTabContent> createState() => _ServicesTabContentState();
+  ConsumerState<_ServicesTabContent> createState() =>
+      _ServicesTabContentState();
 }
 
 class _ServicesTabContentState extends ConsumerState<_ServicesTabContent>
@@ -406,9 +1036,9 @@ class _ServicesTabContentState extends ConsumerState<_ServicesTabContent>
               child: Text(
                 'settings.catalog_services'.tr(),
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: Colors.grey[900],
-                      fontWeight: FontWeight.w600,
-                    ),
+                  color: Colors.grey[900],
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
             FilledButton.icon(
@@ -416,8 +1046,13 @@ class _ServicesTabContentState extends ConsumerState<_ServicesTabContent>
               icon: const Icon(Icons.add, size: 18),
               label: Text('settings.add_service'.tr()),
               style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 10,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24),
+                ),
               ),
             ),
           ],
@@ -429,7 +1064,8 @@ class _ServicesTabContentState extends ConsumerState<_ServicesTabContent>
   }
 
   Widget _buildModuleCatalogSection(BuildContext context, WidgetRef ref) {
-    final isSuperAdmin = ref.watch(authNotifierProvider).state.role == 'super_admin';
+    final isSuperAdmin =
+        ref.watch(authNotifierProvider).state.role == 'super_admin';
     if (!isSuperAdmin) return const SizedBox.shrink();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -440,9 +1076,9 @@ class _ServicesTabContentState extends ConsumerState<_ServicesTabContent>
               child: Text(
                 'settings.catalog_modules'.tr(),
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: Colors.grey[900],
-                      fontWeight: FontWeight.w600,
-                    ),
+                  color: Colors.grey[900],
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
             FilledButton.icon(
@@ -450,8 +1086,13 @@ class _ServicesTabContentState extends ConsumerState<_ServicesTabContent>
               icon: const Icon(Icons.add, size: 18),
               label: Text('settings.add_module'.tr()),
               style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 10,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24),
+                ),
               ),
             ),
           ],
@@ -488,6 +1129,21 @@ class _ZonesTabContentState extends ConsumerState<_ZonesTabContent>
   }
 }
 
+/// Záložka Nastavení – šablony checklistů (stejný vzor hlavičky jako Služby / Oblasti: nadpis + [FilledButton]).
+///
+/// PROČ: Bez [Scaffold]/FAB – obsah se vkládá do [TabBarView]; tlačítko „Nová šablona“ je v hlavičce jako u katalogu služeb.
+class _ChecklistTemplatesSettingsTab extends ConsumerWidget {
+  const _ChecklistTemplatesSettingsTab();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return const Padding(
+      padding: EdgeInsets.fromLTRB(24, 0, 24, 24),
+      child: ChecklistTemplatesTab(showHeaderAndAddButton: true),
+    );
+  }
+}
+
 /// Hero-style karta v sekci Můj profil (Jazyk / Měna) – pastelové pozadí, ikona, název, dropdown uvnitř.
 class _SettingsProfileCard extends StatelessWidget {
   const _SettingsProfileCard({
@@ -520,9 +1176,9 @@ class _SettingsProfileCard extends StatelessWidget {
           Text(
             title,
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: Colors.grey[900],
-                ),
+              fontWeight: FontWeight.w600,
+              color: Colors.grey[900],
+            ),
           ),
           const SizedBox(height: 12),
           child,
@@ -567,20 +1223,22 @@ class _ServiceListInModal extends ConsumerWidget {
           physics: const NeverScrollableScrollPhysics(),
           itemCount: services.length,
           separatorBuilder: (_, _) => const SizedBox(height: 12),
-          itemBuilder: (_, i) => _ServiceCardRow(
-            service: services[i],
-            onEdit: onEditService,
-          ),
+          itemBuilder: (_, i) =>
+              _ServiceCardRow(service: services[i], onEdit: onEditService),
         );
       },
       loading: () => const Center(
         child: Padding(
           padding: EdgeInsets.all(24),
-          child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2)),
+          child: SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
         ),
       ),
       error: (err, _) => Text(
-        'common.error_with_message'.tr(namedArgs: {'message': err.toString()}),
+        'common.generic_error_user_friendly'.tr(),
         style: TextStyle(color: Colors.red.shade700),
       ),
     );
@@ -597,7 +1255,8 @@ class _ServiceCardRow extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     // Ceny v DB jsou v EUR; zobrazujeme je v uživatelově preferované měně (kurz z currencies).
-    final preferredCurrency = ref.watch(authNotifierProvider).state.preferredCurrency ?? 'EUR';
+    final preferredCurrency =
+        ref.watch(authNotifierProvider).state.preferredCurrency ?? 'EUR';
     final currencies = ref.watch(currenciesProvider).valueOrNull ?? [];
     final effectiveCurrencies = currencies.isEmpty
         ? [const CurrencyRow(code: 'EUR', symbol: '€', rate: 1.0)]
@@ -626,7 +1285,11 @@ class _ServiceCardRow extends ConsumerWidget {
       ),
       child: Row(
         children: [
-          Icon(_serviceTypeIcon(service.serviceType), size: 24, color: Theme.of(context).colorScheme.primary),
+          Icon(
+            _serviceTypeIcon(service.serviceType),
+            size: 24,
+            color: Theme.of(context).colorScheme.primary,
+          ),
           const SizedBox(width: 12),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -636,14 +1299,22 @@ class _ServiceCardRow extends ConsumerWidget {
             ),
             child: Text(
               service.orderIndex.toString(),
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade700),
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey.shade700,
+              ),
             ),
           ),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               service.name,
-              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey[900], fontSize: 15),
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.grey[900],
+                fontSize: 15,
+              ),
               overflow: TextOverflow.ellipsis,
             ),
           ),
@@ -655,11 +1326,22 @@ class _ServiceCardRow extends ConsumerWidget {
             ),
             child: Text(
               typeKey.tr(),
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.blue.shade700),
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: Colors.blue.shade700,
+              ),
             ),
           ),
           const SizedBox(width: 8),
-          Text(priceStr, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.grey[800])),
+          Text(
+            priceStr,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+              color: Colors.grey[800],
+            ),
+          ),
           const SizedBox(width: 4),
           IconButton(
             icon: Icon(Icons.edit_outlined, size: 20, color: Colors.grey[700]),
@@ -667,7 +1349,11 @@ class _ServiceCardRow extends ConsumerWidget {
             onPressed: () => onEdit(service),
           ),
           IconButton(
-            icon: Icon(Icons.delete_outline, color: Colors.red.shade400, size: 20),
+            icon: Icon(
+              Icons.delete_outline,
+              color: Colors.red.shade400,
+              size: 20,
+            ),
             tooltip: 'settings.service_delete'.tr(),
             onPressed: () => _confirmDeleteService(context, ref, service),
           ),
@@ -696,14 +1382,21 @@ IconData _serviceTypeIcon(String type) {
 }
 
 /// Potvrzení a soft-delete služby; po úspěchu invaliduje tenantServicesProvider.
-Future<void> _confirmDeleteService(BuildContext context, WidgetRef ref, TenantServiceModel service) async {
+Future<void> _confirmDeleteService(
+  BuildContext context,
+  WidgetRef ref,
+  TenantServiceModel service,
+) async {
   final ok = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text('settings.service_delete'.tr()),
       content: Text('settings.service_delete_confirm'.tr()),
       actions: [
-        TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: Text('common.cancel'.tr())),
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(false),
+          child: Text('common.cancel'.tr()),
+        ),
         FilledButton(
           onPressed: () => Navigator.of(ctx).pop(true),
           style: FilledButton.styleFrom(backgroundColor: Colors.red),
@@ -713,19 +1406,24 @@ Future<void> _confirmDeleteService(BuildContext context, WidgetRef ref, TenantSe
     ),
   );
   if (ok != true || !context.mounted) return;
+  final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return;
   try {
-    await TenantServicesRepository.softDelete(service.id);
+    await TenantServicesRepository.softDelete(tenantId, service.id);
     ref.invalidate(tenantServicesProvider);
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('settings.service_deleted'.tr()), behavior: SnackBarBehavior.floating),
+        SnackBar(
+          content: Text('settings.service_deleted'.tr()),
+          behavior: SnackBarBehavior.floating,
+        ),
       );
     }
   } catch (e) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('settings.service_delete_error'.tr(namedArgs: {'message': e.toString()})),
+          content: Text('common.generic_error_user_friendly'.tr()),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
         ),
@@ -756,20 +1454,22 @@ class _ModuleListInModal extends ConsumerWidget {
           physics: const NeverScrollableScrollPhysics(),
           itemCount: modules.length,
           separatorBuilder: (_, _) => const SizedBox(height: 12),
-          itemBuilder: (_, i) => _ModuleCardRow(
-            module: modules[i],
-            onEdit: onEditModule,
-          ),
+          itemBuilder: (_, i) =>
+              _ModuleCardRow(module: modules[i], onEdit: onEditModule),
         );
       },
       loading: () => const Center(
         child: Padding(
           padding: EdgeInsets.all(24),
-          child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2)),
+          child: SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
         ),
       ),
       error: (err, _) => Text(
-        'common.error_with_message'.tr(namedArgs: {'message': err.toString()}),
+        'common.generic_error_user_friendly'.tr(),
         style: TextStyle(color: Colors.red.shade700),
       ),
     );
@@ -785,12 +1485,17 @@ class _ModuleCardRow extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final preferredCurrency = ref.watch(authNotifierProvider).state.preferredCurrency ?? 'CZK';
+    final preferredCurrency =
+        ref.watch(authNotifierProvider).state.preferredCurrency ?? 'CZK';
     final currencies = ref.watch(currenciesProvider).valueOrNull ?? [];
     final priceStr = module.price != null
         ? (currencies.isEmpty
-            ? '${module.price!.toStringAsFixed(2)} €'
-            : CurrencyService.formatPrice(module.price!.toDouble(), preferredCurrency, currencies))
+              ? '${module.price!.toStringAsFixed(2)} €'
+              : CurrencyService.formatPrice(
+                  module.price!.toDouble(),
+                  preferredCurrency,
+                  currencies,
+                ))
         : 'super_admin.module_price_na'.tr();
     final badgeColor = _pricingTypeBadgeColor(module.pricingType);
 
@@ -809,7 +1514,11 @@ class _ModuleCardRow extends ConsumerWidget {
       ),
       child: Row(
         children: [
-          Icon(ModuleIconMapper.getIcon(module.key), size: 24, color: Theme.of(context).colorScheme.primary),
+          Icon(
+            ModuleIconMapper.getIcon(module.key),
+            size: 24,
+            color: Theme.of(context).colorScheme.primary,
+          ),
           const SizedBox(width: 12),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -819,14 +1528,22 @@ class _ModuleCardRow extends ConsumerWidget {
             ),
             child: Text(
               '${module.orderIndex}',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade700),
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey.shade700,
+              ),
             ),
           ),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               module.name,
-              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey[900], fontSize: 15),
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.grey[900],
+                fontSize: 15,
+              ),
               overflow: TextOverflow.ellipsis,
             ),
           ),
@@ -838,11 +1555,22 @@ class _ModuleCardRow extends ConsumerWidget {
             ),
             child: Text(
               getPricingTypeLabelKey(module.pricingType).tr(),
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: badgeColor),
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: badgeColor,
+              ),
             ),
           ),
           const SizedBox(width: 8),
-          Text(priceStr, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.grey[800])),
+          Text(
+            priceStr,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+              color: Colors.grey[800],
+            ),
+          ),
           const SizedBox(width: 4),
           IconButton(
             icon: Icon(Icons.edit_outlined, size: 20, color: Colors.grey[700]),
@@ -850,7 +1578,11 @@ class _ModuleCardRow extends ConsumerWidget {
             onPressed: () => onEdit(module),
           ),
           IconButton(
-            icon: Icon(Icons.delete_outline, color: Colors.red.shade400, size: 20),
+            icon: Icon(
+              Icons.delete_outline,
+              color: Colors.red.shade400,
+              size: 20,
+            ),
             tooltip: 'settings.module_delete'.tr(),
             onPressed: () => _confirmDeleteModule(context, ref, module),
           ),
@@ -861,14 +1593,21 @@ class _ModuleCardRow extends ConsumerWidget {
 }
 
 /// Společná logika potvrzení a smazání modulu (používá _ModuleListRow i _ModuleCardRow).
-Future<void> _confirmDeleteModule(BuildContext context, WidgetRef ref, ModuleModel module) async {
+Future<void> _confirmDeleteModule(
+  BuildContext context,
+  WidgetRef ref,
+  ModuleModel module,
+) async {
   final ok = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text('settings.module_delete'.tr()),
       content: Text('settings.module_delete_confirm'.tr()),
       actions: [
-        TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: Text('common.cancel'.tr())),
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(false),
+          child: Text('common.cancel'.tr()),
+        ),
         FilledButton(
           onPressed: () => Navigator.of(ctx).pop(true),
           style: FilledButton.styleFrom(backgroundColor: Colors.red),
@@ -883,14 +1622,17 @@ Future<void> _confirmDeleteModule(BuildContext context, WidgetRef ref, ModuleMod
     ref.invalidate(allModulesProvider);
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('settings.module_deleted'.tr()), behavior: SnackBarBehavior.floating),
+        SnackBar(
+          content: Text('settings.module_deleted'.tr()),
+          behavior: SnackBarBehavior.floating,
+        ),
       );
     }
   } catch (e) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('settings.module_delete_error'.tr(namedArgs: {'message': e.toString()})),
+          content: Text('common.generic_error_user_friendly'.tr()),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
         ),
@@ -906,16 +1648,16 @@ class _SettingsCard extends StatelessWidget {
   final Widget child;
 
   static BoxDecoration get _decoration => BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.15),
-            blurRadius: 24,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      );
+    color: Colors.white,
+    borderRadius: BorderRadius.circular(24),
+    boxShadow: [
+      BoxShadow(
+        color: Colors.black.withValues(alpha: 0.15),
+        blurRadius: 24,
+        offset: const Offset(0, 8),
+      ),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -950,71 +1692,67 @@ class _ExchangeRatesCard extends ConsumerWidget {
 
     return _SettingsCard(
       child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'settings.exchange_rates'.tr(),
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: Colors.grey[900],
-                    fontWeight: FontWeight.w600,
-                  ),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'settings.exchange_rates'.tr(),
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              color: Colors.grey[900],
+              fontWeight: FontWeight.w600,
             ),
-            const SizedBox(height: 4),
-            Text(
-              'settings.exchange_rates_hint'.tr(),
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.grey.shade600,
-                  ),
-            ),
-            const SizedBox(height: 12),
-            currenciesAsync.when(
-              data: (currencies) {
-                if (currencies.isEmpty) {
-                  return Text(
-                    'common.loading'.tr(),
-                    style: TextStyle(color: Colors.grey.shade600),
-                  );
-                }
-                return Column(
-                  children: [
-                    ...currencies.map(
-                      (c) => _CurrencyListTile(
-                        currency: c,
-                        onEditRate: c.code == 'EUR'
-                            ? null
-                            : () => _showEditRateDialog(
-                                  context,
-                                  ref,
-                                  c,
-                                ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: () => _showAddCurrencyDialog(context, ref),
-                      icon: const Icon(Icons.add, size: 20),
-                      label: Text('settings.add_currency'.tr()),
-                    ),
-                  ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'settings.exchange_rates_hint'.tr(),
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: Colors.grey.shade600),
+          ),
+          const SizedBox(height: 12),
+          currenciesAsync.when(
+            data: (currencies) {
+              if (currencies.isEmpty) {
+                return Text(
+                  'common.loading'.tr(),
+                  style: TextStyle(color: Colors.grey.shade600),
                 );
-              },
-              loading: () => const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(16),
-                  child: SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+              }
+              return Column(
+                children: [
+                  ...currencies.map(
+                    (c) => _CurrencyListTile(
+                      currency: c,
+                      onEditRate: c.code == 'EUR'
+                          ? null
+                          : () => _showEditRateDialog(context, ref, c),
+                    ),
                   ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: () => _showAddCurrencyDialog(context, ref),
+                    icon: const Icon(Icons.add, size: 20),
+                    label: Text('settings.add_currency'.tr()),
+                  ),
+                ],
+              );
+            },
+            loading: () => const Center(
+              child: Padding(
+                padding: EdgeInsets.all(16),
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
                 ),
               ),
-              error: (err, _) => Text(
-                'common.error_with_message'.tr(namedArgs: {'message': err.toString()}),
-                style: TextStyle(color: Colors.red.shade700),
-              ),
             ),
-          ],
-        ),
+            error: (err, _) => Text(
+              'common.generic_error_user_friendly'.tr(),
+              style: TextStyle(color: Colors.red.shade700),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1023,9 +1761,7 @@ class _ExchangeRatesCard extends ConsumerWidget {
     WidgetRef ref,
     CurrencyRow currency,
   ) async {
-    final controller = TextEditingController(
-      text: currency.rate.toString(),
-    );
+    final controller = TextEditingController(text: currency.rate.toString());
     final saved = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1055,6 +1791,7 @@ class _ExchangeRatesCard extends ConsumerWidget {
     if (rate == null || rate <= 0) return;
     try {
       await CurrencyService.updateRate(currency.code, rate);
+      CurrencyService.invalidateCurrenciesCache();
       ref.invalidate(currenciesProvider);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1068,7 +1805,7 @@ class _ExchangeRatesCard extends ConsumerWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('settings.rate_save_error'.tr(namedArgs: {'message': e.toString()})),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -1077,7 +1814,10 @@ class _ExchangeRatesCard extends ConsumerWidget {
     }
   }
 
-  static Future<void> _showAddCurrencyDialog(BuildContext context, WidgetRef ref) async {
+  static Future<void> _showAddCurrencyDialog(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
     final codeController = TextEditingController();
     final symbolController = TextEditingController();
     final rateController = TextEditingController(text: '1');
@@ -1117,7 +1857,9 @@ class _ExchangeRatesCard extends ConsumerWidget {
                   hintText: '25',
                   border: const OutlineInputBorder(),
                 ),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
               ),
               const SizedBox(height: 12),
               TextField(
@@ -1148,12 +1890,17 @@ class _ExchangeRatesCard extends ConsumerWidget {
     final rate = double.tryParse(rateController.text.trim());
     if (code.isEmpty || symbol.isEmpty || rate == null || rate <= 0) return;
     try {
-      await CurrencyService.insertCurrency(CurrencyRow(
-        code: code,
-        symbol: symbol,
-        rate: rate,
-        name: nameController.text.trim().isEmpty ? null : nameController.text.trim(),
-      ));
+      await CurrencyService.insertCurrency(
+        CurrencyRow(
+          code: code,
+          symbol: symbol,
+          rate: rate,
+          name: nameController.text.trim().isEmpty
+              ? null
+              : nameController.text.trim(),
+        ),
+      );
+      CurrencyService.invalidateCurrenciesCache();
       ref.invalidate(currenciesProvider);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1167,7 +1914,7 @@ class _ExchangeRatesCard extends ConsumerWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('settings.rate_save_error'.tr(namedArgs: {'message': e.toString()})),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -1178,10 +1925,7 @@ class _ExchangeRatesCard extends ConsumerWidget {
 }
 
 class _CurrencyListTile extends StatelessWidget {
-  const _CurrencyListTile({
-    required this.currency,
-    this.onEditRate,
-  });
+  const _CurrencyListTile({required this.currency, this.onEditRate});
 
   final CurrencyRow currency;
   final VoidCallback? onEditRate;

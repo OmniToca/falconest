@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
 
 /// Model detailu apartmánu pro read-only zobrazení majiteli.
@@ -17,6 +18,8 @@ class OwnerApartmentDetail {
     this.checkOutTime,
     this.standardCleaningDuration,
     this.ownerNotes,
+    this.reviewLink,
+    this.calendarFeedUrl,
   });
 
   final String id;
@@ -28,6 +31,12 @@ class OwnerApartmentDetail {
   final String? checkOutTime;
   final int? standardCleaningDuration;
   final String? ownerNotes;
+
+  /// Odkaz na recenze (Booking/Airbnb) – z [apartments.review_link].
+  final String? reviewLink;
+
+  /// Veřejný iCal odkaz z RPC [get_owner_calendar_feed_url_for_apartment], pokud agentura token založila.
+  final String? calendarFeedUrl;
 }
 
 /// Provider načítající detail apartmánu pro Klientský portál.
@@ -48,7 +57,7 @@ final ownerApartmentDetailProvider =
         .from('apartments')
         .select(
           'id, name, address, keybox, status, check_in_time, check_out_time, '
-          'standard_cleaning_duration, owner_notes',
+          'standard_cleaning_duration, owner_notes, review_link',
         )
         .eq('id', apartmentId)
         .isFilter('deleted_at', null)
@@ -56,6 +65,27 @@ final ownerApartmentDetailProvider =
 
     if (res == null) return null;
     final map = Map<String, dynamic>.from(res as Map);
+
+    final reviewLink = () {
+      final v = (map['review_link']?.toString() ?? '').trim();
+      return v.isEmpty ? null : v;
+    }();
+
+    // PROČ: Surový token v DB není; URL se čte přes SECURITY DEFINER RPC (pouze vlastník bytu).
+    String? calendarFeedUrl;
+    try {
+      final raw = await SupabaseService.client.rpc(
+        'get_owner_calendar_feed_url_for_apartment',
+        params: {'p_apartment_id': apartmentId},
+      );
+      if (raw != null) {
+        final s = raw.toString().trim();
+        if (s.isNotEmpty) calendarFeedUrl = s;
+      }
+    } catch (e, st) {
+      AppLogger.error('ownerApartmentDetailProvider: RPC get_owner_calendar_feed_url selhalo', e, st);
+      calendarFeedUrl = null;
+    }
 
     return OwnerApartmentDetail(
       id: (map['id']?.toString() ?? '').trim(),
@@ -87,8 +117,11 @@ final ownerApartmentDetailProvider =
         final v = (map['owner_notes']?.toString() ?? '').trim();
         return v.isEmpty ? null : v;
       }(),
+      reviewLink: reviewLink,
+      calendarFeedUrl: calendarFeedUrl,
     );
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('ownerApartmentDetailProvider: načtení detailu bytu selhalo', e, st);
     return null;
   }
 });

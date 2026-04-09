@@ -1,8 +1,12 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:falconest/core/theme/app_palette_defaults.dart';
+import 'package:falconest/core/theme/app_spacing.dart';
+import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/providers/notification_provider.dart';
 import 'package:falconest/core/providers/ui_mode_provider.dart';
@@ -14,14 +18,21 @@ import 'package:falconest/features/admin/admin_reservations_screen.dart';
 import 'package:falconest/features/admin/admin_tasks_screen.dart';
 import 'package:falconest/features/admin/admin_team_screen.dart';
 import 'package:falconest/features/admin/finance_dashboard_screen.dart';
+import 'package:falconest/features/admin/screens/admin_map_dispatch_screen.dart';
 import 'package:falconest/features/admin/screens/admin_clients_screen.dart';
 import 'package:falconest/features/admin/screens/reports_screen.dart';
+import 'package:falconest/features/admin/admin_automations_screen.dart';
+import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/communication/screens/communication_templates_screen.dart';
 import 'package:falconest/features/calendar/screens/planning_calendar_screen.dart';
 import 'package:falconest/features/admin/models/module_model.dart';
+import 'package:falconest/features/admin/providers/admin_cross_nav_provider.dart';
 import 'package:falconest/features/admin/providers/current_tenant_name_provider.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
 import 'package:falconest/features/admin/utils/module_icon_mapper.dart';
+import 'package:falconest/features/admin/widgets/client_detail_dialog.dart';
+import 'package:falconest/features/admin/widgets/omnibox_dialog.dart';
+import 'package:falconest/features/admin/providers/omnibox_search_provider.dart';
 import 'package:falconest/features/settings/settings_screen.dart';
 
 /// Práh šířky v pixelech – pod ním Drawer, nad ním permanentní Sidebar.
@@ -47,7 +58,7 @@ Future<void> _showWorkReportDialogThenStop(BuildContext context, WidgetRef ref) 
               'admin.work_report_dialog_prompt'.tr(),
               style: Theme.of(ctx).textTheme.bodyMedium,
             ),
-            const SizedBox(height: 12),
+            SizedBox(height: AppSpacing.sm),
             TextField(
               controller: controller,
               maxLines: 4,
@@ -84,10 +95,17 @@ const int adminTabIndexApartments = 2;
 const int adminTabIndexReservations = 3;
 const int adminTabIndexTasks = 4;
 const int adminTabIndexPlanningCalendar = 5;
-const int adminTabIndexFinance = 6;
-const int adminTabIndexReports = 7;
-const int adminTabIndexClients = 8;
-const int adminTabIndexCommunication = 9;
+const int adminTabIndexMap = 6;
+const int adminTabIndexFinance = 7;
+const int adminTabIndexReports = 8;
+const int adminTabIndexClients = 9;
+const int adminTabIndexCommunication = 10;
+const int adminTabIndexAutomations = 11;
+
+/// Intent pro globální zkratku Omniboxu (CMD/CTRL + K).
+class _OpenAdminOmniboxIntent extends Intent {
+  const _OpenAdminOmniboxIntent();
+}
 
 /// Umožňuje přepnutí záložky z vnořených obrazovek (např. z dashboardu po kliknutí na akci).
 class AdminTabScope extends InheritedWidget {
@@ -135,14 +153,65 @@ class _AdminLayoutState extends State<AdminLayout> {
     const AdminReservationsScreen(),
     const AdminTasksScreen(),
     const PlanningCalendarScreen(),
+    const AdminMapDispatchScreen(),
     const FinanceDashboardScreen(),
     const ReportsScreen(),
     const AdminClientsScreen(),
     const CommunicationTemplatesScreen(),
+    const AdminAutomationsScreen(),
   ];
 
   void _switchToTab(int index) {
     setState(() => _selectedIndex = index.clamp(0, _screens.length - 1));
+  }
+
+  /// Otevře Omnibox a po výběru výsledku přeskočí do správné sekce + detailu.
+  ///
+  /// PROČ: Admin navigace je `IndexedStack` bez route per tab. Proto nejprve přepínáme
+  /// tab a následně otevíráme existující detail dialog / editor nad danou sekcí.
+  Future<void> _openOmnibox(BuildContext context, WidgetRef ref) async {
+    final role = ref.read(authNotifierProvider).state.role;
+    final canUseOmnibox = role == 'admin' || role == 'manager';
+    if (!canUseOmnibox) return;
+
+    ref.read(omniboxSearchQueryProvider.notifier).state = '';
+    final selected = await showDialog<OmniboxSearchResult>(
+      context: context,
+      barrierDismissible: true,
+      builder: (_) => const OmniboxDialog(),
+    );
+    if (!context.mounted || selected == null) return;
+
+    switch (selected.type) {
+      case OmniboxEntityType.client:
+        final client = selected.client;
+        if (client == null) return;
+        _switchToTab(adminTabIndexClients);
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => ClientDetailDialog(client: client),
+        );
+        break;
+      case OmniboxEntityType.apartment:
+        final apartment = selected.apartment;
+        if (apartment == null) return;
+        _switchToTab(adminTabIndexApartments);
+        showApartmentEditDialog(context, ref, apartment);
+        break;
+      case OmniboxEntityType.task:
+        _switchToTab(adminTabIndexTasks);
+        final task = await ref.read(taskByIdProvider(selected.id).future);
+        if (task == null) {
+          if (!context.mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('admin.omnibox_task_not_found'.tr())),
+          );
+          return;
+        }
+        if (!context.mounted) return;
+        AdminTasksScreen.showEditTaskDialog(context, ref, task);
+        break;
+    }
   }
 
   @override
@@ -151,6 +220,18 @@ class _AdminLayoutState extends State<AdminLayout> {
       switchToTab: _switchToTab,
       child: Consumer(
         builder: (context, ref, _) {
+          // PROČ: Křížová navigace z dialogů nastaví [adminTabJumpRequestProvider]; přepínáme záložku
+          // až po frame, aby se [IndexedStack] bezpečně přestavila po zavření overlay dialogu.
+          ref.listen<int?>(adminTabJumpRequestProvider, (previous, next) {
+            if (next != null) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (context.mounted) {
+                  _switchToTab(next);
+                  ref.read(adminTabJumpRequestProvider.notifier).state = null;
+                }
+              });
+            }
+          });
           final auth = ref.watch(authNotifierProvider);
           final isImpersonating = auth.state.isImpersonating;
           // Super Admin a Account Manager smí na /admin jen s vybranou agenturou (převtělení) – jinak na velín.
@@ -180,42 +261,66 @@ class _AdminLayoutState extends State<AdminLayout> {
               }
             },
           );
-          return LayoutBuilder(
-            builder: (context, constraints) {
-              final isWide = constraints.maxWidth >= _breakpointWidth;
-              final body = isWide
-                  ? _WideLayout(
-                      isSidebarOpen: _isSidebarOpen,
-                      onSidebarToggle: () => setState(() => _isSidebarOpen = !_isSidebarOpen),
-                      selectedIndex: _selectedIndex,
-                      onIndexChanged: (i) => setState(() => _selectedIndex = i),
-                      body: IndexedStack(
-                        index: _selectedIndex.clamp(0, _screens.length - 1),
-                        children: _screens,
-                      ),
-                    )
-                  : _NarrowLayout(
-                      selectedIndex: _selectedIndex,
-                      onIndexChanged: (i) => setState(() => _selectedIndex = i),
-                      body: IndexedStack(
-                        index: _selectedIndex.clamp(0, _screens.length - 1),
-                        children: _screens,
-                      ),
-                    );
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (isImpersonating)
-                    _ImpersonationBanner(
-                      tenantName: tenantName,
-                      onStop: () => _showWorkReportDialogThenStop(context, ref),
-                    ),
-                  if (announcement != null && announcement.isNotEmpty)
-                    _SystemAnnouncementBanner(message: announcement),
-                  Expanded(child: body),
-                ],
-              );
+          return Shortcuts(
+            shortcuts: const <ShortcutActivator, Intent>{
+              SingleActivator(LogicalKeyboardKey.keyK, meta: true): _OpenAdminOmniboxIntent(),
+              SingleActivator(LogicalKeyboardKey.keyK, control: true): _OpenAdminOmniboxIntent(),
             },
+            child: Actions(
+              actions: <Type, Action<Intent>>{
+                _OpenAdminOmniboxIntent: CallbackAction<_OpenAdminOmniboxIntent>(
+                  onInvoke: (intent) {
+                    _openOmnibox(context, ref);
+                    return null;
+                  },
+                ),
+              },
+              child: Focus(
+                autofocus: true,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isWide = constraints.maxWidth >= _breakpointWidth;
+                    final body = isWide
+                        ? _WideLayout(
+                            isSidebarOpen: _isSidebarOpen,
+                            onSidebarToggle: () => setState(() => _isSidebarOpen = !_isSidebarOpen),
+                            selectedIndex: _selectedIndex,
+                            onIndexChanged: (i) => setState(() => _selectedIndex = i),
+                            body: IndexedStack(
+                              index: _selectedIndex.clamp(0, _screens.length - 1),
+                              children: _screens,
+                            ),
+                          )
+                        : _NarrowLayout(
+                            selectedIndex: _selectedIndex,
+                            onIndexChanged: (i) => setState(() => _selectedIndex = i),
+                            body: IndexedStack(
+                              index: _selectedIndex.clamp(0, _screens.length - 1),
+                              children: _screens,
+                            ),
+                          );
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (isImpersonating)
+                          _ImpersonationBanner(
+                            tenantName: tenantName,
+                            onStop: () => _showWorkReportDialogThenStop(context, ref),
+                          ),
+                        if (announcement != null && announcement.isNotEmpty)
+                          _SystemAnnouncementBanner(message: announcement),
+                        Expanded(
+                          child: SafeArea(
+                            top: false,
+                            child: body,
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ),
           );
         },
       ),
@@ -239,22 +344,25 @@ class _ImpersonationBanner extends StatelessWidget {
     final template = 'admin.impersonation_agency'.tr();
     const placeholder = '{name}';
     final idx = template.indexOf(placeholder);
+    /// Barva výstržného pruhu z [CustomColors.warning] – konzistentní s DS, text [onWarning].
+    final cc = context.customColors;
+    final bannerFg = cc.onWarning;
+    final bodyStyle = context.textTheme.titleSmall?.copyWith(
+      color: bannerFg,
+      fontWeight: FontWeight.w600,
+    );
     Widget textWidget;
     if (idx >= 0) {
       final before = template.substring(0, idx);
       final after = template.substring(idx + placeholder.length);
       textWidget = Text.rich(
         TextSpan(
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w600,
-            fontSize: 14,
-          ),
+          style: bodyStyle,
           children: [
             TextSpan(text: before),
             TextSpan(
               text: tenantName.isNotEmpty ? tenantName : '…',
-              style: const TextStyle(fontWeight: FontWeight.bold),
+              style: bodyStyle?.copyWith(fontWeight: FontWeight.bold),
             ),
             TextSpan(text: after),
           ],
@@ -265,29 +373,25 @@ class _ImpersonationBanner extends StatelessWidget {
         tenantName.isNotEmpty
             ? template.replaceAll(placeholder, tenantName)
             : template,
-        style: const TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.w600,
-          fontSize: 14,
-        ),
+        style: bodyStyle,
       );
     }
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      color: Colors.deepOrange,
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+      color: cc.warning,
       child: SafeArea(
         bottom: false,
         child: Row(
           children: [
             Expanded(child: textWidget),
-            const SizedBox(width: 16),
+            SizedBox(width: AppSpacing.md),
             TextButton(
               onPressed: onStop,
               style: TextButton.styleFrom(
-                foregroundColor: Colors.white,
-                side: const BorderSide(color: Colors.white),
+                foregroundColor: bannerFg,
+                side: BorderSide(color: bannerFg),
               ),
               child: Text('admin.impersonation_stop'.tr()),
             ),
@@ -314,10 +418,10 @@ class _NotificationsBell extends ConsumerWidget {
     Widget icon = const Icon(Icons.notifications_none_outlined);
     if (count > 0) {
       icon = Badge(
-        backgroundColor: Colors.red.shade700,
+        backgroundColor: context.colors.error,
         label: Text(
           count > 99 ? '99+' : count.toString(),
-          style: const TextStyle(fontSize: 10, color: Colors.white),
+          style: context.textTheme.labelSmall?.copyWith(color: context.colors.onError),
         ),
         child: icon,
       );
@@ -330,6 +434,7 @@ class _NotificationsBell extends ConsumerWidget {
           context: context,
           barrierDismissible: true,
           barrierLabel: 'Notifications',
+          // Průhledná bariéra: plný průhled (Colors.transparent není v ColorScheme).
           barrierColor: Colors.transparent,
           transitionDuration: const Duration(milliseconds: 200),
           pageBuilder: (context, animation, secondaryAnimation) {
@@ -385,13 +490,14 @@ class _NotificationsDropdownContent extends ConsumerWidget {
     final list = unreadAsync.valueOrNull ?? [];
     final repository = ref.read(notificationRepositoryProvider);
     final profileId = ref.read(authNotifierProvider).state.profileId;
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+          padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.sm, AppSpacing.sm, AppSpacing.sm),
           child: Row(
             children: [
               Expanded(
@@ -399,14 +505,14 @@ class _NotificationsDropdownContent extends ConsumerWidget {
                   'admin.notifications_title'.tr(),
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.bold,
-                        color: Colors.grey.shade900,
+                        color: context.colors.onSurface,
                       ),
                 ),
               ),
               if (list.isNotEmpty && profileId != null)
                 TextButton(
                   onPressed: () async {
-                    await repository.markAllAsRead(profileId);
+                    await repository.markAllAsRead(profileId, tenantId);
                     if (context.mounted) onClose();
                   },
                   child: Text('admin.notifications_mark_all_read'.tr()),
@@ -427,45 +533,67 @@ class _NotificationsDropdownContent extends ConsumerWidget {
                       child: Center(
                         child: Text(
                           'admin.notifications_empty'.tr(),
-                          style: TextStyle(color: Colors.grey.shade600),
+                          style: TextStyle(color: context.colors.onSurfaceVariant),
                           textAlign: TextAlign.center,
                         ),
                       ),
                     )
                   : ListView.builder(
                       shrinkWrap: true,
-                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
                       itemCount: list.length,
                       itemBuilder: (context, index) {
                         final n = list[index];
                         final timeStr = n.createdAt != null
-                            ? DateFormat('d.M. HH:mm').format(n.createdAt!.toLocal())
-                            : '—';
+                            ? DateFormat('d.M. HH:mm', context.locale.languageCode)
+                                .format(n.createdAt!.toLocal())
+                            : 'admin.general.dash_placeholder'.tr();
 
                         IconData iconType = Icons.notifications_outlined;
                         Color iconColor = Theme.of(context).colorScheme.primary;
                         if (n.type == 'finance') {
                           iconType = Icons.account_balance_wallet_outlined;
-                          iconColor = Colors.green.shade700;
+                          iconColor = context.customColors.success;
                         } else if (n.type == 'finance_shortfall') {
                           iconType = Icons.warning_amber_rounded;
-                          iconColor = Colors.red.shade700;
+                          iconColor = context.colors.error;
                         } else if (n.type == 'system') {
                           iconType = Icons.info_outline;
-                        } else if (n.type == 'task') {
+                        } else if (n.type == 'daily_summary') {
+                          iconType = Icons.wb_sunny_outlined;
+                        } else if (n.type == 'task' ||
+                            n.type == 'new_task' ||
+                            n.type == 'template_reminder' ||
+                            n.type == 'upcoming_task') {
                           iconType = Icons.task_alt_outlined;
                         } else if (n.type == 'absence') {
                           iconType = Icons.event_busy;
-                          iconColor = Colors.orange.shade700;
+                          iconColor = context.customColors.warning;
                         }
 
                         return Material(
-                          color: n.isRead ? Colors.transparent : Colors.blue.shade50,
+                          color: n.isRead ? Colors.transparent : context.colors.primaryContainer.withValues(alpha: 0.5),
                           child: InkWell(
                             onTap: () async {
-                              await repository.markAsRead(n.id);
+                              await repository.markAsRead(n.id, tenantId);
                               if (context.mounted) {
-                                if (n.type == 'absence') {
+                                if (n.type == 'new_task' ||
+                                    n.type == 'template_reminder' ||
+                                    n.type == 'upcoming_task') {
+                                  final taskId =
+                                      n.metadata?['task_id']?.toString().trim();
+                                  if (taskId != null && taskId.isNotEmpty) {
+                                    context.go('/worker/task/$taskId');
+                                  }
+                                } else if (n.type == 'daily_summary') {
+                                  final taskId =
+                                      n.metadata?['task_id']?.toString().trim();
+                                  if (taskId != null && taskId.isNotEmpty) {
+                                    context.go('/worker/task/$taskId');
+                                  } else {
+                                    AdminTabScope.of(context)?.call(adminTabIndexTasks);
+                                  }
+                                } else if (n.type == 'absence') {
                                   AdminTabScope.of(context)?.call(adminTabIndexTeam);
                                 } else if (n.type == 'finance_shortfall') {
                                   AdminTabScope.of(context)?.call(adminTabIndexFinance);
@@ -474,12 +602,12 @@ class _NotificationsDropdownContent extends ConsumerWidget {
                               }
                             },
                             child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
                               child: Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Icon(iconType, color: iconColor, size: 24),
-                                  const SizedBox(width: 12),
+                                  SizedBox(width: AppSpacing.sm),
                                   Expanded(
                                     child: Builder(
                                       builder: (context) {
@@ -489,8 +617,8 @@ class _NotificationsDropdownContent extends ConsumerWidget {
                                         if (n.type == 'finance_shortfall') {
                                           displayTitle = n.title.tr();
                                           final parts = n.message.split('|');
-                                          final amount = parts.isNotEmpty ? parts[0].trim() : '—';
-                                          final reason = parts.length > 1 ? parts[1].trim() : '—';
+                                          final amount = parts.isNotEmpty ? parts[0].trim() : 'common.placeholder_dash'.tr();
+                                          final reason = parts.length > 1 ? parts[1].trim() : 'common.placeholder_dash'.tr();
                                           displayMessage = 'admin.notification_cash_shortfall_message'.tr(
                                             namedArgs: {'amount': amount, 'reason': reason},
                                           );
@@ -507,23 +635,21 @@ class _NotificationsDropdownContent extends ConsumerWidget {
                                               overflow: TextOverflow.ellipsis,
                                             ),
                                             if (displayMessage.isNotEmpty) ...[
-                                              const SizedBox(height: 4),
+                                              SizedBox(height: AppSpacing.xs),
                                               Text(
                                                 displayMessage,
-                                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                                      color: Colors.grey.shade600,
-                                                      fontSize: 12,
+                                                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                                                      color: context.colors.onSurfaceVariant,
                                                     ),
                                                 maxLines: 2,
                                                 overflow: TextOverflow.ellipsis,
                                               ),
                                             ],
-                                            const SizedBox(height: 4),
+                                            SizedBox(height: AppSpacing.xs),
                                             Text(
                                               timeStr,
-                                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                                    color: Colors.grey.shade500,
-                                                    fontSize: 11,
+                                              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                                    color: context.colors.outline,
                                                   ),
                                             ),
                                           ],
@@ -566,12 +692,12 @@ class _AdminTopBar extends ConsumerWidget {
     final roleLabel = _roleLabel(context, role);
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
+            color: context.colors.shadow.withValues(alpha: 0.08),
             blurRadius: 4,
             offset: const Offset(0, 2),
           ),
@@ -595,7 +721,7 @@ class _AdminTopBar extends ConsumerWidget {
               tooltip: 'admin.topbar_calendar'.tr(),
             ),
             _NotificationsBell(),
-            const SizedBox(width: 8),
+            SizedBox(width: AppSpacing.sm),
             PopupMenuButton<String>(
               offset: const Offset(0, 48),
               child: Padding(
@@ -608,8 +734,7 @@ class _AdminTopBar extends ConsumerWidget {
                       backgroundColor: Theme.of(context).colorScheme.primaryContainer,
                       child: Text(
                         initials,
-                        style: TextStyle(
-                          fontSize: 14,
+                        style: context.textTheme.labelLarge?.copyWith(
                           fontWeight: FontWeight.w600,
                           color: Theme.of(context).colorScheme.onPrimaryContainer,
                         ),
@@ -621,7 +746,7 @@ class _AdminTopBar extends ConsumerWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          displayName.isNotEmpty ? displayName : '—',
+                          displayName.isNotEmpty ? displayName : 'common.placeholder_dash'.tr(),
                           style: Theme.of(context).textTheme.titleSmall?.copyWith(
                                 fontWeight: FontWeight.w600,
                               ),
@@ -629,13 +754,13 @@ class _AdminTopBar extends ConsumerWidget {
                         Text(
                           roleLabel,
                           style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: Colors.grey.shade600,
+                                color: context.colors.onSurfaceVariant,
                               ),
                         ),
                       ],
                     ),
-                    const SizedBox(width: 4),
-                    Icon(Icons.arrow_drop_down, color: Colors.grey.shade600),
+                    SizedBox(width: AppSpacing.xs),
+                    Icon(Icons.arrow_drop_down, color: context.colors.onSurfaceVariant),
                   ],
                 ),
               ),
@@ -644,7 +769,7 @@ class _AdminTopBar extends ConsumerWidget {
                   value: 'switch_mobile',
                   child: Row(
                     children: [
-                      Icon(Icons.smartphone, size: 20, color: Colors.grey.shade700),
+                      Icon(Icons.smartphone, size: 20, color: context.colors.onSurfaceVariant),
                       const SizedBox(width: 12),
                       Text('common.switch_to_mobile'.tr()),
                     ],
@@ -654,7 +779,7 @@ class _AdminTopBar extends ConsumerWidget {
                   value: 'settings',
                   child: Row(
                     children: [
-                      Icon(Icons.settings, size: 20, color: Colors.grey.shade700),
+                      Icon(Icons.settings, size: 20, color: context.colors.onSurfaceVariant),
                       const SizedBox(width: 12),
                       Text('settings.menu_settings'.tr()),
                     ],
@@ -668,18 +793,18 @@ class _AdminTopBar extends ConsumerWidget {
                         isImpersonating ? Icons.arrow_back : Icons.logout,
                         size: 20,
                         color: isImpersonating
-                            ? Colors.orange.shade700
-                            : Colors.red.shade700,
+                            ? context.customColors.warning
+                            : context.colors.error,
                       ),
-                      const SizedBox(width: 12),
+                      SizedBox(width: AppSpacing.sm),
                       Text(
                         isImpersonating
                             ? 'admin.back_to_command_center'.tr()
                             : 'admin.menu_logout'.tr(),
                         style: TextStyle(
                           color: isImpersonating
-                              ? Colors.orange.shade700
-                              : Colors.red.shade700,
+                              ? context.customColors.warning
+                              : context.colors.error,
                           fontWeight: FontWeight.w500,
                         ),
                       ),
@@ -739,25 +864,28 @@ class _SystemAnnouncementBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = 'admin.system_announcement_label'.tr(namedArgs: {'message': message});
+    final cs = context.colors;
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      color: Colors.blue.shade700,
-      child: Row(
-        children: [
-          Icon(Icons.campaign, color: Colors.white, size: 24),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              text,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w500,
-                fontSize: 14,
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+      color: cs.primary,
+      child: SafeArea(
+        bottom: false,
+        child: Row(
+          children: [
+            Icon(Icons.campaign, color: cs.onPrimary, size: 24),
+            SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: Text(
+                text,
+                style: context.textTheme.titleSmall?.copyWith(
+                  color: cs.onPrimary,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -853,8 +981,9 @@ class _NarrowLayout extends ConsumerWidget {
           ),
         ],
       ),
+      // Pozadí draweru = [AppPaletteDefaults.sidebarBackground] (ne globální surface – karty zůstávají bílé).
       drawer: Drawer(
-        backgroundColor: Theme.of(context).colorScheme.primary,
+        backgroundColor: AppPaletteDefaults.sidebarBackground,
         child: _AdminSidebar(
           isDrawer: true,
           selectedIndex: selectedIndex,
@@ -900,52 +1029,74 @@ class _AdminSidebar extends ConsumerWidget {
 
     final tenantName = ref.watch(currentTenantNameProvider).valueOrNull ?? '';
     final headerTitle = tenantName.trim().isNotEmpty ? tenantName : 'admin.title'.tr();
-    final primaryColor = Theme.of(context).colorScheme.primary;
+    /// PROČ: Tmavé brandové pozadí [AppPaletteDefaults.sidebarBackground] vyžaduje světlý text – aktivní [Colors.white],
+    /// neaktivní [Colors.white70]; nedotýkáme se globálního color schématu aplikace.
+    const sidebarFg = Colors.white;
+    const sidebarMuted = Colors.white70;
+    final sidebarDivider = Colors.white.withValues(alpha: 0.22);
 
     return SafeArea(
       child: Container(
         width: 240,
-        color: primaryColor,
+        color: AppPaletteDefaults.sidebarBackground,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Hlavička s brandem agentury – název tenantů, pod ním "Powered by FalcoNest"
+            // Hlavička: ikona v „dlaždici“ + název agentury – vizuální kotva brandu (Linear/Vercel styl).
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
-              child: Column(
+              padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.lg, AppSpacing.md, AppSpacing.sm),
+              child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    headerTitle,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.28)),
+                    ),
+                    child: const Icon(Icons.layers_rounded, color: Colors.white, size: 22),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'admin.sidebar_powered_by'.tr(),
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.white.withValues(alpha: 0.6),
+                  SizedBox(width: AppSpacing.sm),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          headerTitle,
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                color: sidebarFg,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -0.2,
+                              ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        SizedBox(height: AppSpacing.xs),
+                        Text(
+                          'admin.sidebar_powered_by'.tr(),
+                          style: context.textTheme.labelSmall?.copyWith(
+                            color: sidebarMuted,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
               ),
             ),
-            const Divider(color: Colors.white24, height: 32),
+            Divider(color: sidebarDivider, height: 32),
             if (modulesAsync.isLoading)
               Padding(
-                padding: const EdgeInsets.all(24),
+                padding: const EdgeInsets.all(AppSpacing.lg),
                 child: Center(
                   child: SizedBox(
                     width: 24,
                     height: 24,
-                    child: CircularProgressIndicator(
+                    child: const CircularProgressIndicator(
                       strokeWidth: 2,
-                      color: Colors.white70,
+                      color: Colors.white,
                     ),
                   ),
                 ),
@@ -968,12 +1119,14 @@ class _AdminSidebar extends ConsumerWidget {
                       isGhost: isGhost,
                       selectedIndex: selectedIndex,
                       isDrawer: isDrawer,
+                      sidebarFg: sidebarFg,
+                      sidebarMuted: sidebarMuted,
                       onTapActive: () {
                         if (isDrawer && Scaffold.maybeOf(context)?.isDrawerOpen == true) {
                           Navigator.of(context).pop();
                         }
                         if (tabIndex != null) {
-                          onIndexChanged(tabIndex.clamp(0, adminTabIndexCommunication));
+                          onIndexChanged(tabIndex.clamp(0, adminTabIndexAutomations));
                         } else {
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
@@ -984,10 +1137,10 @@ class _AdminSidebar extends ConsumerWidget {
                         }
                       },
                       onTapLocked: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
+                            ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
                             content: Text('admin.module_locked_toast'.tr(namedArgs: {'name': label})),
-                            backgroundColor: Colors.orange.shade800,
+                            backgroundColor: context.customColors.warning,
                             behavior: SnackBarBehavior.floating,
                           ),
                         );
@@ -997,12 +1150,12 @@ class _AdminSidebar extends ConsumerWidget {
                 ),
               ),
             // Přepínač na mobilní zobrazení – dostupný v Sidebar i Drawer (úzké obrazovky).
-            const Divider(color: Colors.white24, height: 1),
+            Divider(color: sidebarDivider, height: 1),
             ListTile(
-              leading: Icon(Icons.smartphone, size: 20, color: Colors.white70),
+              leading: const Icon(Icons.smartphone, size: 20, color: Colors.white70),
               title: Text(
                 'common.switch_to_mobile'.tr(),
-                style: TextStyle(fontSize: 13, color: Colors.white70),
+                style: context.textTheme.bodyMedium?.copyWith(color: sidebarFg),
               ),
               onTap: () async {
                 if (isDrawer && context.mounted && Scaffold.maybeOf(context)?.isDrawerOpen == true) {
@@ -1024,7 +1177,8 @@ class _AdminSidebar extends ConsumerWidget {
 }
 
 /// Jedna položka menu modulu – aktivní (klikatelná), „ghost“ (jen pro admina), nebo zamčená (šedá + 🔒).
-/// Tmavý sidebar: světlé texty/ikony (white70/white), aktivní položka má bílý text + jemné pozadí.
+/// PROČ: Na tmavě modrém sidebaru je aktivní řádek jemně zvýrazněný bílou průhledností; text/ikony plně bílé
+/// u výběru a [Colors.white70] u ostatních klikatelných položek – čitelnost bez změny globálního tématu.
 class _ModuleNavItem extends StatelessWidget {
   const _ModuleNavItem({
     required this.module,
@@ -1033,6 +1187,8 @@ class _ModuleNavItem extends StatelessWidget {
     required this.isGhost,
     required this.selectedIndex,
     required this.isDrawer,
+    required this.sidebarFg,
+    required this.sidebarMuted,
     required this.onTapActive,
     required this.onTapLocked,
   });
@@ -1043,6 +1199,8 @@ class _ModuleNavItem extends StatelessWidget {
   final bool isGhost;
   final int selectedIndex;
   final bool isDrawer;
+  final Color sidebarFg;
+  final Color sidebarMuted;
   final VoidCallback onTapActive;
   final VoidCallback onTapLocked;
 
@@ -1051,11 +1209,10 @@ class _ModuleNavItem extends StatelessWidget {
     final tabIndex = ModuleIconMapper.getTabIndex(module.key);
     final selected = isActive && tabIndex != null && tabIndex == selectedIndex;
     final icon = ModuleIconMapper.getIcon(module.key);
-    // Tmavý sidebar – světlé barvy pro čitelnost
-    const normalColor = Colors.white70;
-    const selectedColor = Colors.white;
-    final ghostColor = Colors.orange.shade300;
-    const lockedColor = Colors.white38;
+    final normalColor = sidebarMuted;
+    final selectedColor = sidebarFg;
+    final ghostColor = context.customColors.warning;
+    final lockedColor = Colors.white.withValues(alpha: 0.38);
 
     if (isActive) {
       final textColor = isGhost ? ghostColor : (selected ? selectedColor : normalColor);
@@ -1065,10 +1222,9 @@ class _ModuleNavItem extends StatelessWidget {
           Expanded(
             child: Text(
               label,
-              style: TextStyle(
-                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+              style: context.textTheme.titleSmall?.copyWith(
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                 color: textColor,
-                fontSize: 15,
               ),
               overflow: TextOverflow.ellipsis,
             ),
@@ -1081,6 +1237,8 @@ class _ModuleNavItem extends StatelessWidget {
         ],
       );
       final tile = ListTile(
+        dense: true,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
         leading: Icon(icon, color: iconColor, size: 22),
         title: titleWidget,
         onTap: onTapActive,
@@ -1091,13 +1249,13 @@ class _ModuleNavItem extends StatelessWidget {
               child: tile,
             )
           : tile;
-      // Aktivní položka: jemné pozadí + zaoblené rohy pro výraznou vizuální odezvu
       if (selected && !isGhost) {
+        // Aktivní řádek: jemné bílé „sklo“ na brandovém modrém pozadí sidebaru; text/ikony zůstávají plně bílé.
         return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 2),
           child: Container(
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.1),
+              color: Colors.white.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(8),
             ),
             child: wrapped,
@@ -1105,21 +1263,23 @@ class _ModuleNavItem extends StatelessWidget {
         );
       }
       return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 2),
         child: wrapped,
       );
     }
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 2),
       child: ListTile(
+        dense: true,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
         leading: Icon(icon, color: lockedColor, size: 22),
         title: Row(
           children: [
             Expanded(
               child: Text(
                 label,
-                style: const TextStyle(color: lockedColor, fontSize: 15),
+                style: context.textTheme.titleSmall?.copyWith(color: lockedColor),
               ),
             ),
             Icon(Icons.lock_outline, size: 16, color: lockedColor),

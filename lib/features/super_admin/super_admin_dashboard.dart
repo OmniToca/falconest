@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
@@ -23,7 +24,12 @@ import 'package:falconest/features/super_admin/screens/hq_team_screen.dart';
 import 'package:falconest/features/super_admin/services/onboarding_export_service.dart';
 import 'package:falconest/features/super_admin/tenant_detail_screen.dart';
 
-/// Stav vyhledávacího řetězce na nástěnce Super Admina (fulltext v názvech agentur).
+/// Stav vyhledávacího řetězce na nástěnce Super Admina.
+///
+/// PROČ filtrování v paměti: vyhledávání běží nad již načteným seznamem [TenantWithStatus] z tabulky
+/// **tenants** (název, billing_info…). Tabulka **tenants** zatím nemá sloupec **search_vector** jako
+/// **clients** – nelze zde použít PostgREST `.textSearch` bez DB migrace. CRM klienti v adminu už FTS
+/// používají přes `ClientRepository.getPaginatedClients`.
 final superAdminSearchQueryProvider = StateProvider<String>((ref) => '');
 
 /// Typ řazení seznamu agentur na nástěnce.
@@ -266,7 +272,7 @@ class _AddAgencyDialogState extends State<_AddAgencyDialog> {
     setState(() => _isDownloadingTemplate = true);
     try {
       await OnboardingExportService.downloadEmptyTemplate();
-      if (!mounted) return;
+      if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('super_admin.download_template_success'.tr()),
@@ -275,10 +281,10 @@ class _AddAgencyDialogState extends State<_AddAgencyDialog> {
         ),
       );
     } catch (e) {
-      if (!mounted) return;
+      if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('super_admin.download_template_error'.tr(namedArgs: {'error': e.toString()})),
+          content: Text('common.generic_error_user_friendly'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
@@ -838,7 +844,7 @@ class _DashboardBodyState extends ConsumerState<_DashboardBody> {
             displayCurrency,
             currencies,
           )
-        : (mrrAsync.valueOrNull != null ? '€ ${mrrAsync.valueOrNull!.totalEur.toStringAsFixed(2)}' : '—');
+        : (mrrAsync.valueOrNull != null ? '€ ${mrrAsync.valueOrNull!.totalEur.toStringAsFixed(2)}' : 'common.placeholder_dash'.tr());
     final perTenantEur = mrrAsync.valueOrNull?.perTenantEur ?? {};
 
     // Aktivní zpráva Megafonu: první aktivní tenant s neprázdným system_announcement
@@ -1480,7 +1486,9 @@ class _TenantCard extends StatelessWidget {
     if (ok != true || !context.mounted) return;
     try {
       await SupabaseService.client.from('invitations').delete().eq('tenant_id', tenant.id);
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('super_admin_dashboard: mazání invitations před soft-delete tenanta selhalo', e, st);
+    }
     try {
       // Soft Delete: místo tvrdého DELETE nastavíme deleted_at – zachová Audit Log a historii dat.
       final deletedAt = DateTime.now().toUtc().toIso8601String();

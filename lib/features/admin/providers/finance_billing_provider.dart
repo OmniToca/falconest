@@ -40,10 +40,14 @@ class BillingTaskItem {
     this.cashShortfallMissingAmount,
     this.cashShortfallNote,
     this.isShortfallResolved = false,
+    this.assignedTo,
+    this.assignedUserIds = const [],
+    this.requiresPhoto = false,
   });
 
   final String taskId;
   final String title;
+
   /// Naplánovaný čas zahájení – převedeno z UTC na lokální při mapování.
   final DateTime? scheduledStart;
   final DateTime? completedAt;
@@ -54,14 +58,36 @@ class BillingTaskItem {
   final DateTime? reservationStart;
   final DateTime? reservationEnd;
   final List<String> mediaUrls;
+
   /// UUID transakce v employee_cash_transactions s nedoplatkem.
   final String? cashShortfallTransactionId;
+
   /// Chybějící částka (expected_amount - amount) v EUR.
   final double? cashShortfallMissingAmount;
+
   /// Poznámka pracovníka (důvod nedoplatku).
   final String? cashShortfallNote;
+
   /// Zda dispečer nedoplatek již vyřešil (přenos na majitele / odpis / jinak).
   final bool isShortfallResolved;
+
+  /// Primární přiřazení (`tasks.assigned_to`) – pro kontrolu před uzamčením fakturace.
+  final String? assignedTo;
+
+  /// Další přiřazení (`tasks.assigned_user_ids`).
+  final List<String> assignedUserIds;
+
+  /// Povinná fotodokumentace z `tasks.metadata.requires_photo`.
+  final bool requiresPhoto;
+
+  /// PROČ: Varování před uzamčením – nebezpečné uzavřít měsíc bez přiřazení nebo bez fotky u povinné služby.
+  bool get hasLockBillingRisk {
+    final noPrimary = assignedTo == null || assignedTo!.trim().isEmpty;
+    final noSecondary = assignedUserIds.isEmpty;
+    final unassigned = noPrimary && noSecondary;
+    final photoMissing = requiresPhoto && mediaUrls.isEmpty;
+    return unassigned || photoMissing;
+  }
 }
 
 /// Položka „nedoplatek převedený na majitele“ – zobrazí se v Podkladech a na faktuře.
@@ -134,12 +160,16 @@ class BillingGroup {
   final String groupName;
   final List<BillingTaskItem> tasks;
   final double totalToInvoice;
+
   /// Firemní výdaje (paragony na materiál) – PŘIČÍTÁME, majitel proplácí agentuře.
   final double totalExpenses;
+
   /// Detailní seznam výdajů – datum, popis, částka, fotka účtenky.
   final List<BillingExpenseItem> expenses;
+
   /// Nedoplatky z hotovosti převedené na majitele – PŘIČÍTÁME k faktuře.
   final List<BillingShortfallTransferItem> shortfallTransfers;
+
   /// Měsíční paušál za správu apartmánů – PŘIČÍTÁME k faktuře (součet za všechny byty klienta).
   final double monthlyManagementFee;
 
@@ -147,15 +177,16 @@ class BillingGroup {
   /// U úkolů s vyřešeným nedoplatkem převedeným na majitele se nepočítá celá chargedPrice,
   /// ale chargedPrice − cashShortfallMissingAmount (host skutečně zaplatil méně). Tím se
   /// nedoplatek neúčtuje dvojitě – rozdíl „obrat − skutečně uhrazeno“ už je doplatek k úhradě.
-  double get totalPaidByGuest => tasks.where((t) => t.payerType == 'guest').fold<double>(0, (s, t) {
-    final price = t.chargedPrice;
-    if (t.isShortfallResolved &&
-        t.cashShortfallMissingAmount != null &&
-        t.cashShortfallMissingAmount! > 0) {
-      return s + (price - t.cashShortfallMissingAmount!);
-    }
-    return s + price;
-  });
+  double get totalPaidByGuest =>
+      tasks.where((t) => t.payerType == 'guest').fold<double>(0, (s, t) {
+        final price = t.chargedPrice;
+        if (t.isShortfallResolved &&
+            t.cashShortfallMissingAmount != null &&
+            t.cashShortfallMissingAmount! > 0) {
+          return s + (price - t.cashShortfallMissingAmount!);
+        }
+        return s + price;
+      });
 
   double get totalShortfallTransfers =>
       shortfallTransfers.fold<double>(0, (s, t) => s + t.amount);
@@ -163,13 +194,17 @@ class BillingGroup {
   /// Finální částka k úhradě majitelem = obrat − skutečně uhraveno hosty + náklady + měsíční paušál.
   /// Nedoplatky se již ne přičítají zvlášť – jsou zahrnuty v (obrat − totalPaidByGuest).
   double get finalToInvoice =>
-      (totalToInvoice - totalPaidByGuest) + totalExpenses + monthlyManagementFee;
+      (totalToInvoice - totalPaidByGuest) +
+      totalExpenses +
+      monthlyManagementFee;
 
   /// True, pokud ve skupině existuje alespoň jeden úkol s nevyřešeným nedoplatkem (zobrazení ikony v záhlaví).
-  bool get hasUnresolvedShortfalls => tasks.any((t) =>
-      t.cashShortfallMissingAmount != null &&
-      t.cashShortfallMissingAmount! > 0 &&
-      !t.isShortfallResolved);
+  bool get hasUnresolvedShortfalls => tasks.any(
+    (t) =>
+        t.cashShortfallMissingAmount != null &&
+        t.cashShortfallMissingAmount! > 0 &&
+        !t.isShortfallResolved,
+  );
 
   /// Rekonstruuje BillingGroup ze zmraženého snapshot_data (JSONB z billing_snapshots).
   ///
@@ -184,7 +219,8 @@ class BillingGroup {
     String? currentClientName,
   }) {
     final snapshotName = (snapshotData['client_name'] as String?)?.trim() ?? '';
-    final clientName = (currentClientName != null && currentClientName.trim().isNotEmpty)
+    final clientName =
+        (currentClientName != null && currentClientName.trim().isNotEmpty)
         ? currentClientName.trim()
         : (snapshotName.isNotEmpty ? snapshotName : '');
     final expenses = _parseExpensesFromSnapshot(snapshotData['expenses']);
@@ -213,10 +249,10 @@ class BillingGroup {
         final mediaUrlsRaw = itemMap['media_urls'];
         final mediaUrls = mediaUrlsRaw is List
             ? mediaUrlsRaw
-                .map((e) => e?.toString().trim())
-                .where((s) => s != null && s.isNotEmpty)
-                .cast<String>()
-                .toList()
+                  .map((e) => e?.toString().trim())
+                  .where((s) => s != null && s.isNotEmpty)
+                  .cast<String>()
+                  .toList()
             : <String>[];
 
         DateTime? scheduledStart;
@@ -225,24 +261,46 @@ class BillingGroup {
         DateTime? completedAt;
         final ca = itemMap['completed_at'];
         if (ca is String) completedAt = DateTime.tryParse(ca);
-        final cashShortfallMissing = _toDouble(itemMap['cash_shortfall_missing_amount']);
+        final cashShortfallMissing = _toDouble(
+          itemMap['cash_shortfall_missing_amount'],
+        );
         final isShortfallResolved = itemMap['is_shortfall_resolved'] == true;
+        final assignedToSnap = (itemMap['assigned_to'] as String?)?.trim();
+        final assignedTo = assignedToSnap != null && assignedToSnap.isNotEmpty
+            ? assignedToSnap
+            : null;
+        final assignedUserIdsRaw = itemMap['assigned_user_ids'];
+        final assignedUserIds = assignedUserIdsRaw is List
+            ? assignedUserIdsRaw
+                  .map((e) => e?.toString().trim())
+                  .whereType<String>()
+                  .where((s) => s.isNotEmpty)
+                  .toList()
+            : <String>[];
+        final requiresPhoto = itemMap['requires_photo'] == true;
 
-        tasks.add(BillingTaskItem(
-          taskId: taskId,
-          title: title,
-          scheduledStart: scheduledStart,
-          completedAt: completedAt,
-          chargedPrice: chargedPrice,
-          payerType: payerType,
-          reservationId: reservationId?.isNotEmpty == true ? reservationId : null,
-          guestName: guestName?.isNotEmpty == true ? guestName : null,
-          reservationStart: reservationStart,
-          reservationEnd: reservationEnd,
-          mediaUrls: mediaUrls,
-          cashShortfallMissingAmount: cashShortfallMissing,
-          isShortfallResolved: isShortfallResolved,
-        ));
+        tasks.add(
+          BillingTaskItem(
+            taskId: taskId,
+            title: title,
+            scheduledStart: scheduledStart,
+            completedAt: completedAt,
+            chargedPrice: chargedPrice,
+            payerType: payerType,
+            reservationId: reservationId?.isNotEmpty == true
+                ? reservationId
+                : null,
+            guestName: guestName?.isNotEmpty == true ? guestName : null,
+            reservationStart: reservationStart,
+            reservationEnd: reservationEnd,
+            mediaUrls: mediaUrls,
+            cashShortfallMissingAmount: cashShortfallMissing,
+            isShortfallResolved: isShortfallResolved,
+            assignedTo: assignedTo,
+            assignedUserIds: assignedUserIds,
+            requiresPhoto: requiresPhoto,
+          ),
+        );
       }
     }
 
@@ -282,18 +340,20 @@ List<BillingExpenseItem> _parseExpensesFromSnapshot(dynamic raw) {
     final urlsRaw = m['media_urls'];
     final mediaUrls = urlsRaw is List
         ? urlsRaw
-            .map((e) => e?.toString().trim())
-            .where((s) => s != null && s.isNotEmpty)
-            .cast<String>()
-            .toList()
+              .map((e) => e?.toString().trim())
+              .where((s) => s != null && s.isNotEmpty)
+              .cast<String>()
+              .toList()
         : <String>[];
-    result.add(BillingExpenseItem(
-      id: id,
-      date: date,
-      description: description.isEmpty ? '-' : description,
-      amount: amount,
-      mediaUrls: mediaUrls,
-    ));
+    result.add(
+      BillingExpenseItem(
+        id: id,
+        date: date,
+        description: description.isEmpty ? '-' : description,
+        amount: amount,
+        mediaUrls: mediaUrls,
+      ),
+    );
   }
   return result;
 }
@@ -315,9 +375,13 @@ Map<String, String> _pickOneOwnerPerApartment(List<dynamic> rawRows) {
     final m = row as Map<String, dynamic>;
     final aptId = (m['apartment_id'] as String?)?.trim();
     final ownerId = (m['owner_id'] as String?)?.trim();
-    if (aptId == null || aptId.isEmpty || ownerId == null || ownerId.isEmpty) continue;
+    if (aptId == null || aptId.isEmpty || ownerId == null || ownerId.isEmpty)
+      continue;
     final isPrimary = m['is_primary_billing'] == true;
-    byApt.putIfAbsent(aptId, () => []).add((ownerId: ownerId, isPrimary: isPrimary));
+    byApt.putIfAbsent(aptId, () => []).add((
+      ownerId: ownerId,
+      isPrimary: isPrimary,
+    ));
   }
   final result = <String, String>{};
   for (final e in byApt.entries) {
@@ -338,10 +402,7 @@ Map<String, String> _pickOneOwnerPerApartment(List<dynamic> rawRows) {
 /// [groups] = seskupené úkoly podle klienta.
 /// [isLocked] = true znamená, že měsíc je uzamčen; data pocházejí z billing_snapshots.
 class BillingMonthState {
-  const BillingMonthState({
-    required this.groups,
-    this.isLocked = false,
-  });
+  const BillingMonthState({required this.groups, this.isLocked = false});
 
   final List<BillingGroup> groups;
   final bool isLocked;
@@ -399,8 +460,10 @@ class ClientBillingItem {
 /// Nejprve dotazuje billing_snapshots – pokud existují snapshoty pro měsíc,
 /// vrací rekonstruované BillingGroup s isLocked = true. Jinak načte živé úkoly
 /// (invoiced_at IS NULL) a vrátí isLocked = false.
-final billingReportProvider =
-    FutureProvider.autoDispose.family<BillingMonthState, BillingMonthParam>((ref, param) async {
+final billingReportProvider = FutureProvider.autoDispose.family<BillingMonthState, BillingMonthParam>((
+  ref,
+  param,
+) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) {
     return const BillingMonthState(groups: [], isLocked: false);
@@ -411,11 +474,10 @@ final billingReportProvider =
 
   try {
     // Krok 0: Zkontroluj, zda měsíc má zmražené snapshoty (uzamčen).
-    final snapshotsRes = await SupabaseService.client
-        .from('billing_snapshots')
-        .select('client_id, snapshot_data')
-        .eq('tenant_id', tenantId)
-        .eq('billing_period', billingPeriodStr);
+    final snapshotsRes = await SupabaseService.safeFrom(
+      'billing_snapshots',
+      tenantId,
+    ).select('client_id, snapshot_data').eq('billing_period', billingPeriodStr);
 
     final snapshotsList = (snapshotsRes as List).cast<Map<String, dynamic>>();
     if (snapshotsList.isNotEmpty) {
@@ -428,10 +490,8 @@ final billingReportProvider =
           .toList();
       final clientIdToName = <String, String>{};
       if (clientIdsFromSnapshots.isNotEmpty) {
-        final clientsRes = await SupabaseService.client
-            .from('clients')
+        final clientsRes = await SupabaseService.safeFrom('clients', tenantId)
             .select('id, name')
-            .eq('tenant_id', tenantId)
             .inFilter('id', clientIdsFromSnapshots)
             .isFilter('deleted_at', null);
         for (final row in (clientsRes as List)) {
@@ -449,11 +509,13 @@ final billingReportProvider =
         final snapshotData = row['snapshot_data'];
         if (clientId.isEmpty || snapshotData is! Map<String, dynamic>) continue;
         final currentName = clientIdToName[clientId];
-        reconstructedGroups.add(BillingGroup.fromSnapshot(
-          snapshotData,
-          clientId,
-          currentClientName: currentName,
-        ));
+        reconstructedGroups.add(
+          BillingGroup.fromSnapshot(
+            snapshotData,
+            clientId,
+            currentClientName: currentName,
+          ),
+        );
       }
       reconstructedGroups.sort((a, b) => a.groupName.compareTo(b.groupName));
       return BillingMonthState(groups: reconstructedGroups, isLocked: true);
@@ -468,10 +530,8 @@ final billingReportProvider =
     // Krok 0b: Aktivní apartmány s monthly_management_fee > 0 – založí BillingGroup pro každého majitele (i bez úkolů v měsíci).
     // Paušál se započte jen pokud je měsíc fakturace >= managed_from (nebo managed_from je null – zpětná kompatibilita).
     final startOfBillingMonth = DateTime.utc(param.year, param.month, 1);
-    final apartmentsRes = await SupabaseService.client
-        .from('apartments')
+    final apartmentsRes = await SupabaseService.safeFrom('apartments', tenantId)
         .select('id, monthly_management_fee, managed_from')
-        .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null);
     final apartmentsList = (apartmentsRes as List).cast<Map<String, dynamic>>();
     final feeApartmentIds = <String>[];
@@ -485,7 +545,11 @@ final billingReportProvider =
       if (managedFromRaw != null) {
         final managedFrom = DateTime.tryParse(managedFromRaw.toString());
         if (managedFrom != null) {
-          final firstDayManaged = DateTime.utc(managedFrom.year, managedFrom.month, 1);
+          final firstDayManaged = DateTime.utc(
+            managedFrom.year,
+            managedFrom.month,
+            1,
+          );
           if (startOfBillingMonth.isBefore(firstDayManaged)) continue;
         }
       }
@@ -493,19 +557,20 @@ final billingReportProvider =
       feeByApartmentId[aptId] = fee;
     }
     if (feeApartmentIds.isNotEmpty) {
-      final ownersRes = await SupabaseService.client
-          .from('apartment_owners')
-          .select('apartment_id, owner_id, is_primary_billing')
-          .inFilter('apartment_id', feeApartmentIds)
-          .isFilter('deleted_at', null);
+      // PROČ: Frontend Firewall – žádný holý client.from u vazební tabulky; tenant_id z auth kontextu.
+      final ownersRes =
+          await SupabaseService.safeFrom('apartment_owners', tenantId)
+              .select('apartment_id, owner_id, is_primary_billing')
+              .inFilter('apartment_id', feeApartmentIds)
+              .isFilter('deleted_at', null);
       // Jeden majitel na apartmán – přednost is_primary_billing, jinak první (ochrana před dvojí fakturační u spoluvlastnictví).
-      final apartmentToOwnerIdFee = _pickOneOwnerPerApartment(ownersRes as List);
+      final apartmentToOwnerIdFee = _pickOneOwnerPerApartment(
+        ownersRes as List,
+      );
       final ownerIds = apartmentToOwnerIdFee.values.toSet().toList();
       if (ownerIds.isNotEmpty) {
-        final clientsRes = await SupabaseService.client
-            .from('clients')
+        final clientsRes = await SupabaseService.safeFrom('clients', tenantId)
             .select('id, name, profile_id')
-            .eq('tenant_id', tenantId)
             .inFilter('profile_id', ownerIds)
             .isFilter('deleted_at', null);
         final ownerIdToClientIdFee = <String, String>{};
@@ -517,7 +582,10 @@ final billingReportProvider =
           if (id != null && id.isNotEmpty && name != null && name.isNotEmpty) {
             clientIdToName[id] = name;
           }
-          if (id != null && id.isNotEmpty && profileId != null && profileId.isNotEmpty) {
+          if (id != null &&
+              id.isNotEmpty &&
+              profileId != null &&
+              profileId.isNotEmpty) {
             ownerIdToClientIdFee[profileId] = id;
           }
         }
@@ -543,14 +611,13 @@ final billingReportProvider =
 
     // Krok 1: Načti dokončené nevyfakturované úkoly tenantu pro daný měsíc (filtr v DB).
     // PROČ: Výkon – bez filtru by se stahovala celá historie (OOM při 10 000+ úkolech).
-    final tasksRes = await SupabaseService.client
-        .from('tasks')
+    final tasksRes = await SupabaseService.safeFrom('tasks', tenantId)
         .select(
           'id, title, custom_title, task_type, apartment_id, reservation_id, service_id, client_id, '
           'completed_at, due_date, scheduled_start, metadata, media_urls, '
+          'assigned_to, assigned_user_ids, '
           'reservations(guest_name, start_date, end_date)',
         )
-        .eq('tenant_id', tenantId)
         .eq('status', 'completed')
         .isFilter('invoiced_at', null)
         .isFilter('deleted_at', null)
@@ -581,11 +648,16 @@ final billingReportProvider =
 
     final priceByResService = <String, double>{};
     final payerTypeByResService = <String, String>{};
+
     /// Fallback: rezervace → seznam (charged_price, payer_type) u řádků reservation_services,
     /// jejichž apartment_service_id už v apartment_services neexistuje (byt přeřazen, záznamy nahrazeny).
-    final fallbackPricePayerByResId = <String, List<({double price, String payer})>>{};
+    final fallbackPricePayerByResId =
+        <String, List<({double price, String payer})>>{};
     if (reservationIds.isNotEmpty) {
-      final servicesByRes = await fetchByReservationIds(reservationIds, tenantId);
+      final servicesByRes = await fetchByReservationIds(
+        reservationIds,
+        tenantId,
+      );
       final apartmentServiceIds = <String>{};
       for (final list in servicesByRes.values) {
         for (final rs in list) {
@@ -595,11 +667,10 @@ final billingReportProvider =
       }
       final aptServiceToServiceId = <String, String>{};
       if (apartmentServiceIds.isNotEmpty) {
-        final aptRes = await SupabaseService.client
-            .from('apartment_services')
-            .select('id, service_id')
-            .eq('tenant_id', tenantId)
-            .inFilter('id', apartmentServiceIds.toList());
+        final aptRes = await SupabaseService.safeFrom(
+          'apartment_services',
+          tenantId,
+        ).select('id, service_id').inFilter('id', apartmentServiceIds.toList());
         for (final row in (aptRes as List)) {
           final m = row as Map<String, dynamic>;
           final id = (m['id'] as String?)?.trim();
@@ -621,9 +692,10 @@ final billingReportProvider =
             payerTypeByResService[key] = payer;
           } else {
             // apartment_services záznam už neexistuje (např. přeřazení bytu) – uchováme pro fallback
-            fallbackPricePayerByResId
-                .putIfAbsent(resId, () => [])
-                .add((price: price, payer: payer));
+            fallbackPricePayerByResId.putIfAbsent(resId, () => []).add((
+              price: price,
+              payer: payer,
+            ));
           }
         }
       }
@@ -649,11 +721,11 @@ final billingReportProvider =
 
     // Ochrana proti chybě Supabase: inFilter nesmí dostat prázdné pole, jinak dotaz tiše zhavaruje.
     if (apartmentIdsFromTasks.isNotEmpty) {
-      final ownersRes = await SupabaseService.client
-          .from('apartment_owners')
-          .select('apartment_id, owner_id, is_primary_billing')
-          .inFilter('apartment_id', apartmentIdsFromTasks)
-          .isFilter('deleted_at', null);
+      final ownersRes =
+          await SupabaseService.safeFrom('apartment_owners', tenantId)
+              .select('apartment_id, owner_id, is_primary_billing')
+              .inFilter('apartment_id', apartmentIdsFromTasks)
+              .isFilter('deleted_at', null);
       // Jeden majitel na apartmán – přednost is_primary_billing, jinak první (ochrana před dvojí fakturační u spoluvlastnictví).
       final picked = _pickOneOwnerPerApartment(ownersRes as List);
       for (final e in picked.entries) {
@@ -664,12 +736,11 @@ final billingReportProvider =
     final profileIdsToFetch = apartmentToOwnerId.values.toSet().toList();
     // Ochrana proti chybě Supabase: inFilter nesmí dostat prázdné pole, jinak dotaz tiše zhavaruje.
     if (profileIdsToFetch.isNotEmpty) {
-      final clientsByProfileRes = await SupabaseService.client
-          .from('clients')
-          .select('id, name, profile_id')
-          .eq('tenant_id', tenantId)
-          .inFilter('profile_id', profileIdsToFetch)
-          .isFilter('deleted_at', null);
+      final clientsByProfileRes =
+          await SupabaseService.safeFrom('clients', tenantId)
+              .select('id, name, profile_id')
+              .inFilter('profile_id', profileIdsToFetch)
+              .isFilter('deleted_at', null);
       for (final row in (clientsByProfileRes as List)) {
         final m = row as Map<String, dynamic>;
         final id = (m['id'] as String?)?.trim();
@@ -678,7 +749,10 @@ final billingReportProvider =
         if (id != null && id.isNotEmpty && name != null && name.isNotEmpty) {
           clientIdToName[id] = name;
         }
-        if (id != null && id.isNotEmpty && profileId != null && profileId.isNotEmpty) {
+        if (id != null &&
+            id.isNotEmpty &&
+            profileId != null &&
+            profileId.isNotEmpty) {
           ownerIdToClientId[profileId] = id;
         }
       }
@@ -686,12 +760,11 @@ final billingReportProvider =
 
     // Ochrana proti chybě Supabase: inFilter nesmí dostat prázdné pole, jinak dotaz tiše zhavaruje.
     if (clientIdsFromTasks.isNotEmpty) {
-      final clientsDirectRes = await SupabaseService.client
-          .from('clients')
-          .select('id, name')
-          .eq('tenant_id', tenantId)
-          .inFilter('id', clientIdsFromTasks)
-          .isFilter('deleted_at', null);
+      final clientsDirectRes =
+          await SupabaseService.safeFrom('clients', tenantId)
+              .select('id, name')
+              .inFilter('id', clientIdsFromTasks)
+              .isFilter('deleted_at', null);
       for (final row in (clientsDirectRes as List)) {
         final m = row as Map<String, dynamic>;
         final id = (m['id'] as String?)?.trim();
@@ -710,14 +783,15 @@ final billingReportProvider =
     // Krok 3b: Firemní výdaje s apartment_id – PŘIČÍTÁME k faktuře, majitel proplácí agentuře.
     // Načti transakce COMPANY_EXPENSE v daném měsíci včetně detailů (note, receipt_image_url).
     final expensesByClientId = <String, List<BillingExpenseItem>>{};
-    final expensesRes = await SupabaseService.client
-        .from('employee_cash_transactions')
-        .select('id, apartment_id, amount, note, receipt_image_url, created_at')
-        .eq('tenant_id', tenantId)
-        .eq('transaction_type', 'COMPANY_EXPENSE')
-        .not('apartment_id', 'is', null)
-        .gte('created_at', startOfMonth.toIso8601String())
-        .lt('created_at', startOfNextMonth.toIso8601String());
+    final expensesRes =
+        await SupabaseService.safeFrom('employee_cash_transactions', tenantId)
+            .select(
+              'id, apartment_id, amount, note, receipt_image_url, created_at',
+            )
+            .eq('transaction_type', 'COMPANY_EXPENSE')
+            .not('apartment_id', 'is', null)
+            .gte('created_at', startOfMonth.toIso8601String())
+            .lt('created_at', startOfNextMonth.toIso8601String());
 
     for (final row in (expensesRes as List)) {
       final m = row as Map<String, dynamic>;
@@ -730,7 +804,10 @@ final billingReportProvider =
       final amountRaw = m['amount'];
       final amount = (amountRaw is num)
           ? amountRaw.toDouble().abs()
-          : (amountRaw != null ? double.tryParse(amountRaw.toString())?.abs() : null) ?? 0.0;
+          : (amountRaw != null
+                    ? double.tryParse(amountRaw.toString())?.abs()
+                    : null) ??
+                0.0;
       if (amount <= 0) continue;
       final note = (m['note'] as String?)?.trim() ?? '';
       final receiptUrl = (m['receipt_image_url'] as String?)?.trim();
@@ -747,13 +824,17 @@ final billingReportProvider =
         }
       }
       date ??= DateTime.now().toLocal();
-      expensesByClientId.putIfAbsent(clientId, () => []).add(BillingExpenseItem(
-        id: id,
-        date: date,
-        description: note.isEmpty ? '-' : note,
-        amount: amount,
-        mediaUrls: mediaUrls,
-      ));
+      expensesByClientId
+          .putIfAbsent(clientId, () => [])
+          .add(
+            BillingExpenseItem(
+              id: id,
+              date: date,
+              description: note.isEmpty ? '-' : note,
+              amount: amount,
+              mediaUrls: mediaUrls,
+            ),
+          );
     }
 
     // Krok 3c: Nedoplatky z peněženky (amount < expected_amount) – pro zobrazení v řádcích úkolů.
@@ -763,23 +844,29 @@ final billingReportProvider =
         .where((id) => id.isNotEmpty)
         .toSet()
         .toList();
-    final shortfallByTaskId = <String, ({String id, double missing, String note, bool resolved})>{};
+    final shortfallByTaskId =
+        <String, ({String id, double missing, String note, bool resolved})>{};
     if (taskIds.isNotEmpty) {
       try {
-        final shortfallRes = await SupabaseService.client
-            .from('employee_cash_transactions')
-            .select('id, task_id, amount, expected_amount, note, is_shortfall_resolved')
-            .eq('tenant_id', tenantId)
-            .eq('transaction_type', 'COLLECTED_FROM_GUEST')
-            .not('expected_amount', 'is', null)
-            .inFilter('task_id', taskIds);
+        final shortfallRes =
+            await SupabaseService.safeFrom(
+                  'employee_cash_transactions',
+                  tenantId,
+                )
+                .select(
+                  'id, task_id, amount, expected_amount, note, is_shortfall_resolved',
+                )
+                .eq('transaction_type', 'COLLECTED_FROM_GUEST')
+                .not('expected_amount', 'is', null)
+                .inFilter('task_id', taskIds);
         for (final row in (shortfallRes as List)) {
           final m = row as Map<String, dynamic>;
           final tid = (m['task_id'] as String?)?.trim();
           if (tid == null || tid.isEmpty) continue;
           final amount = _toDouble(m['amount']);
           final expected = _toDouble(m['expected_amount']);
-          if (amount == null || expected == null || amount >= expected) continue;
+          if (amount == null || expected == null || amount >= expected)
+            continue;
           final id = (m['id'] as String?)?.trim() ?? '';
           if (id.isEmpty) continue;
           final note = (m['note'] as String?)?.trim() ?? '';
@@ -822,11 +909,18 @@ final billingReportProvider =
           ? double.tryParse((meta['service_price']?.toString() ?? '').trim())
           : null;
       final metaAmountToCollect = meta is Map
-          ? double.tryParse((meta['amount_to_collect']?.toString() ?? '').trim())
+          ? double.tryParse(
+              (meta['amount_to_collect']?.toString() ?? '').trim(),
+            )
           : null;
       final metaPayerType = meta is Map
           ? ((meta['payer_type'] as String?)?.trim())
           : null;
+      final requiresPhoto = _requiresPhotoFromMetadata(meta);
+      final assignedToRaw = (t['assigned_to'] as String?)?.trim();
+      final assignedTo =
+          assignedToRaw != null && assignedToRaw.isNotEmpty ? assignedToRaw : null;
+      final assignedUserIds = _parseUuidList(t['assigned_user_ids']);
 
       if (resId.isNotEmpty && svcId.isNotEmpty) {
         // PRAVIDLO A: Úkol napojen na rezervaci – primárně reservation_services (jak bylo uloženo u rezervace).
@@ -839,21 +933,33 @@ final billingReportProvider =
           // Mapování selhalo (apartment_services po přeřazení bytu už neexistují) – fallback z reservation_services.
           final fallbackList = fallbackPricePayerByResId[resId];
           if (fallbackList != null && fallbackList.length == 1) {
-            chargedPrice = metaServicePrice ?? metaAmountToCollect ?? fallbackList.first.price;
+            chargedPrice =
+                metaServicePrice ??
+                metaAmountToCollect ??
+                fallbackList.first.price;
             payerType = fallbackList.first.payer;
           } else {
             chargedPrice = metaServicePrice ?? metaAmountToCollect ?? 0.0;
-            payerType = _resolvePayerType(metaPayerType, metaAmountToCollect, clientId);
+            payerType = _resolvePayerType(
+              metaPayerType,
+              metaAmountToCollect,
+              clientId,
+            );
           }
         }
       } else {
         // PRAVIDLO B: Manuální/externí úkol bez rezervace – VŽDY respektovat metadata.payer_type.
         // Legacy: amount_to_collect > 0 implikuje guest (konzistentní s mobilním UI).
         chargedPrice = metaServicePrice ?? metaAmountToCollect ?? 0.0;
-        payerType = _resolvePayerType(metaPayerType, metaAmountToCollect, clientId);
+        payerType = _resolvePayerType(
+          metaPayerType,
+          metaAmountToCollect,
+          clientId,
+        );
       }
 
-      final reservationId = (t['reservation_id'] as String?)?.trim().isNotEmpty == true
+      final reservationId =
+          (t['reservation_id'] as String?)?.trim().isNotEmpty == true
           ? (t['reservation_id'] as String).trim()
           : null;
       final guestName = _parseGuestName(t['reservations']);
@@ -861,34 +967,46 @@ final billingReportProvider =
       final mediaUrls = _parseMediaUrls(t['media_urls']);
       final shortfall = shortfallByTaskId[taskId];
 
-      items.add(BillingTaskItem(
-        taskId: taskId,
-        title: title,
-        scheduledStart: scheduledStart,
-        completedAt: completedAt,
-        chargedPrice: chargedPrice,
-        payerType: payerType,
-        reservationId: reservationId,
-        guestName: guestName,
-        reservationStart: resStart,
-        reservationEnd: resEnd,
-        mediaUrls: mediaUrls,
-        cashShortfallTransactionId: shortfall?.id,
-        cashShortfallMissingAmount: shortfall?.missing,
-        cashShortfallNote: shortfall?.note.isEmpty == true ? null : shortfall?.note,
-        isShortfallResolved: shortfall?.resolved ?? false,
-      ));
+      items.add(
+        BillingTaskItem(
+          taskId: taskId,
+          title: title,
+          scheduledStart: scheduledStart,
+          completedAt: completedAt,
+          chargedPrice: chargedPrice,
+          payerType: payerType,
+          reservationId: reservationId,
+          guestName: guestName,
+          reservationStart: resStart,
+          reservationEnd: resEnd,
+          mediaUrls: mediaUrls,
+          cashShortfallTransactionId: shortfall?.id,
+          cashShortfallMissingAmount: shortfall?.missing,
+          cashShortfallNote: shortfall?.note.isEmpty == true
+              ? null
+              : shortfall?.note,
+          isShortfallResolved: shortfall?.resolved ?? false,
+          assignedTo: assignedTo,
+          assignedUserIds: assignedUserIds,
+          requiresPhoto: requiresPhoto,
+        ),
+      );
     }
 
     // Krok 4b: Nedoplatky převedené na majitele (billing_shortfall_transfers) v daném měsíci.
-    final shortfallTransfersByClientId = <String, List<BillingShortfallTransferItem>>{};
+    final shortfallTransfersByClientId =
+        <String, List<BillingShortfallTransferItem>>{};
     try {
-      final transfersRes = await SupabaseService.client
-          .from('billing_shortfall_transfers')
-          .select('id, client_id, amount, description, task_id, cash_transaction_id, created_at')
-          .eq('tenant_id', tenantId)
-          .gte('created_at', startIso)
-          .lt('created_at', endIso);
+      final transfersRes =
+          await SupabaseService.safeFrom(
+                'billing_shortfall_transfers',
+                tenantId,
+              )
+              .select(
+                'id, client_id, amount, description, task_id, cash_transaction_id, created_at',
+              )
+              .gte('created_at', startIso)
+              .lt('created_at', endIso);
       for (final row in (transfersRes as List)) {
         final m = row as Map<String, dynamic>;
         final clientId = (m['client_id'] as String?)?.trim();
@@ -906,18 +1024,22 @@ final billingReportProvider =
         if (raw != null) {
           if (raw is DateTime) {
             createdAt = raw.toUtc();
-          } else if (raw is String) createdAt = DateTime.tryParse(raw)?.toUtc();
+          } else if (raw is String) {
+            createdAt = DateTime.tryParse(raw)?.toUtc();
+          }
         }
         shortfallTransfersByClientId
             .putIfAbsent(clientId, () => [])
-            .add(BillingShortfallTransferItem(
-          id: id,
-          amount: amount,
-          description: description,
-          taskId: taskIdTr?.isEmpty == true ? null : taskIdTr,
-          cashTransactionId: cashTxId,
-          createdAt: createdAt,
-        ));
+            .add(
+              BillingShortfallTransferItem(
+                id: id,
+                amount: amount,
+                description: description,
+                taskId: taskIdTr?.isEmpty == true ? null : taskIdTr,
+                cashTransactionId: cashTxId,
+                createdAt: createdAt,
+              ),
+            );
       }
     } catch (_) {
       // Tabulka může chybět na starších migracích – ignorujeme.
@@ -932,8 +1054,16 @@ final billingReportProvider =
     // A) Úkol má přímé client_id (externí transfer) → použij ho.
     // B) Úkol má apartment_id → dotáhni majitele přes apartment_owners a clients.profile_id.
     // C) Nemá ani klienta, ani apartmán (nebo se majitele nepodařilo dohledat) → 'external'.
+    //
+    // PROČ Map místo firstWhere v cyklu: O(n) místo O(n²) při tisících úkolů (hlavní izolát).
+    final tasksById = <String, Map<String, dynamic>>{
+      for (final t in tasksInMonth)
+        if ((t['id'] as String?)?.trim().isNotEmpty == true)
+          (t['id'] as String).trim(): t,
+    };
     for (final item in items) {
-      final t = tasksInMonth.firstWhere((x) => (x['id'] as String?)?.trim() == item.taskId);
+      final t = tasksById[item.taskId];
+      if (t == null) continue;
       final aptId = (t['apartment_id'] as String?)?.trim() ?? '';
       final clientIdDirect = (t['client_id'] as String?)?.trim() ?? '';
 
@@ -956,21 +1086,30 @@ final billingReportProvider =
       final sortedList = List<BillingTaskItem>.from(list)
         ..sort((a, b) => _taskSortDate(a).compareTo(_taskSortDate(b)));
       // Celkový obrat = součet VŠECH služeb (majitel + host + klient).
-      final totalToInvoice = sortedList.fold<double>(0, (s, i) => s + i.chargedPrice);
+      final totalToInvoice = sortedList.fold<double>(
+        0,
+        (s, i) => s + i.chargedPrice,
+      );
       final groupExpenses = expensesByClientId[entry.key] ?? [];
-      final totalExpenses = groupExpenses.fold<double>(0, (s, e) => s + e.amount);
-      final groupShortfallTransfers = shortfallTransfersByClientId[entry.key] ?? [];
+      final totalExpenses = groupExpenses.fold<double>(
+        0,
+        (s, e) => s + e.amount,
+      );
+      final groupShortfallTransfers =
+          shortfallTransfersByClientId[entry.key] ?? [];
       final groupMonthlyFee = monthlyFeeByGroupKey[entry.key] ?? 0.0;
-      groups.add(BillingGroup(
-        groupKey: entry.key,
-        groupName: _resolveGroupName(entry.key, clientIdToName),
-        tasks: sortedList,
-        totalToInvoice: totalToInvoice,
-        totalExpenses: totalExpenses,
-        expenses: groupExpenses,
-        shortfallTransfers: groupShortfallTransfers,
-        monthlyManagementFee: groupMonthlyFee,
-      ));
+      groups.add(
+        BillingGroup(
+          groupKey: entry.key,
+          groupName: _resolveGroupName(entry.key, clientIdToName),
+          tasks: sortedList,
+          totalToInvoice: totalToInvoice,
+          totalExpenses: totalExpenses,
+          expenses: groupExpenses,
+          shortfallTransfers: groupShortfallTransfers,
+          monthlyManagementFee: groupMonthlyFee,
+        ),
+      );
     }
 
     // Seřazení podle názvu klienta.
@@ -1002,20 +1141,24 @@ Future<void> resolveBillingShortfall({
   String? transferDescription,
   String? taskId,
 }) async {
-  await SupabaseService.client.from('employee_cash_transactions').update({
-    'is_shortfall_resolved': true,
-    'shortfall_resolution_type': resolutionType,
-    if (resolutionNote != null && resolutionNote.trim().isNotEmpty)
-      'shortfall_resolution_note': resolutionNote.trim(),
-  }).eq('id', cashTransactionId);
+  await SupabaseService.safeFrom('employee_cash_transactions', tenantId)
+      .update({
+        'is_shortfall_resolved': true,
+        'shortfall_resolution_type': resolutionType,
+        if (resolutionNote != null && resolutionNote.trim().isNotEmpty)
+          'shortfall_resolution_note': resolutionNote.trim(),
+      })
+      .eq('id', cashTransactionId);
 
   if (resolutionType == 'transfer_to_owner' &&
       transferClientId != null &&
       transferClientId.trim().isNotEmpty &&
       transferAmount != null &&
       transferAmount > 0) {
-    await SupabaseService.client.from('billing_shortfall_transfers').insert({
-      'tenant_id': tenantId,
+    await SupabaseService.safeFrom(
+      'billing_shortfall_transfers',
+      tenantId,
+    ).insert({
       'client_id': transferClientId.trim(),
       'amount': transferAmount,
       if (transferDescription != null && transferDescription.trim().isNotEmpty)
@@ -1030,194 +1173,204 @@ Future<void> resolveBillingShortfall({
 /// které patří klientovi (client_id) nebo jeho apartmánům (apartment_owners).
 /// Stejná logika výpočtu ceny jako v Podkladech pro fakturaci (reservation_services / metadata).
 /// Vrací i již vyfakturované úkoly (invoiced_at IS NOT NULL) pro zobrazení statusu.
-final clientBillingProvider =
-    FutureProvider.autoDispose.family<List<ClientBillingItem>, String>((ref, clientId) async {
-  if (clientId.trim().isEmpty) return [];
-  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
-  if (tenantId == null || tenantId.isEmpty) return [];
+final clientBillingProvider = FutureProvider.autoDispose
+    .family<List<ClientBillingItem>, String>((ref, clientId) async {
+      if (clientId.trim().isEmpty) return [];
+      final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+      if (tenantId == null || tenantId.isEmpty) return [];
 
-  try {
-    // Krok 1: Klientův profile_id a seznam apartment_id (majitel bytů).
-    final clientRes = await SupabaseService.client
-        .from('clients')
-        .select('id, profile_id')
-        .eq('tenant_id', tenantId)
-        .eq('id', clientId)
-        .isFilter('deleted_at', null)
-        .maybeSingle();
-    if (clientRes == null) return [];
+      try {
+        // Krok 1: Klientův profile_id a seznam apartment_id (majitel bytů).
+        final clientRes = await SupabaseService.safeFrom('clients', tenantId)
+            .select('id, profile_id')
+            .eq('id', clientId)
+            .isFilter('deleted_at', null)
+            .maybeSingle();
+        if (clientRes == null) return [];
 
-    final profileId = (clientRes['profile_id'] as String?)?.trim();
+        final profileId = (clientRes['profile_id'] as String?)?.trim();
 
-    final apartmentIds = <String>[];
-    if (profileId != null && profileId.isNotEmpty) {
-      final ownersRes = await SupabaseService.client
-          .from('apartment_owners')
-          .select('apartment_id')
-          .eq('owner_id', profileId)
-          .isFilter('deleted_at', null);
-      for (final row in (ownersRes as List)) {
-        final m = row as Map<String, dynamic>;
-        final aptId = (m['apartment_id'] as String?)?.trim();
-        if (aptId != null && aptId.isNotEmpty) apartmentIds.add(aptId);
-      }
-    }
-
-    // Krok 2: Dokončené úkoly – buď přímo client_id, nebo apartment_id v seznamu majitele.
-    const selectCols =
-        'id, title, custom_title, apartment_id, client_id, reservation_id, service_id, '
-        'completed_at, due_date, scheduled_start, invoiced_at, metadata, '
-        'reservations(guest_name, start_date, end_date)';
-
-    final tasksForClient = <Map<String, dynamic>>[];
-    final seenIds = <String>{};
-
-    final byClientRes = await SupabaseService.client
-        .from('tasks')
-        .select(selectCols)
-        .eq('tenant_id', tenantId)
-        .eq('status', 'completed')
-        .eq('client_id', clientId)
-        .isFilter('deleted_at', null);
-    for (final row in (byClientRes as List)) {
-      final m = Map<String, dynamic>.from(row as Map<String, dynamic>);
-      final id = (m['id'] as String?)?.trim() ?? '';
-      if (id.isNotEmpty && seenIds.add(id)) tasksForClient.add(m);
-    }
-
-    if (apartmentIds.isNotEmpty) {
-      final byAptRes = await SupabaseService.client
-          .from('tasks')
-          .select(selectCols)
-          .eq('tenant_id', tenantId)
-          .eq('status', 'completed')
-          .inFilter('apartment_id', apartmentIds)
-          .isFilter('deleted_at', null);
-      for (final row in (byAptRes as List)) {
-        final m = Map<String, dynamic>.from(row as Map<String, dynamic>);
-        final id = (m['id'] as String?)?.trim() ?? '';
-        if (id.isNotEmpty && seenIds.add(id)) tasksForClient.add(m);
-      }
-    }
-    if (tasksForClient.isEmpty) return [];
-
-    // Krok 3: Ceny z reservation_services (stejná logika + fallback jako v billingReportProvider – zákaz mutace historie).
-    final reservationIds = tasksForClient
-        .map((t) => (t['reservation_id'] as String?)?.trim())
-        .where((id) => id != null && id.isNotEmpty)
-        .cast<String>()
-        .toSet()
-        .toList();
-
-    final priceByResService = <String, double>{};
-    final fallbackPriceByResId = <String, List<double>>{};
-    if (reservationIds.isNotEmpty) {
-      final servicesByRes = await fetchByReservationIds(reservationIds, tenantId);
-      final apartmentServiceIds = <String>{};
-      for (final list in servicesByRes.values) {
-        for (final rs in list) {
-          final id = rs.apartmentServiceId.trim();
-          if (id.isNotEmpty) apartmentServiceIds.add(id);
-        }
-      }
-      final aptServiceToServiceId = <String, String>{};
-      if (apartmentServiceIds.isNotEmpty) {
-        final aptRes = await SupabaseService.client
-            .from('apartment_services')
-            .select('id, service_id')
-            .eq('tenant_id', tenantId)
-            .inFilter('id', apartmentServiceIds.toList());
-        for (final row in (aptRes as List)) {
-          final m = row as Map<String, dynamic>;
-          final id = (m['id'] as String?)?.trim();
-          final sid = (m['service_id'] as String?)?.trim();
-          if (id != null && id.isNotEmpty && sid != null && sid.isNotEmpty) {
-            aptServiceToServiceId[id] = sid;
+        final apartmentIds = <String>[];
+        if (profileId != null && profileId.isNotEmpty) {
+          final ownersRes =
+              await SupabaseService.safeFrom('apartment_owners', tenantId)
+                  .select('apartment_id')
+                  .eq('owner_id', profileId)
+                  .isFilter('deleted_at', null);
+          for (final row in (ownersRes as List)) {
+            final m = row as Map<String, dynamic>;
+            final aptId = (m['apartment_id'] as String?)?.trim();
+            if (aptId != null && aptId.isNotEmpty) apartmentIds.add(aptId);
           }
         }
-      }
-      for (final entry in servicesByRes.entries) {
-        final resId = entry.key;
-        for (final rs in entry.value) {
-          final sid = aptServiceToServiceId[rs.apartmentServiceId];
-          final price = (rs.chargedPrice ?? 0).toDouble();
-          if (sid != null) {
-            priceByResService['$resId|$sid'] = price;
+
+        // Krok 2: Dokončené úkoly – buď přímo client_id, nebo apartment_id v seznamu majitele.
+        const selectCols =
+            'id, title, custom_title, apartment_id, client_id, reservation_id, service_id, '
+            'completed_at, due_date, scheduled_start, invoiced_at, metadata, '
+            'reservations(guest_name, start_date, end_date)';
+
+        final tasksForClient = <Map<String, dynamic>>[];
+        final seenIds = <String>{};
+
+        final byClientRes = await SupabaseService.safeFrom('tasks', tenantId)
+            .select(selectCols)
+            .eq('status', 'completed')
+            .eq('client_id', clientId)
+            .isFilter('deleted_at', null);
+        for (final row in (byClientRes as List)) {
+          final m = Map<String, dynamic>.from(row as Map<String, dynamic>);
+          final id = (m['id'] as String?)?.trim() ?? '';
+          if (id.isNotEmpty && seenIds.add(id)) tasksForClient.add(m);
+        }
+
+        if (apartmentIds.isNotEmpty) {
+          final byAptRes = await SupabaseService.safeFrom('tasks', tenantId)
+              .select(selectCols)
+              .eq('status', 'completed')
+              .inFilter('apartment_id', apartmentIds)
+              .isFilter('deleted_at', null);
+          for (final row in (byAptRes as List)) {
+            final m = Map<String, dynamic>.from(row as Map<String, dynamic>);
+            final id = (m['id'] as String?)?.trim() ?? '';
+            if (id.isNotEmpty && seenIds.add(id)) tasksForClient.add(m);
+          }
+        }
+        if (tasksForClient.isEmpty) return [];
+
+        // Krok 3: Ceny z reservation_services (stejná logika + fallback jako v billingReportProvider – zákaz mutace historie).
+        final reservationIds = tasksForClient
+            .map((t) => (t['reservation_id'] as String?)?.trim())
+            .where((id) => id != null && id.isNotEmpty)
+            .cast<String>()
+            .toSet()
+            .toList();
+
+        final priceByResService = <String, double>{};
+        final fallbackPriceByResId = <String, List<double>>{};
+        if (reservationIds.isNotEmpty) {
+          final servicesByRes = await fetchByReservationIds(
+            reservationIds,
+            tenantId,
+          );
+          final apartmentServiceIds = <String>{};
+          for (final list in servicesByRes.values) {
+            for (final rs in list) {
+              final id = rs.apartmentServiceId.trim();
+              if (id.isNotEmpty) apartmentServiceIds.add(id);
+            }
+          }
+          final aptServiceToServiceId = <String, String>{};
+          if (apartmentServiceIds.isNotEmpty) {
+            final aptRes =
+                await SupabaseService.safeFrom('apartment_services', tenantId)
+                    .select('id, service_id')
+                    .inFilter('id', apartmentServiceIds.toList());
+            for (final row in (aptRes as List)) {
+              final m = row as Map<String, dynamic>;
+              final id = (m['id'] as String?)?.trim();
+              final sid = (m['service_id'] as String?)?.trim();
+              if (id != null &&
+                  id.isNotEmpty &&
+                  sid != null &&
+                  sid.isNotEmpty) {
+                aptServiceToServiceId[id] = sid;
+              }
+            }
+          }
+          for (final entry in servicesByRes.entries) {
+            final resId = entry.key;
+            for (final rs in entry.value) {
+              final sid = aptServiceToServiceId[rs.apartmentServiceId];
+              final price = (rs.chargedPrice ?? 0).toDouble();
+              if (sid != null) {
+                priceByResService['$resId|$sid'] = price;
+              } else {
+                fallbackPriceByResId.putIfAbsent(resId, () => []).add(price);
+              }
+            }
+          }
+        }
+
+        // Krok 4: Převedení na ClientBillingItem – cena vždy z úkolu / reservation_services (historie), ne z ceníku.
+        final items = <ClientBillingItem>[];
+        for (final t in tasksForClient) {
+          final taskId = (t['id'] as String?)?.trim() ?? '';
+          if (taskId.isEmpty) continue;
+
+          final title = (t['title'] as String?)?.trim().isNotEmpty == true
+              ? (t['title'] as String).trim()
+              : (t['custom_title'] as String?)?.trim() ?? taskId;
+          final resId = (t['reservation_id'] as String?)?.trim() ?? '';
+          final svcId = (t['service_id'] as String?)?.trim() ?? '';
+          final resSvcKey = '$resId|$svcId';
+          final meta = t['metadata'];
+          final metaServicePrice = meta is Map
+              ? double.tryParse(
+                  (meta['service_price']?.toString() ?? '').trim(),
+                )
+              : null;
+          final metaAmountToCollect = meta is Map
+              ? double.tryParse(
+                  (meta['amount_to_collect']?.toString() ?? '').trim(),
+                )
+              : null;
+
+          double chargedPrice;
+          if (resId.isNotEmpty && svcId.isNotEmpty) {
+            final fromRes = priceByResService[resSvcKey];
+            if (fromRes != null) {
+              chargedPrice = metaServicePrice ?? metaAmountToCollect ?? fromRes;
+            } else {
+              final fallbackList = fallbackPriceByResId[resId];
+              chargedPrice =
+                  metaServicePrice ??
+                  metaAmountToCollect ??
+                  (fallbackList != null && fallbackList.length == 1
+                      ? fallbackList.first
+                      : 0.0);
+            }
           } else {
-            fallbackPriceByResId.putIfAbsent(resId, () => []).add(price);
+            chargedPrice = metaServicePrice ?? metaAmountToCollect ?? 0.0;
           }
+          if (chargedPrice <= 0) continue;
+
+          final scheduledStartRaw = _parseDateTime(t['scheduled_start']);
+          final completedAtRaw = _parseDateTime(t['completed_at']);
+          final date = (scheduledStartRaw ?? completedAtRaw)?.toLocal();
+          final invoicedAtRaw = t['invoiced_at'];
+          final isInvoiced =
+              invoicedAtRaw != null &&
+              ((invoicedAtRaw is String && invoicedAtRaw.trim().isNotEmpty) ||
+                  invoicedAtRaw is DateTime);
+
+          items.add(
+            ClientBillingItem(
+              taskId: taskId,
+              title: title,
+              date: date,
+              chargedPrice: chargedPrice,
+              isInvoiced: isInvoiced,
+            ),
+          );
         }
-      }
-    }
 
-    // Krok 4: Převedení na ClientBillingItem – cena vždy z úkolu / reservation_services (historie), ne z ceníku.
-    final items = <ClientBillingItem>[];
-    for (final t in tasksForClient) {
-      final taskId = (t['id'] as String?)?.trim() ?? '';
-      if (taskId.isEmpty) continue;
-
-      final title = (t['title'] as String?)?.trim().isNotEmpty == true
-          ? (t['title'] as String).trim()
-          : (t['custom_title'] as String?)?.trim() ?? taskId;
-      final resId = (t['reservation_id'] as String?)?.trim() ?? '';
-      final svcId = (t['service_id'] as String?)?.trim() ?? '';
-      final resSvcKey = '$resId|$svcId';
-      final meta = t['metadata'];
-      final metaServicePrice = meta is Map
-          ? double.tryParse((meta['service_price']?.toString() ?? '').trim())
-          : null;
-      final metaAmountToCollect = meta is Map
-          ? double.tryParse((meta['amount_to_collect']?.toString() ?? '').trim())
-          : null;
-
-      double chargedPrice;
-      if (resId.isNotEmpty && svcId.isNotEmpty) {
-        final fromRes = priceByResService[resSvcKey];
-        if (fromRes != null) {
-          chargedPrice = metaServicePrice ?? metaAmountToCollect ?? fromRes;
-        } else {
-          final fallbackList = fallbackPriceByResId[resId];
-          chargedPrice = metaServicePrice ?? metaAmountToCollect ??
-              (fallbackList != null && fallbackList.length == 1 ? fallbackList.first : 0.0);
+        items.sort((a, b) {
+          final da = a.date ?? DateTime.utc(1970);
+          final db = b.date ?? DateTime.utc(1970);
+          return db.compareTo(da);
+        });
+        return items;
+      } catch (e, st) {
+        if (kDebugMode) {
+          // ignore: avoid_print
+          print('clientBillingProvider error: $e');
+          // ignore: avoid_print
+          print(st);
         }
-      } else {
-        chargedPrice = metaServicePrice ?? metaAmountToCollect ?? 0.0;
+        rethrow;
       }
-      if (chargedPrice <= 0) continue;
-
-      final scheduledStartRaw = _parseDateTime(t['scheduled_start']);
-      final completedAtRaw = _parseDateTime(t['completed_at']);
-      final date = (scheduledStartRaw ?? completedAtRaw)?.toLocal();
-      final invoicedAtRaw = t['invoiced_at'];
-      final isInvoiced = invoicedAtRaw != null &&
-          ((invoicedAtRaw is String && invoicedAtRaw.trim().isNotEmpty) ||
-              invoicedAtRaw is DateTime);
-
-      items.add(ClientBillingItem(
-        taskId: taskId,
-        title: title,
-        date: date,
-        chargedPrice: chargedPrice,
-        isInvoiced: isInvoiced,
-      ));
-    }
-
-    items.sort((a, b) {
-      final da = a.date ?? DateTime.utc(1970);
-      final db = b.date ?? DateTime.utc(1970);
-      return db.compareTo(da);
     });
-    return items;
-  } catch (e, st) {
-    if (kDebugMode) {
-      // ignore: avoid_print
-      print('clientBillingProvider error: $e');
-      // ignore: avoid_print
-      print(st);
-    }
-    rethrow;
-  }
-});
 
 /// Vrací datum pro chronologické řazení úkolu – scheduledStart, fallback completedAt.
 DateTime _taskSortDate(BillingTaskItem t) {
@@ -1248,8 +1401,14 @@ String _resolveGroupName(String groupKey, Map<String, String> clientIdToName) {
 }
 
 /// Určí plátce z metadata.payer_type; legacy: amount_to_collect > 0 implikuje guest.
-String _resolvePayerType(String? metaPayerType, double? metaAmountToCollect, String clientId) {
-  if (metaPayerType == 'guest' || metaPayerType == 'owner' || metaPayerType == 'client') {
+String _resolvePayerType(
+  String? metaPayerType,
+  double? metaAmountToCollect,
+  String clientId,
+) {
+  if (metaPayerType == 'guest' ||
+      metaPayerType == 'owner' ||
+      metaPayerType == 'client') {
     return metaPayerType!;
   }
   // Konzistence s mobilním UI: amount_to_collect = „host platí hotovost“ (viz DATA_FLOW_PRICING.md).
@@ -1300,7 +1459,7 @@ String? _parseGuestName(dynamic raw) {
   return (start, end);
 }
 
-/// Parsuje media_urls (text[]) z PostgreSQL – vrací List<String>.
+/// Parsuje media_urls (text[]) z PostgreSQL – vrací seznam URL řetězců.
 /// Null a prázdné hodnoty jsou vynechány.
 List<String> _parseMediaUrls(dynamic raw) {
   if (raw == null) return [];
@@ -1313,4 +1472,27 @@ List<String> _parseMediaUrls(dynamic raw) {
     return list;
   }
   return [];
+}
+
+/// Parsuje pole UUID (`assigned_user_ids`) z PostgreSQL / JSON snapshotu.
+List<String> _parseUuidList(dynamic raw) {
+  if (raw == null) return [];
+  if (raw is List) {
+    return raw
+        .map((e) => e?.toString().trim())
+        .whereType<String>()
+        .where((s) => s.isNotEmpty)
+        .toList();
+  }
+  return [];
+}
+
+/// `metadata.requires_photo` – služba vyžaduje fotodokumentaci před uzamčením fakturace.
+bool _requiresPhotoFromMetadata(dynamic meta) {
+  if (meta is! Map) return false;
+  final v = meta['requires_photo'];
+  if (v is bool) return v;
+  if (v is String) return v.toLowerCase() == 'true';
+  if (v is num) return v != 0;
+  return false;
 }

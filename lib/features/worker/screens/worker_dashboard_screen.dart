@@ -3,20 +3,25 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/auth/pin_storage.dart';
-import 'package:falconest/core/providers/connectivity_provider.dart';
+import 'package:falconest/core/offline/mutation_queue_service.dart';
 import 'package:falconest/core/providers/ui_mode_provider.dart';
 import 'package:falconest/core/widgets/sync_status_icon.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/settings/providers/profile_provider.dart';
 import 'package:falconest/features/worker/providers/weekly_stats_provider.dart';
+import 'package:falconest/features/admin/providers/finance_cash_worker_wallet.dart';
 import 'package:falconest/features/worker/providers/worker_dashboard_provider.dart';
 import 'package:falconest/features/worker/providers/worker_sync_state_provider.dart';
+import 'package:falconest/features/worker/utils/worker_google_maps_uri.dart';
+import 'package:falconest/features/worker/widgets/worker_dashboard_sync_banners.dart';
 
 const _primaryBlue = Color(0xFF1565C0);
+
+/// Hranice zůstatku v peněžence — nad ní zobrazíme varování (stejná měna jako v DB / tenant).
+const double _kWorkerHighCashBalanceThreshold = 500;
 
 /// Hlavní obrazovka Worker App – "Moje Práce".
 ///
@@ -47,9 +52,10 @@ class _WorkerDashboardScreenState extends ConsumerState<WorkerDashboardScreen> {
     }
   }
 
-  /// Pull-to-refresh: stáhne čerstvá data ze Supabase a aktualizuje provider.
+  /// Pull-to-refresh: push úkolů/rezervací, zpracování fronty mutací, poté pull úkolů.
   Future<void> _refresh() async {
     await ref.read(workerSyncStateProvider.notifier).runSync();
+    await ref.read(mutationQueueServiceProvider).processQueue();
     ref.invalidate(workerTasksProvider);
     await ref.read(workerTasksProvider.future);
     if (mounted && ref.read(workerSyncStateProvider) == null) {
@@ -67,8 +73,6 @@ class _WorkerDashboardScreenState extends ConsumerState<WorkerDashboardScreen> {
   @override
   Widget build(BuildContext context) {
     final tasksAsync = ref.watch(workerTasksProvider);
-    final isOffline = ref.watch(isOfflineProvider).value ?? false;
-    final syncError = ref.watch(workerSyncStateProvider);
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F5),
@@ -94,59 +98,8 @@ class _WorkerDashboardScreenState extends ConsumerState<WorkerDashboardScreen> {
       drawer: _WorkerDrawer(hasPin: _hasPin ?? false),
       body: Column(
         children: [
-          if (isOffline)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              color: Colors.orange.shade700,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.cloud_off, color: Colors.white, size: 20),
-                  const SizedBox(width: 8),
-                  Text(
-                    'worker.offline_mode_banner'.tr(),
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ),
-            )
-          else
-            const SizedBox.shrink(),
-          // Vizuální upozornění pro pracovníka, že synchronizace na pozadí selhala.
-          // Práce je v bezpečí v lokální DB, ale backend o ní zatím neví.
-          if (syncError != null && syncError.isNotEmpty)
-            Material(
-              color: Colors.red.shade700,
-              child: InkWell(
-                onTap: () => ref.read(workerSyncStateProvider.notifier).clearSyncError(),
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  child: Row(
-                    children: [
-                      Icon(Icons.cloud_off, color: Colors.white, size: 20),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'worker.sync_error_banner'.tr(),
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ),
-                      Icon(Icons.close, color: Colors.white, size: 18),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+          const WorkerDashboardSyncBanners(),
+          const _HighCashWalletWarningBanner(),
           Expanded(
             child: RefreshIndicator(
               onRefresh: _refresh,
@@ -177,7 +130,7 @@ class _WorkerDashboardScreenState extends ConsumerState<WorkerDashboardScreen> {
                             Icon(Icons.error_outline, size: 48, color: Colors.red.shade400),
                             const SizedBox(height: 16),
                             Text(
-                              'common.error_with_message'.tr(namedArgs: {'message': '$e'}),
+                              'common.generic_error_user_friendly'.tr(),
                               textAlign: TextAlign.center,
                               style: TextStyle(color: Colors.grey.shade700),
                             ),
@@ -200,6 +153,74 @@ class _WorkerDashboardScreenState extends ConsumerState<WorkerDashboardScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Varování při vysokém zůstatku hotovosti v peněžence (bezpečnost v terénu).
+///
+/// PROČ: Pracovník má vidět riziko hned na dashboardu; přechod do peněženky jedním klepnutím.
+class _HighCashWalletWarningBanner extends ConsumerWidget {
+  const _HighCashWalletWarningBanner();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final walletAsync = ref.watch(myCashWalletProvider);
+    return walletAsync.when(
+      data: (w) {
+        if (w == null || w.balance <= _kWorkerHighCashBalanceThreshold) {
+          return const SizedBox.shrink();
+        }
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          child: Card(
+            color: Colors.deepOrange.shade50,
+            elevation: 2,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: Colors.deepOrange.shade200),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.warning_amber_rounded, color: Colors.deepOrange.shade900, size: 28),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'worker.cash_high_warning_body'.tr(),
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.grey.shade900,
+                            height: 1.35,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.deepOrange.shade700,
+                      foregroundColor: Colors.white,
+                    ),
+                    onPressed: () => context.push('/worker/wallet'),
+                    icon: const Icon(Icons.account_balance_wallet_outlined, size: 20),
+                    label: Text('worker.cash_high_warning_cta'.tr()),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+      loading: () => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
     );
   }
 }
@@ -326,9 +347,13 @@ class _WorkerDrawer extends ConsumerWidget {
         ? 'worker.drawer_role_admin'.tr()
         : 'worker.drawer_role_worker'.tr();
 
+    // PROČ ListView místo Column: na nižších displejích (malý safe area, velký header,
+    // přehled týdne + více položek) Column přetekl a spodní položky menu vč. „Moje výdělky“
+    // nebyly vidět / zmizely pod spodním okrajem – uživatel je vnímal jako „zmizené z menu“.
     return Drawer(
       child: SafeArea(
-        child: Column(
+        child: ListView(
+          padding: EdgeInsets.zero,
           children: [
             // Sjednocená hlavička – vizitka uživatele + přepínač jazyka v pravém horním rohu.
             Stack(
@@ -504,9 +529,121 @@ class _TaskList extends StatelessWidget {
                     ),
               ),
             ),
-            ...grouped[g]!.map((t) => _TaskCard(task: t)),
+            ..._buildLocationGroupedCards(grouped[g]!),
           ],
       ],
+    );
+  }
+}
+
+/// Klíč seskupení: stejný byt (`apartment_id`) nebo stejná zobrazená adresa (externí úkoly).
+///
+/// PROČ: Pracovník vidí u jedné budovy jednu hlavičku; izolované úkoly (`solo:`) zůstávají bez skupiny.
+String _locationGroupKey(WorkerTask t) {
+  final apt = t.apartmentId.trim();
+  if (apt.isNotEmpty) return 'apt:$apt';
+  final addr = t.displayAddress.trim();
+  if (addr.isNotEmpty) return 'addr:${addr.toLowerCase()}';
+  return 'solo:${t.id}';
+}
+
+/// V rámci dne seřadí úkoly časem, seskupí podle [_locationGroupKey], hlavička jen pokud je ve skupině > 1.
+List<Widget> _buildLocationGroupedCards(List<WorkerTask> dayTasks) {
+  final sorted = [...dayTasks]..sort((a, b) => a.scheduledStart.compareTo(b.scheduledStart));
+  final keysOrder = <String>[];
+  final map = <String, List<WorkerTask>>{};
+  for (final t in sorted) {
+    final k = _locationGroupKey(t);
+    if (!map.containsKey(k)) {
+      keysOrder.add(k);
+      map[k] = [];
+    }
+    map[k]!.add(t);
+  }
+  final out = <Widget>[];
+  for (final k in keysOrder) {
+    final list = map[k]!;
+    if (list.length > 1) {
+      out.add(_AddressGroupHeader(tasks: list));
+    }
+    for (final t in list) {
+      out.add(_TaskCard(task: t));
+    }
+  }
+  return out;
+}
+
+/// Kompaktní hlavička „stejná adresa / budova“ nad více kartami úkolů.
+class _AddressGroupHeader extends StatelessWidget {
+  const _AddressGroupHeader({required this.tasks});
+
+  final List<WorkerTask> tasks;
+
+  String _title(WorkerTask t) {
+    final name = t.apartmentName?.trim();
+    if (name != null && name.isNotEmpty) return name;
+    final addr = t.displayAddress;
+    if (addr.isNotEmpty) return addr;
+    final ct = t.customTitle?.trim();
+    if (ct != null && ct.isNotEmpty) return ct;
+    return 'worker.task_unnamed'.tr();
+  }
+
+  String? _subtitle(WorkerTask t) {
+    final name = t.apartmentName?.trim();
+    final addr = t.displayAddress;
+    if (name != null && name.isNotEmpty && addr.isNotEmpty) return addr;
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final first = tasks.first;
+    final title = _title(first);
+    final sub = _subtitle(first);
+    return Padding(
+      padding: const EdgeInsets.only(top: 4, bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.apartment_outlined, size: 20, color: _primaryBlue.withValues(alpha: 0.9)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                    color: Colors.grey.shade800,
+                  ),
+                ),
+                if (sub != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      sub,
+                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    'worker.worker_tasks_group_count'.tr(namedArgs: {'count': '${tasks.length}'}),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: _primaryBlue.withValues(alpha: 0.95),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -563,28 +700,13 @@ class _TaskCard extends StatelessWidget {
     return t.title.trim().isNotEmpty ? t.title.trim() : 'worker.task_unnamed'.tr();
   }
 
-  /// Adresa pro zobrazení a navigaci: apartment → custom_location → metadata.
-  static String _displayAddress(WorkerTask t) {
-    if (t.apartmentAddress != null && t.apartmentAddress!.trim().isNotEmpty) {
-      return t.apartmentAddress!.trim();
-    }
-    if (t.customLocation != null && t.customLocation!.trim().isNotEmpty) {
-      return t.customLocation!.trim();
-    }
-    final addr = t.metadata?['address']?.toString().trim();
-    if (addr != null && addr.isNotEmpty) return addr;
-    return '';
-  }
-
-  Future<void> _openMaps(BuildContext context, String? address) async {
-    final query = (address ?? '').trim();
-    if (query.isEmpty) return;
-    final uri = Uri.parse(
-      'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(query)}',
+  Future<void> _openMaps(BuildContext context, WorkerTask task) async {
+    await launchWorkerGoogleMapsSearch(
+      hasGps: task.hasGps,
+      latitude: task.latitude,
+      longitude: task.longitude,
+      addressFallback: task.displayAddress,
     );
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    }
   }
 
   @override
@@ -600,7 +722,7 @@ class _TaskCard extends StatelessWidget {
     final statusColor = task.status == 'in_progress' ? _primaryBlue : Colors.amber.shade700;
     final hasInstructions = (task.description.trim()).isNotEmpty;
     final displayName = _displayName(task);
-    final address = _displayAddress(task);
+    final address = task.displayAddress;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -703,11 +825,11 @@ class _TaskCard extends StatelessWidget {
               Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (address.isNotEmpty)
+                  if (address.isNotEmpty || task.hasGps)
                     Material(
                       color: Colors.transparent,
                       child: InkWell(
-                        onTap: () => _openMaps(context, address),
+                        onTap: () => _openMaps(context, task),
                         borderRadius: BorderRadius.circular(24),
                         child: Container(
                           width: 48,

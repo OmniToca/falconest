@@ -1,125 +1,26 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:easy_localization/easy_localization.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import 'package:falconest/core/audit/enterprise_audit_payload.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
-import 'package:falconest/core/presentation/widgets/app_card.dart';
 import 'package:falconest/core/presentation/widgets/modern_admin_panel.dart';
-import 'package:falconest/core/services/audit_log_service.dart';
+import 'package:falconest/core/theme/app_spacing.dart';
+import 'package:falconest/core/theme/premium_card_decoration.dart';
+import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
-import 'package:falconest/features/admin/providers/apartment_owners_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/settings/models/tenant_service_model.dart';
 import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
 import 'package:falconest/features/admin/providers/zones_provider.dart';
 import 'package:falconest/features/admin/admin_team_member_tabs.dart';
 import 'package:falconest/features/calendar/providers/planning_calendar_provider.dart';
-
-/// Odpojí personál od nedokončených úkolů (nebo v zadaném rozsahu datumů).
-///
-/// Bez [fromDate]/[toDate] (např. při mazání člena): odpojí od VŠECH nedokončených úkolů.
-/// S [fromDate]/[toDate] (např. při ukládání nepřítomnosti): pouze úkoly v daném intervalu.
-/// Zachovává historii: úkoly se stavem „Hotovo“ se nemění.
-/// [memberName] – pro Soft-Unassign: zapíše se do unassigned_info.previous_name v DB (UI „Původně přiřazený: …“).
-///
-/// OPRAVA: (a) hlavní řešitel → assigned_to = null + unassigned_info; (b) spolupracovník → odstranění z assigned_user_ids.
-Future<void> _unassignTasksForMember(
-  WidgetRef ref,
-  String memberId, {
-  DateTime? fromDate,
-  DateTime? toDate,
-  String? memberName,
-}) async {
-  if (memberId.isEmpty) return;
-  final tenantId = ref.read(authNotifierProvider).tenantIdForData;
-  if (tenantId == null || tenantId.isEmpty) return;
-  try {
-    // Worker vidí úkol při assigned_to NEBO v assigned_user_ids.
-    final tasksRes = await SupabaseService.safeFrom('tasks', tenantId)
-        .select('id, due_date, status, assigned_to, assigned_user_ids')
-        .or('assigned_to.eq.$memberId,assigned_user_ids.cs.{$memberId}')
-        .isFilter('deleted_at', null);
-    final taskList = tasksRes as List<dynamic>? ?? [];
-    for (final t in taskList) {
-      final map = t is Map ? Map<String, dynamic>.from(t) : null;
-      if (map == null) continue;
-      final status = (map['status'] as String?)?.trim() ?? '';
-      final isCompleted = status.toLowerCase().contains('hotovo') || status == 'completed';
-      final isInProgress = status.toLowerCase().contains('probíhá') || status == 'in_progress';
-      if (isCompleted || isInProgress) continue;
-      // Volitelný filtr podle data (při nepřítomnosti jen úkoly v intervalu).
-      if (fromDate != null || toDate != null) {
-        final dueRaw = map['due_date'];
-        DateTime? due;
-        if (dueRaw is DateTime) {
-          due = dueRaw;
-        } else if (dueRaw != null) {
-          due = DateTime.tryParse(dueRaw.toString());
-        }
-        if (due == null) continue;
-        final dueDay = DateTime(due.year, due.month, due.day);
-        if (fromDate != null) {
-          final fromDay = DateTime(fromDate.year, fromDate.month, fromDate.day);
-          if (dueDay.isBefore(fromDay)) continue;
-        }
-        if (toDate != null) {
-          final toDay = DateTime(toDate.year, toDate.month, toDate.day);
-          if (dueDay.isAfter(toDay)) continue;
-        }
-      }
-      final taskId = map['id']?.toString();
-      if (taskId == null || taskId.isEmpty) continue;
-
-      // (a) Hlavní řešitel: assigned_to = null, pokud je to tento člen.
-      final currentAssignedTo = map['assigned_to']?.toString().trim();
-      final newAssignedTo = (currentAssignedTo == memberId) ? null : currentAssignedTo;
-
-      // (b) Spolupracovník: odstranit memberId z pole assigned_user_ids.
-      final rawIds = map['assigned_user_ids'];
-      List<String> currentIds = [];
-      if (rawIds != null && rawIds is List) {
-        currentIds = rawIds
-            .map((e) => e?.toString().trim())
-            .where((s) => s != null && s.isNotEmpty)
-            .cast<String>()
-            .toList();
-      }
-      final newIds = currentIds.where((id) => id != memberId).toList();
-
-      final payload = <String, dynamic>{
-        'assigned_to': newAssignedTo,
-        'assigned_user_ids': newIds,
-        'status': 'pending',
-      };
-      // Soft-Unassign: při odebrání hlavního řešitele zapíšeme kontext pro UI.
-      // Supabase JSONB očekává JSON string, ne Dart Mapu – jinak sloupec zůstane NULL.
-      if (newAssignedTo == null) {
-        payload['unassigned_info'] = jsonEncode({
-          'previous_id': memberId,
-          'previous_name': memberName ?? '',
-          'unassigned_at': DateTime.now().toUtc().toIso8601String(),
-        });
-      }
-
-      await SupabaseService.safeFrom('tasks', tenantId)
-          .update(payload)
-          .eq('id', taskId);
-    }
-    ref.invalidate(adminTasksProvider);
-    ref.invalidate(planningCalendarAllTasksProvider);
-    ref.invalidate(planningCalendarAllTasksForMonthProvider);
-  } catch (e, st) {
-    debugPrint('Chyba při _unassignTasksForMember: $e\n$st');
-  }
-}
 
 /// Obrazovka správy týmu – profiles + invitations, editace, mazání.
 /// Horní lišta a karty sjednoceny se Správou bytů.
@@ -222,7 +123,7 @@ class _AdminTeamScreenState extends ConsumerState<AdminTeamScreen> {
                                         'admin.team_section_active'.tr(),
                                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
                                               fontWeight: FontWeight.bold,
-                                              color: Colors.grey.shade700,
+                                              color: context.colors.onSurfaceVariant,
                                             ),
                                       ),
                                     ),
@@ -248,13 +149,13 @@ class _AdminTeamScreenState extends ConsumerState<AdminTeamScreen> {
                                       padding: const EdgeInsets.only(bottom: 8),
                                       child: Row(
                                         children: [
-                                          Icon(Icons.schedule, size: 18, color: Colors.orange.shade700),
+                                          Icon(Icons.schedule, size: 18, color: context.colors.tertiary),
                                           const SizedBox(width: 6),
                                           Text(
                                             'admin.team_section_pending_invitations'.tr(),
                                             style: Theme.of(context).textTheme.titleSmall?.copyWith(
                                                   fontWeight: FontWeight.bold,
-                                                  color: Colors.orange.shade800,
+                                                  color: context.colors.tertiary,
                                                 ),
                                           ),
                                         ],
@@ -303,12 +204,12 @@ class _AdminTeamScreenState extends ConsumerState<AdminTeamScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
+              Icon(Icons.error_outline, size: 48, color: context.colors.error),
               const SizedBox(height: 16),
               Text(
                 'admin.team_load_error'.tr(),
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.red.shade700),
+                style: TextStyle(color: context.colors.error),
               ),
               const SizedBox(height: 16),
               FilledButton(
@@ -394,48 +295,7 @@ class _DeleteConfirmDialogState extends ConsumerState<_DeleteConfirmDialog> {
     if (_isDeleting) return;
     setState(() => _isDeleting = true);
     try {
-      final deletedAt = DateTime.now().toUtc().toIso8601String();
-      final auth = ref.read(authNotifierProvider);
-      final tenantId = auth.tenantIdForData;
-      if (widget.member.isFromInvitation) {
-        // Pending: soft delete profilu (záznam zůstane v DB, deleted_at vyplněn)
-        await SupabaseService.client
-            .from('profiles')
-            .update({'deleted_at': deletedAt})
-            .eq('id', widget.member.id);
-        // Bezpečnostní zneplatnění pozvánky při smazání čekajícího uživatele.
-        if (tenantId != null && tenantId.isNotEmpty) {
-            try {
-            await SupabaseService.safeFrom('invitations', tenantId)
-                .update({'deleted_at': deletedAt})
-                .eq('profile_id', widget.member.id);
-          } catch (_) {
-            // Fallback: tabulka invitations nemá deleted_at – fyzický DELETE.
-            await SupabaseService.safeFrom('invitations', tenantId)
-                .delete()
-                .eq('profile_id', widget.member.id);
-          }
-        }
-      } else {
-        // Active: soft delete (deleted_at + tenant_id=null pro konzistenci)
-        await SupabaseService.client
-            .from('profiles')
-            .update({'tenant_id': null, 'deleted_at': deletedAt})
-            .eq('id', widget.member.id);
-      }
-      final userId = SupabaseService.client.auth.currentUser?.id;
-      await AuditLogService.logEnterprise(
-        tenantId: tenantId,
-        userId: userId,
-        actionType: 'SOFT_DELETE',
-        tableName: 'profiles',
-        recordId: widget.member.id,
-        recordName: widget.member.name,
-        previousState: widget.member.toJson(),
-        triggeredBy: AuditTriggeredBy.manual,
-      );
-
-      await _unassignTasksForMember(ref, widget.member.id, memberName: widget.member.name);
+      await ref.read(adminTeamProvider.notifier).deleteTeamMember(widget.member);
 
       if (!mounted) return;
       Navigator.of(context).pop();
@@ -454,7 +314,7 @@ class _DeleteConfirmDialogState extends ConsumerState<_DeleteConfirmDialog> {
       print('--- CHYBA MAZÁNÍ ČLENA TÝMU: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('common.error_with_message'.tr(namedArgs: {'message': '$e'})),
+          content: Text('common.generic_error_user_friendly'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
@@ -602,174 +462,182 @@ class _MemberCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return AppCard(
-      onTap: () => onEdit(member),
-      padding: const EdgeInsets.all(16),
-      child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                CircleAvatar(
-                  radius: 28,
-                  backgroundColor: Colors.purple.shade100,
-                  child: Text(
-                    _initialsFromName(member.name),
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.purple.shade800,
+    final radius = BorderRadius.circular(AppSpacing.md);
+    return ClipRRect(
+      borderRadius: radius,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () => onEdit(member),
+          borderRadius: radius,
+          child: Ink(
+            decoration: premiumCardDecoration(context),
+            child: Padding(
+              padding: const EdgeInsets.all(AppSpacing.md),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  CircleAvatar(
+                    radius: 28,
+                    backgroundColor: context.colors.primaryContainer,
+                    child: Text(
+                      _initialsFromName(member.name),
+                      style: context.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: context.colors.onPrimaryContainer,
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Text(
-                            member.name,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 18,
+                  SizedBox(width: AppSpacing.md),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                member.name,
+                                style: context.textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            if (member.role == 'admin') ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: context.colors.secondaryContainer,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  'admin.team_badge_admin'.tr(),
+                                  style: context.textTheme.labelSmall?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                    color: context.colors.onSecondaryContainer,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        SizedBox(height: AppSpacing.xs),
+                        Text(
+                          _roleSubtitle(member.roles),
+                          style: context.textTheme.bodyMedium?.copyWith(
+                            color: context.colors.onSurfaceVariant,
+                          ),
+                        ),
+                        if (member.isFromInvitation && (member.email ?? '').isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          _TeamDetailRow(
+                            icon: Icons.email_outlined,
+                            text: member.email!,
+                          ),
+                        ],
+                        const SizedBox(height: 10),
+                        if (_contractLabel(member).isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: _TeamDetailRow(
+                              icon: Icons.work_outline,
+                              text: _contractLabel(member),
                             ),
                           ),
-                          if (member.role == 'admin') ...[
-                            const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: Colors.blue.shade100,
-                                borderRadius: BorderRadius.circular(6),
+                        _TeamDetailRow(
+                          icon: Icons.access_time,
+                          text: 'admin.team_workload'.tr(namedArgs: {'hours': '${member.weeklyHours}'}),
+                        ),
+                        if (member.zonePreferences != null && member.zonePreferences!.isNotEmpty)
+                          _TeamDetailRow(
+                            icon: Icons.map_outlined,
+                            text: 'admin.team_has_preferred_zones'.tr(),
+                          ),
+                        _TeamDetailRow(
+                          icon: Icons.login_outlined,
+                          text: _formatLastSignIn(member.lastSignInAt),
+                        ),
+                        const SizedBox(height: 4),
+                        _MemberCardExtra(member: member),
+                      ],
+                    ),
+                  ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: member.isFromInvitation
+                              ? context.colors.tertiaryContainer
+                              : context.colors.primaryContainer,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          member.isFromInvitation
+                              ? 'admin.team_status_pending'.tr()
+                              : 'admin.team_status_active'.tr(),
+                          style: context.textTheme.labelLarge?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: member.isFromInvitation
+                                ? context.colors.onTertiaryContainer
+                                : context.colors.onPrimaryContainer,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      if (member.isFromInvitation)
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: Icon(Icons.link, color: context.colors.primary),
+                              tooltip: 'admin.team_invite_copy_tooltip'.tr(),
+                              onPressed: () {
+                                final token = member.invitationId ?? member.id;
+                                final origin = Uri.base.origin;
+                                final inviteUrl = '$origin/#/invite?token=$token';
+                                Clipboard.setData(ClipboardData(text: inviteUrl));
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('admin.team_invite_copied_snackbar'.tr()),
+                                    behavior: SnackBarBehavior.floating,
+                                  ),
+                                );
+                              },
+                              style: IconButton.styleFrom(
+                                backgroundColor: context.colors.surfaceContainerHighest,
                               ),
-                              child: Text(
-                                'admin.team_badge_admin'.tr(),
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.blue.shade800,
-                                ),
+                            ),
+                            IconButton(
+                              icon: Icon(Icons.delete_outline, color: context.colors.error),
+                              tooltip: 'admin.team_delete'.tr(),
+                              onPressed: () => onDelete(member),
+                              style: IconButton.styleFrom(
+                                backgroundColor: context.colors.errorContainer,
                               ),
                             ),
                           ],
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        _roleSubtitle(member.roles),
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.grey.shade600,
-                        ),
-                      ),
-                      if (member.isFromInvitation && (member.email ?? '').isNotEmpty) ...[
-                        const SizedBox(height: 6),
-                        _TeamDetailRow(
-                          icon: Icons.email_outlined,
-                          text: member.email!,
-                        ),
-                      ],
-                      const SizedBox(height: 10),
-                      if (_contractLabel(member).isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 4),
-                          child: _TeamDetailRow(
-                            icon: Icons.work_outline,
-                            text: _contractLabel(member),
+                        )
+                      else
+                        IconButton(
+                          icon: Icon(Icons.event_busy, color: context.colors.tertiary),
+                          tooltip: 'admin.absence_manage_tooltip'.tr(),
+                          onPressed: () => onManageAbsence(member),
+                          style: IconButton.styleFrom(
+                            backgroundColor: context.colors.surfaceContainerHighest,
                           ),
                         ),
-                      _TeamDetailRow(
-                        icon: Icons.access_time,
-                        text: 'admin.team_workload'.tr(namedArgs: {'hours': '${member.weeklyHours}'}),
-                      ),
-                      // Zobrazení informace, že pracovník má nastavené zóny pro lepší plánování.
-                      if (member.zonePreferences != null && member.zonePreferences!.isNotEmpty)
-                        _TeamDetailRow(
-                          icon: Icons.map_outlined,
-                          text: 'admin.team_has_preferred_zones'.tr(),
-                        ),
-                      _TeamDetailRow(
-                        icon: Icons.login_outlined,
-                        text: _formatLastSignIn(member.lastSignInAt),
-                      ),
-                      const SizedBox(height: 4),
-                      _MemberCardExtra(member: member),
                     ],
                   ),
-                ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: member.isFromInvitation
-                            ? Colors.orange.shade100
-                            : Colors.green.shade100,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        member.isFromInvitation
-                            ? 'admin.team_status_pending'.tr()
-                            : 'admin.team_status_active'.tr(),
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: member.isFromInvitation
-                              ? Colors.orange.shade800
-                              : Colors.green.shade800,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    if (member.isFromInvitation)
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon: Icon(Icons.link, color: Colors.blue.shade700),
-                            tooltip: 'admin.team_invite_copy_tooltip'.tr(),
-                            onPressed: () {
-                              // Zvací odkaz jako záložní varianta pro sdílení mimo e-mail (WhatsApp, SMS atd.).
-                              final token = member.invitationId ?? member.id;
-                              final origin = Uri.base.origin;
-                              final inviteUrl = '$origin/#/invite?token=$token';
-                              Clipboard.setData(ClipboardData(text: inviteUrl));
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('admin.team_invite_copied_snackbar'.tr()),
-                                  behavior: SnackBarBehavior.floating,
-                                ),
-                              );
-                            },
-                            style: IconButton.styleFrom(
-                              backgroundColor: Colors.blue.shade50,
-                            ),
-                          ),
-                          IconButton(
-                            icon: Icon(Icons.delete_outline, color: Colors.red.shade700),
-                            tooltip: 'admin.team_delete'.tr(),
-                            onPressed: () => onDelete(member),
-                            style: IconButton.styleFrom(
-                              backgroundColor: Colors.red.shade50,
-                            ),
-                          ),
-                        ],
-                      )
-                    else
-                      IconButton(
-                        icon: Icon(Icons.event_busy, color: Colors.purple.shade700),
-                        tooltip: 'admin.absence_manage_tooltip'.tr(),
-                        onPressed: () => onManageAbsence(member),
-                        style: IconButton.styleFrom(
-                          backgroundColor: Colors.purple.shade50,
-                        ),
-                      ),
-                  ],
-                ),
-              ],
+                ],
+              ),
             ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -788,12 +656,14 @@ class _TeamDetailRow extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: 16, color: Colors.grey.shade600),
+        Icon(icon, size: 16, color: context.colors.onSurfaceVariant),
         const SizedBox(width: 6),
         Flexible(
           child: Text(
             text,
-            style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+            style: context.textTheme.bodyMedium?.copyWith(
+              color: context.colors.onSurfaceVariant,
+            ),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
@@ -803,7 +673,8 @@ class _TeamDetailRow extends StatelessWidget {
   }
 }
 
-/// Na kartě personálu: ukazatel kapacity (vytížení tento týden vs úvazek), celkový počet aktivních úkolů a plánovaná nepřítomnost.
+/// Na kartě personálu: ukazatel kapacity (tento / příští týden vs úvazek) a plánovaná nepřítomnost.
+/// Data z [teamWeeklyWorkloadTasksProvider] – nezávislá na měsíčním filtru záložky Úkoly.
 class _MemberCardExtra extends ConsumerWidget {
   const _MemberCardExtra({required this.member});
 
@@ -817,6 +688,14 @@ class _MemberCardExtra extends ConsumerWidget {
   static bool _isActiveTask(TaskRow t) {
     final s = (t.status).toLowerCase();
     return !s.contains('hotovo') && s != 'completed';
+  }
+
+  /// True, pokud je člen hlavní řešitel nebo spoluřešitel ([TaskRow.assignedUserIds]) – musí se promítnout do kapacity.
+  static bool _isTaskAssignedToMember(TaskRow t, String memberId) {
+    if (memberId.isEmpty) return false;
+    final primary = t.assignedTo?.trim();
+    if (primary != null && primary.isNotEmpty && primary == memberId) return true;
+    return t.assignedUserIds.any((id) => id.trim() == memberId);
   }
 
   /// Najde službu v katalogu odpovídající úkolu. Priorita: serviceId, fallback mapování taskType -> serviceType.
@@ -868,21 +747,15 @@ class _MemberCardExtra extends ConsumerWidget {
             hours: 0,
             maxHours: maxHours,
           ),
-          const SizedBox(height: 4),
-          Text(
-            'admin.team_total_active_future'.tr(namedArgs: {'count': '0'}),
-            style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
-          ),
         ],
       ),
     );
   }
 
-  /// Spočítá aktivní úkoly přiřazené členovi. Vrací celkem, tento týden, příští týden.
+  /// Spočítá aktivní úkoly přiřazené členovi (včetně spoluřešitelů). Vrací tento týden a příští týden.
   /// Filtrování podle ISO týdne (pondělí–neděle, weekday 1 = pondělí).
   /// Čas se počítá z Katalogu služeb agentury (tenant_services) – bez hardcodovaných hodnot.
   static ({
-    int total,
     int thisWeek,
     int thisWeekMinutes,
     int nextWeek,
@@ -895,7 +768,7 @@ class _MemberCardExtra extends ConsumerWidget {
     List<TenantServiceModel> services,
   ) {
     if (memberId.isEmpty) {
-      return (total: 0, thisWeek: 0, thisWeekMinutes: 0, nextWeek: 0, nextWeekMinutes: 0);
+      return (thisWeek: 0, thisWeekMinutes: 0, nextWeek: 0, nextWeekMinutes: 0);
     }
     final today = DateTime(now.year, now.month, now.day);
     final monday = today.subtract(Duration(days: now.weekday - 1));
@@ -907,7 +780,6 @@ class _MemberCardExtra extends ConsumerWidget {
     final nextMonday = monday.add(const Duration(days: 7));
     final nextSunday = nextMonday.add(const Duration(days: 6));
 
-    int total = 0;
     int thisWeek = 0;
     int thisWeekMinutes = 0;
     int nextWeek = 0;
@@ -933,9 +805,8 @@ class _MemberCardExtra extends ConsumerWidget {
     }
 
     for (final t in tasks) {
-      if (t.assignedTo != memberId) continue;
+      if (!_isTaskAssignedToMember(t, memberId)) continue;
       if (!_isActiveTask(t)) continue;
-      total++;
       // PROČ toLocal(): dueDate je UTC; pro týdenní souhrn potřebujeme lokální datum.
       final local = t.dueDate.isUtc ? t.dueDate.toLocal() : t.dueDate;
       final dueDay = DateTime(local.year, local.month, local.day);
@@ -949,7 +820,6 @@ class _MemberCardExtra extends ConsumerWidget {
       }
     }
     return (
-      total: total,
       thisWeek: thisWeek,
       thisWeekMinutes: thisWeekMinutes,
       nextWeek: nextWeek,
@@ -958,7 +828,7 @@ class _MemberCardExtra extends ConsumerWidget {
   }
 
   /// Jedna položka ukazatele vytížení – titulek, počet úkolů/hodin a progress bar.
-  /// Barvy: zelená < 70 %, oranžová < 90 %, červená ≥ 90 %.
+  /// Barvy: success / warning / error z tématu (< 70 % / 90 % / nad).
   static Widget _buildWorkloadIndicator(
     BuildContext context, {
     required String title,
@@ -967,6 +837,11 @@ class _MemberCardExtra extends ConsumerWidget {
     required double maxHours,
   }) {
     final ratio = (maxHours > 0) ? (hours / maxHours).clamp(0.0, 1.0) : 0.0;
+    final barColor = ratio < 0.7
+        ? context.customColors.success
+        : ratio < 0.9
+            ? context.customColors.warning
+            : context.colors.error;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
@@ -976,18 +851,16 @@ class _MemberCardExtra extends ConsumerWidget {
           children: [
             Text(
               title,
-              style: TextStyle(
-                fontSize: 12,
+              style: context.textTheme.labelLarge?.copyWith(
                 fontWeight: FontWeight.w600,
-                color: Colors.grey.shade700,
+                color: context.colors.onSurfaceVariant,
               ),
             ),
             Text(
               '$tasks ${'admin.team_tasks_label'.tr()} (~${hours.toStringAsFixed(1)}h / ${maxHours.toInt()}h)',
-              style: TextStyle(
-                fontSize: 12,
+              style: context.textTheme.labelLarge?.copyWith(
                 fontWeight: FontWeight.w600,
-                color: Colors.grey.shade800,
+                color: context.colors.onSurface,
               ),
             ),
           ],
@@ -996,7 +869,7 @@ class _MemberCardExtra extends ConsumerWidget {
         Container(
           height: 6,
           decoration: BoxDecoration(
-            color: Colors.grey.shade200,
+            color: context.colors.surfaceContainerHighest,
             borderRadius: BorderRadius.circular(4),
           ),
           child: ClipRRect(
@@ -1009,13 +882,7 @@ class _MemberCardExtra extends ConsumerWidget {
                     if (w > 0)
                       Container(
                         width: w,
-                        decoration: BoxDecoration(
-                          color: ratio < 0.7
-                              ? Colors.green.shade400
-                              : ratio < 0.9
-                                  ? Colors.orange.shade400
-                                  : Colors.red.shade500,
-                        ),
+                        decoration: BoxDecoration(color: barColor),
                       ),
                   ],
                 );
@@ -1029,7 +896,7 @@ class _MemberCardExtra extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final tasksAsync = ref.watch(adminTasksStreamProvider);
+    final tasksAsync = ref.watch(teamWeeklyWorkloadTasksProvider);
     final absencesAsync = ref.watch(staffAbsencesProvider);
     final apartments = ref.watch(apartmentsFullListProvider).valueOrNull ?? [];
     final services = ref.watch(tenantServicesProvider).valueOrNull ?? [];
@@ -1040,7 +907,6 @@ class _MemberCardExtra extends ConsumerWidget {
         final today = DateTime(now.year, now.month, now.day);
         final memberId = member.profileId ?? member.id;
         final capacity = _computeCapacity(tasks, memberId, now, apartments, services);
-        final totalActiveTasks = capacity.total;
         final thisWeekPlannedHours = capacity.thisWeekMinutes / 60.0;
         final nextWeekPlannedHours = capacity.nextWeekMinutes / 60.0;
         final maxHours = member.weeklyHours.toDouble();
@@ -1056,15 +922,14 @@ class _MemberCardExtra extends ConsumerWidget {
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Row(
                   children: [
-                    Icon(Icons.event_busy, size: 16, color: Colors.orange.shade700),
+                    Icon(Icons.event_busy, size: 16, color: context.customColors.warning),
                     const SizedBox(width: 6),
                     Flexible(
                       child: Text(
                         'admin.team_absence_pending_banner'.tr(),
-                        style: TextStyle(
-                          fontSize: 13,
+                        style: context.textTheme.bodyMedium?.copyWith(
                           fontWeight: FontWeight.w600,
-                          color: Colors.orange.shade800,
+                          color: context.customColors.warning,
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -1095,14 +960,6 @@ class _MemberCardExtra extends ConsumerWidget {
                     hours: nextWeekPlannedHours,
                     maxHours: maxHours > 0 ? maxHours : 1.0,
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'admin.team_total_active_future'.tr(namedArgs: {'count': totalActiveTasks.toString()}),
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.grey.shade500,
-                    ),
-                  ),
                 ],
               ),
             ),
@@ -1130,14 +987,13 @@ class _MemberCardExtra extends ConsumerWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.event_busy, size: 16, color: Colors.orange.shade700),
+                      Icon(Icons.event_busy, size: 16, color: context.customColors.warning),
                       const SizedBox(width: 6),
                       Flexible(
                         child: Text(
                           absenceText,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Colors.orange.shade800,
+                          style: context.textTheme.bodyMedium?.copyWith(
+                            color: context.customColors.warning,
                             fontWeight: FontWeight.w500,
                           ),
                           maxLines: 1,
@@ -1242,7 +1098,12 @@ class _AbsenceDialogState extends ConsumerState<_AbsenceDialog> {
       if (!mounted) return;
       ref.invalidate(staffAbsencesProvider);
       final memberId = widget.member.profileId ?? widget.member.id;
-      await _unassignTasksForMember(ref, memberId, fromDate: _fromDate, toDate: _toDate, memberName: widget.member.name);
+      await ref.read(adminTeamProvider.notifier).unassignOpenTasksForMember(
+            memberId: memberId,
+            fromDate: _fromDate,
+            toDate: _toDate,
+            memberName: widget.member.name,
+          );
       if (!mounted) return;
       widget.onSaved();
       _reasonController.clear();
@@ -1256,7 +1117,7 @@ class _AbsenceDialogState extends ConsumerState<_AbsenceDialog> {
         setState(() => _isSaving = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -1267,16 +1128,22 @@ class _AbsenceDialogState extends ConsumerState<_AbsenceDialog> {
 
   Future<void> _approveAbsence(StaffAbsence a) async {
     if (a.startDate == null || a.endDate == null) return;
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return;
     setState(() => _isSaving = true);
     try {
-      await SupabaseService.client
-          .from('staff_absences')
+      await SupabaseService.safeFrom('staff_absences', tenantId)
           .update({'status': staffAbsenceStatusApproved})
           .eq('id', a.id);
       if (!mounted) return;
       ref.invalidate(staffAbsencesProvider);
       final memberId = widget.member.profileId ?? widget.member.id;
-      await _unassignTasksForMember(ref, memberId, fromDate: a.startDate, toDate: a.endDate, memberName: widget.member.name);
+      await ref.read(adminTeamProvider.notifier).unassignOpenTasksForMember(
+            memberId: memberId,
+            fromDate: a.startDate,
+            toDate: a.endDate,
+            memberName: widget.member.name,
+          );
       if (!mounted) return;
       ref.invalidate(adminTasksProvider);
       ref.invalidate(planningCalendarAllTasksProvider);
@@ -1287,7 +1154,7 @@ class _AbsenceDialogState extends ConsumerState<_AbsenceDialog> {
         setState(() => _isSaving = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -1297,10 +1164,11 @@ class _AbsenceDialogState extends ConsumerState<_AbsenceDialog> {
   }
 
   Future<void> _rejectAbsence(StaffAbsence a) async {
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) return;
     setState(() => _isSaving = true);
     try {
-      await SupabaseService.client
-          .from('staff_absences')
+      await SupabaseService.safeFrom('staff_absences', tenantId)
           .update({'status': staffAbsenceStatusRejected})
           .eq('id', a.id);
       if (!mounted) return;
@@ -1311,7 +1179,7 @@ class _AbsenceDialogState extends ConsumerState<_AbsenceDialog> {
         setState(() => _isSaving = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -1628,20 +1496,8 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
           profilePayload['zone_preferences'] = _selectedZonePreferences;
         }
       }
-      final profileRes = await SupabaseService.client
-          .from('profiles')
-          .insert(profilePayload)
-          .select('id')
-          .single();
-      final profileId = (profileRes as Map)['id']?.toString();
-      if (profileId == null || profileId.isEmpty) {
-        throw PostgrestException(message: 'Profil nebyl vytvořen', code: '500', details: 'internal');
-      }
-
-      // Poté vytvoř pozvánku (pro registrační flow – email matching).
       final invPayload = <String, dynamic>{
         'tenant_id': tenantId,
-        'profile_id': profileId,
         'email': email,
         'first_name': firstName,
         'last_name': lastName,
@@ -1653,18 +1509,13 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
         if (_startDate != null) invPayload['start_date'] = _startDate!.toIso8601String();
         if (_endDate != null) invPayload['end_date'] = _endDate!.toIso8601String();
       }
-      await SupabaseService.safeFrom('invitations', tenantId).insert(invPayload);
 
-      // Pro majitele: přiřadit vybrané apartmány do apartment_owners.
-      if (_systemRole == 'property_owner' && _selectedApartmentIds.isNotEmpty) {
-        for (final aptId in _selectedApartmentIds) {
-          await ApartmentOwnersRepository.addOwner(
-            apartmentId: aptId,
-            ownerId: profileId,
-            tenantId: tenantId,
+      await ref.read(adminTeamProvider.notifier).inviteStaffMember(
+            profilePayload: profilePayload,
+            invitationPayload: invPayload,
+            propertyOwnerApartmentIds:
+                _systemRole == 'property_owner' ? _selectedApartmentIds.toList() : const [],
           );
-        }
-      }
 
       if (!mounted) return;
       Navigator.of(context).pop();
@@ -1678,11 +1529,10 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
       );
     } on PostgrestException catch (e) {
       if (!mounted) return;
-      // ignore: avoid_print
-      print('--- CHYBA UKLÁDÁNÍ (Tým): $e');
+      if (kDebugMode) debugPrint('--- CHYBA UKLÁDÁNÍ (Tým): $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('admin.team_invite_error'.tr(namedArgs: {'error': e.message})),
+          content: Text('common.generic_error_user_friendly'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
@@ -1694,7 +1544,7 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
       print('--- CHYBA UKLÁDÁNÍ (Tým): $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('common.error_with_message'.tr(namedArgs: {'message': '$e'})),
+          content: Text('common.generic_error_user_friendly'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
@@ -1866,35 +1716,33 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
                     ),
               ),
               const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: RadioListTile<String>(
-                      value: 'admin',
-                      groupValue: _systemRole,
-                      onChanged: (v) => setState(() {
-                        _systemRole = v ?? 'worker';
-                        if (_systemRole == 'admin' || _systemRole == 'worker') {
-                          _selectedApartmentIds.clear();
-                        }
-                      }),
-                      title: Text('admin.system_role_admin'.tr()),
+              RadioGroup<String>(
+                groupValue: _systemRole,
+                onChanged: (v) {
+                  if (v == null) return;
+                  setState(() {
+                    _systemRole = v;
+                    if (_systemRole == 'admin' || _systemRole == 'worker') {
+                      _selectedApartmentIds.clear();
+                    }
+                  });
+                },
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: RadioListTile<String>(
+                        value: 'admin',
+                        title: Text('admin.system_role_admin'.tr()),
+                      ),
                     ),
-                  ),
-                  Expanded(
-                    child: RadioListTile<String>(
-                      value: 'worker',
-                      groupValue: _systemRole,
-                      onChanged: (v) => setState(() {
-                        _systemRole = v ?? 'worker';
-                        if (_systemRole == 'admin' || _systemRole == 'worker') {
-                          _selectedApartmentIds.clear();
-                        }
-                      }),
-                      title: Text('admin.system_role_worker'.tr()),
+                    Expanded(
+                      child: RadioListTile<String>(
+                        value: 'worker',
+                        title: Text('admin.system_role_worker'.tr()),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
               if (_systemRole != 'property_owner') ...[
                 const SizedBox(height: 16),
@@ -2068,7 +1916,7 @@ class _ApartmentChecklistSection extends ConsumerWidget {
       loading: () =>
           const Center(child: SizedBox(height: 40, width: 40, child: CircularProgressIndicator())),
       error: (e, _) =>
-          Text('common.error_with_message'.tr(namedArgs: {'message': e.toString()})),
+          Text('common.generic_error_user_friendly'.tr()),
     );
   }
 }
@@ -2288,18 +2136,17 @@ class _EditMemberDialogState extends ConsumerState<_EditMemberDialog> {
       // Preferované oblasti – JSONB zone_preferences. Prázdná mapa = {} (odstranění preferencí).
       profileUpdate['zone_preferences'] =
           _selectedZonePreferences.isEmpty ? {} : _selectedZonePreferences;
-      await SupabaseService.client
-          .from('profiles')
-          .update(profileUpdate)
-          .eq('id', widget.member.id);
+      await ref.read(adminTeamProvider.notifier).updateTeamMemberProfile(
+            member: widget.member,
+            profileUpdate: profileUpdate,
+          );
 
       if (_endDate != null) {
-        await _unassignTasksForMember(
-          ref,
-          widget.member.id,
-          fromDate: _endDate!.add(const Duration(days: 1)),
-          memberName: widget.member.name,
-        );
+        await ref.read(adminTeamProvider.notifier).unassignOpenTasksForMember(
+              memberId: widget.member.id,
+              fromDate: _endDate!.add(const Duration(days: 1)),
+              memberName: widget.member.name,
+            );
       }
 
       if (!mounted) return;
@@ -2318,7 +2165,7 @@ class _EditMemberDialogState extends ConsumerState<_EditMemberDialog> {
       print('--- CHYBA ÚPRAVY ČLENA TÝMU: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('common.error_with_message'.tr(namedArgs: {'message': '$e'})),
+          content: Text('common.generic_error_user_friendly'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 4),
@@ -2475,25 +2322,28 @@ class _EditMemberDialogState extends ConsumerState<_EditMemberDialog> {
                       ),
                 ),
                 const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: RadioListTile<String>(
-                        value: 'admin',
-                        groupValue: _systemRole,
-                        onChanged: (v) => setState(() => _systemRole = v ?? 'worker'),
-                        title: Text('admin.system_role_admin'.tr()),
+                RadioGroup<String>(
+                  groupValue: _systemRole,
+                  onChanged: (v) {
+                    if (v == null) return;
+                    setState(() => _systemRole = v);
+                  },
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: RadioListTile<String>(
+                          value: 'admin',
+                          title: Text('admin.system_role_admin'.tr()),
+                        ),
                       ),
-                    ),
-                    Expanded(
-                      child: RadioListTile<String>(
-                        value: 'worker',
-                        groupValue: _systemRole,
-                        onChanged: (v) => setState(() => _systemRole = v ?? 'worker'),
-                        title: Text('admin.system_role_worker'.tr()),
+                      Expanded(
+                        child: RadioListTile<String>(
+                          value: 'worker',
+                          title: Text('admin.system_role_worker'.tr()),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 16),
                 Text(
@@ -2565,13 +2415,6 @@ class _EditMemberDialogState extends ConsumerState<_EditMemberDialog> {
                             const SizedBox(height: 16),
                             _buildTab1BasicInfo(context),
                             const SizedBox(height: 24),
-                            Text(
-                              'admin.preferred_zones'.tr(),
-                              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                            ),
-                            const SizedBox(height: 8),
                             _ZonePreferencesSection(
                               selectedPreferences: _selectedZonePreferences,
                               onPreferenceChanged: (zoneId, priority) {
@@ -2613,7 +2456,12 @@ class _EditMemberDialogState extends ConsumerState<_EditMemberDialog> {
                             ref.invalidate(staffAbsencesProvider);
                           },
                           onUnassignTasksForMember: (memberId, {fromDate, toDate, memberName}) =>
-                              _unassignTasksForMember(ref, memberId, fromDate: fromDate, toDate: toDate, memberName: memberName),
+                              ref.read(adminTeamProvider.notifier).unassignOpenTasksForMember(
+                                    memberId: memberId,
+                                    fromDate: fromDate,
+                                    toDate: toDate,
+                                    memberName: memberName,
+                                  ),
                         ),
                       ),
                     ),

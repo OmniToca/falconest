@@ -3,126 +3,68 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/presentation/widgets/task_guest_cash_summary.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/features/worker/providers/worker_detail_provider.dart';
-import 'package:falconest/features/worker/widgets/task_countdown_timer.dart';
-import 'package:falconest/features/worker/widgets/worker_task_shared_header.dart';
 import 'package:falconest/features/worker/widgets/issue_reporter_dialog.dart';
-import 'package:falconest/features/worker/widgets/task_complete_with_photo_section.dart';
+import 'package:falconest/features/worker/widgets/worker_task_shared_header.dart';
 
-/// MVP obrazovka pro úkoly typu Check-out (vlastní obrazovka – odděleno od Check-in).
-/// Zobrazuje data úkolu a tlačítko Dokončit. Může zobrazovat očekávaný audit z metadat.
-class CheckoutTaskScreen extends ConsumerWidget {
-  const CheckoutTaskScreen({super.key, required this.taskId});
+/// Obsah scrollu pro Check-out – bez Scaffold.
+abstract final class CheckoutTaskScreen {
+  CheckoutTaskScreen._();
 
-  final String taskId;
+  static const Color backgroundColor = Color(0xFFE8F5E9);
 
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final detailAsync = ref.watch(workerTaskDetailProvider(taskId));
-
-    return detailAsync.when(
-      data: (detail) {
-        if (detail == null) {
-          return Scaffold(
-            body: Center(child: Text('worker.task_detail_not_found'.tr())),
+  static List<Widget> buildAppBarActions(
+    BuildContext context,
+    WidgetRef ref,
+    WorkerTaskDetail detail,
+  ) {
+    return [
+      IconButton(
+        icon: const Icon(Icons.report_problem_outlined),
+        onPressed: () {
+          final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+          if (tenantId == null || tenantId.isEmpty) return;
+          showDialog(
+            context: context,
+            builder: (ctx) => IssueReporterDialog(
+              tenantId: tenantId,
+              apartmentId: detail.apartmentId,
+            ),
           );
-        }
-        return Scaffold(
-          backgroundColor: const Color(0xFFE8F5E9),
-          appBar: AppBar(
-            title: Text(
-              _appBarTitle(detail),
-              style: const TextStyle(color: Colors.black87),
-            ),
-            backgroundColor: Colors.transparent,
-            foregroundColor: Colors.black87,
-            elevation: 0,
-            iconTheme: const IconThemeData(color: Colors.black87),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.report_problem_outlined),
-                onPressed: () {
-                  final tenantId = ref.read(authNotifierProvider).tenantIdForData;
-                  if (tenantId == null || tenantId.isEmpty) return;
-                  showDialog(
-                    context: context,
-                    builder: (ctx) => IssueReporterDialog(
-                      tenantId: tenantId,
-                      apartmentId: detail.apartmentId,
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-          body: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        WorkerTaskSharedHeader(
-                          title: _mainHeading(detail),
-                          scheduledStart: detail.scheduledStart,
-                          apartmentAddress: detail.apartmentAddress,
-                          startedAt: detail.startedAt,
-                          completedAt: detail.completedAt,
-                          estimatedMinutes: parseTaskEstimateMinutes(
-                            detail.description,
-                            detail.metadata,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          detail.description.isNotEmpty ? detail.description : '—',
-                          style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
-                        ),
-                        ..._buildCheckoutMetadata(context, ref, detail.metadata ?? {}),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TaskCompleteWithPhotoSection(
-                  taskId: taskId,
-                  detail: detail,
-                  finishKey: 'worker.task_detail_finish',
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-      loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
-      error: (_, _) => Scaffold(
-        body: Center(child: Text('worker.task_detail_not_found'.tr())),
+        },
       ),
-    );
+    ];
   }
 
-  static String _appBarTitle(dynamic detail) {
-    final raw = detail.title.isNotEmpty ? detail.title : (detail.apartmentName ?? '—');
-    final base = raw.split(':').first.trim();
-    final ref = detail.referenceNumber?.trim();
-    return (ref != null && ref.isNotEmpty) ? '$base • #$ref' : base;
+  static List<Widget> buildScrollChildren(
+    BuildContext context,
+    WidgetRef ref,
+    WorkerTaskDetail detail,
+  ) {
+    return [
+      WorkerTaskAddressContextBar(
+        address: detail.displayAddress,
+        latitude: detail.latitude,
+        longitude: detail.longitude,
+      ),
+      const SizedBox(height: 16),
+      Text(
+        detail.description.isNotEmpty ? detail.description : 'common.placeholder_dash'.tr(),
+        style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
+      ),
+      ..._buildCheckoutMetadata(context, ref, detail.metadata ?? {}),
+    ];
   }
 
-  static String _mainHeading(dynamic detail) {
-    final raw = detail.title.isNotEmpty ? detail.title : (detail.apartmentName ?? '—');
-    return raw.contains(':') ? raw.split(':').sublist(1).join(':').trim() : raw;
-  }
-
-  /// Vykreslení metadat pro Check-out: custom_note (na co si dát pozor), audit, rozpad platby.
-  /// [ref] – pro formatTaskAmount (měna dle tenanta, fallback profil).
-  List<Widget> _buildCheckoutMetadata(BuildContext context, WidgetRef ref, Map<String, dynamic> meta) {
+  static List<Widget> _buildCheckoutMetadata(
+    BuildContext context,
+    WidgetRef ref,
+    Map<String, dynamic> meta,
+  ) {
     final widgets = <Widget>[];
 
-    // Poznámka (na co si dát pozor při kontrole bytu).
     final note = meta['custom_note'];
     final noteText = note is String ? note.trim() : (note?.toString().trim() ?? '');
     if (noteText.isNotEmpty) {
@@ -132,21 +74,34 @@ class CheckoutTaskScreen extends ConsumerWidget {
       ]);
     }
 
-    // Informační karta s očekávaným auditem (expected_audit_total) a ikonou účtenky.
-    final expectedTotal = meta['expected_audit_total'];
-    final amount = (expectedTotal is num) ? expectedTotal.toDouble() : (expectedTotal != null ? double.tryParse(expectedTotal.toString()) : null);
+    final audit = taskMetadataAmountEur(meta, 'expected_audit_total');
+    final amountCollect = taskMetadataAmountEur(meta, 'amount_to_collect');
+    final transit = taskMetadataAmountEur(meta, 'transit_amount_to_collect');
+    final agencyPortion = amountCollect > 0 ? amountCollect : audit;
     final hasBreakdown = meta['collection_breakdown'] is Map && (meta['collection_breakdown'] as Map).isNotEmpty;
 
-    if (amount != null || hasBreakdown) {
+    if (agencyPortion + transit > 0 || hasBreakdown) {
       widgets.add(const SizedBox(height: 16));
-      widgets.add(_buildAuditCard(context, ref, amount, meta['collection_breakdown']));
+      if (agencyPortion + transit > 0) {
+        widgets.add(
+          TaskGuestCashSummary(
+            agencyEur: agencyPortion,
+            transitEur: transit,
+            formatEurAmount: (e) => formatTaskAmount(context, ref, e),
+            variant: TaskGuestCashSummaryVariant.checkoutBanner,
+          ),
+        );
+      }
+      if (hasBreakdown) {
+        widgets.add(const SizedBox(height: 12));
+        widgets.add(_buildBreakdownCard(context, ref, meta['collection_breakdown'] as Map));
+      }
     }
 
     return widgets;
   }
 
-  /// Karta s poznámkou pro check-out (na co si dát pozor při kontrole).
-  Widget _buildCustomNoteCard(String text, {IconData icon = Icons.note_outlined}) {
+  static Widget _buildCustomNoteCard(String text, {IconData icon = Icons.note_outlined}) {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -177,49 +132,7 @@ class CheckoutTaskScreen extends ConsumerWidget {
     );
   }
 
-  /// Sjednocené formátování přes formatTaskAmount – měna dle tenanta, fallback profil uživatele.
-  Widget _buildAuditCard(BuildContext context, WidgetRef ref, double? amount, dynamic breakdownRaw) {
-    final amountFormatted = amount != null && amount > 0
-        ? formatTaskAmount(context, ref, amount)
-        : null;
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.green.shade50,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.green.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.receipt_long, size: 24, color: Colors.green.shade700),
-              const SizedBox(width: 8),
-              Text(
-                'worker.task_expected_audit'.tr(),
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Colors.grey.shade800),
-              ),
-            ],
-          ),
-          if (amountFormatted != null) ...[
-            const SizedBox(height: 6),
-            Text(
-              amountFormatted,
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.green.shade800),
-            ),
-          ],
-          if (breakdownRaw is Map && breakdownRaw.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            _buildBreakdownCard(context, ref, breakdownRaw),
-          ],
-        ],
-      ),
-    );
-  }
-
-  /// Sjednocené formátování přes formatTaskAmount – měna dle tenanta, fallback profil uživatele.
-  Widget _buildBreakdownCard(BuildContext context, WidgetRef ref, Map map) {
+  static Widget _buildBreakdownCard(BuildContext context, WidgetRef ref, Map map) {
     final parts = <Widget>[];
     for (final e in map.entries) {
       final key = e.key.toString().toLowerCase().replaceAll('-', '_');
@@ -259,7 +172,7 @@ class CheckoutTaskScreen extends ConsumerWidget {
     );
   }
 
-  String _translateTaskTypeKey(String key) {
+  static String _translateTaskTypeKey(String key) {
     final candidate = 'admin.task_type_$key';
     final translated = candidate.tr();
     return translated == candidate ? 'admin.task_type_other'.tr() : translated;

@@ -69,7 +69,8 @@ class WorkerEarningsScreen extends ConsumerWidget {
                     children: [
                       Expanded(
                         child: _SummaryCard(
-                          label: 'worker.earnings.pending_total'.tr(),
+                          // PROČ: Ploché klíče pod worker.* – některé buildy easy_localization špatně vykreslily vnořené earnings.*.
+                          label: 'worker.earnings_card_awaiting_payout'.tr(),
                           amount: summary.pendingTotal,
                           formatAmount: (v) => formatWalletAmount(context, ref, v),
                           color: Colors.amber.shade700,
@@ -79,7 +80,7 @@ class WorkerEarningsScreen extends ConsumerWidget {
                       const SizedBox(width: 12),
                       Expanded(
                         child: _SummaryCard(
-                          label: 'worker.earnings.paid_total'.tr(),
+                          label: 'worker.earnings_card_already_paid'.tr(),
                           amount: summary.paidTotal,
                           formatAmount: (v) => formatWalletAmount(context, ref, v),
                           color: Colors.green.shade700,
@@ -98,7 +99,7 @@ class WorkerEarningsScreen extends ConsumerWidget {
                     return _EarningsRowCard(
                       row: row,
                       formatAmount: (v) => formatWalletAmount(context, ref, v),
-                      formatDate: (d) => DateFormat.yMd(Localizations.localeOf(context).toString()).format(d.toLocal()),
+                      formatDate: (d) => DateFormat.yMd(context.locale.toString()).format(d.toLocal()),
                     );
                   },
                   childCount: summary.rows.length,
@@ -118,7 +119,7 @@ class WorkerEarningsScreen extends ConsumerWidget {
                 Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
                 const SizedBox(height: 16),
                 Text(
-                  e.toString(),
+                  'worker.earnings.load_error'.tr(),
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
@@ -202,6 +203,13 @@ class _EarningsRowCard extends StatelessWidget {
     final statusLabel = row.isPaid
         ? 'worker.earnings.status_paid'.tr()
         : 'worker.earnings.status_pending'.tr();
+    final taskNameRaw = row.taskTitle.trim();
+    final taskName = taskNameRaw.isEmpty || taskNameRaw == 'common.placeholder_dash'.tr()
+        ? 'worker.earnings.task_title_placeholder'.tr()
+        : taskNameRaw;
+    final lineTitle = row.isCommission
+        ? 'worker.earnings.commission_for_task'.tr(namedArgs: {'task': taskName})
+        : 'worker.earnings.task_payout_for_task'.tr(namedArgs: {'task': taskName});
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
@@ -215,7 +223,7 @@ class _EarningsRowCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    row.taskTitle,
+                    lineTitle,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.w600,
                         ),

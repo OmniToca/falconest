@@ -1,4 +1,5 @@
 import 'package:easy_localization/easy_localization.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -6,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/audit_log_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/admin/models/module_model.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
 
@@ -46,12 +48,132 @@ class PremiumUpsellDialog extends ConsumerStatefulWidget {
 
 class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
   bool _isActivating = false;
+  /// Null = ještě neznáme, true = trial vypršel → zobrazit „Koupit plnou verzi“, false = zobrazit „Aktivovat trial“.
+  bool? _trialExpired;
+  bool _trialCheckStarted = false;
 
   ModuleModel? _moduleByKey(List<ModuleModel> modules) {
     try {
       return modules.firstWhere((m) => m.key == widget.moduleKey);
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('PremiumUpsellDialog._moduleByKey: modul s daným klíčem nenalezen nebo chyba', e, st);
       return null;
+    }
+  }
+
+  /// Načte stav trialu z tenant_modules – pokud trial_ends_at je v minulosti, zobrazíme „Koupit plnou verzi“.
+  Future<void> _loadTrialState(String tenantId, String moduleId) async {
+    if (_trialCheckStarted) return;
+    _trialCheckStarted = true;
+    try {
+      final existing = await SupabaseService.safeFrom('tenant_modules', tenantId)
+          .select('trial_ends_at')
+          .eq('module_id', moduleId)
+          .maybeSingle();
+      if (!mounted) return;
+      final raw = existing?['trial_ends_at'];
+      DateTime? trialEndsAt;
+      if (raw is DateTime) {
+        trialEndsAt = raw.toUtc();
+      } else if (raw is String) {
+        trialEndsAt = DateTime.tryParse(raw)?.toUtc();
+      }
+      final now = DateTime.now().toUtc();
+      setState(() {
+        _trialExpired = trialEndsAt != null && trialEndsAt.isBefore(now);
+      });
+    } catch (e, st) {
+      AppLogger.error('PremiumUpsellDialog._loadTrialState: načtení trial_ends_at selhalo', e, st);
+      if (mounted) setState(() => _trialExpired = false);
+    }
+  }
+
+  /// Zobrazí nativní potvrzovací dialog nákupu; při souhlasu provede UPDATE a uzavře flow.
+  Future<void> _showPurchaseConfirmAndRun(ModuleModel module, String tenantId) async {
+    final priceStr = module.price?.toStringAsFixed(0) ?? '0';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('admin.premium_buy_confirm_title'.tr()),
+        content: Text(
+          'admin.premium_buy_confirm_message'.tr(namedArgs: {'price': priceStr}),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text('admin.premium_upsell_cancel_btn'.tr()),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text('admin.premium_buy_confirm_btn'.tr()),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) await _purchaseModule(tenantId, module);
+  }
+
+  /// Check-then-Act: UPDATE tenant_modules na plnou verzi, audit, invalidace, úspěšný SnackBar.
+  Future<void> _purchaseModule(String tenantId, ModuleModel module) async {
+    final user = ref.read(authNotifierProvider).state.user;
+    setState(() => _isActivating = true);
+    try {
+      final validUntil = DateTime.now().toUtc().add(const Duration(days: 31)).toIso8601String();
+      await SupabaseService.safeFrom('tenant_modules', tenantId).update({
+        'status': 'active',
+        'is_trial': false,
+        'trial_ends_at': null,
+        'valid_until': validUntil,
+        'deleted_at': null,
+      }).eq('module_id', module.id);
+
+      await AuditLogService.log(
+        tenantId: tenantId,
+        userId: user?.id,
+        actionType: 'MODULE_PURCHASED',
+        tableName: 'tenant_modules',
+        details: {
+          'module': widget.moduleKey,
+          'price': module.price,
+          'valid_until': validUntil,
+          'self_service': true,
+        },
+      );
+
+      ref.invalidate(activeModuleKeysProvider);
+      ref.invalidate(tenantActiveModuleIdsProvider(tenantId));
+
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.premium_buy_success'.tr()),
+          backgroundColor: Colors.green.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on PostgrestException catch (e) {
+      if (!mounted) return;
+      if (kDebugMode) debugPrint('premium purchase Postgrest: ${e.message}');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('common.generic_error_user_friendly'.tr()),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('common.generic_error_user_friendly'.tr()),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isActivating = false);
     }
   }
 
@@ -66,7 +188,7 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('admin.premium_activation_error'.tr(namedArgs: {'message': 'No tenant'})),
+          content: Text('common.error_no_tenant'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
         ),
@@ -77,7 +199,7 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('admin.premium_activation_error'.tr(namedArgs: {'message': 'Module not found'})),
+          content: Text('admin.premium_module_not_found'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
         ),
@@ -87,28 +209,69 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
 
     setState(() => _isActivating = true);
     try {
-      final trialEndsAt = DateTime.now().toUtc().add(const Duration(days: 14)).toIso8601String();
-      await SupabaseService.safeFrom('tenant_modules', tenantId).insert({
-        'module_id': module.id,
-        'status': 'active',
-        'is_trial': true,
-        'trial_ends_at': trialEndsAt,
-      });
+      // 1. Dotaz na existenci záznamu (Check-then-Act – ochrana proti nekonečnému trialu).
+      final existing = await SupabaseService.safeFrom('tenant_modules', tenantId)
+          .select('trial_ends_at')
+          .eq('module_id', module.id)
+          .maybeSingle();
 
-      await AuditLogService.log(
-        tenantId: tenantId,
-        userId: user?.id,
-        actionType: 'MODULE_ACTIVATED',
-        tableName: 'tenant_modules',
-        details: {
-          'module': widget.moduleKey,
-          'price': module.price,
-          'trial': true,
+      final now = DateTime.now().toUtc();
+
+      if (existing == null) {
+        // A) Uživatel modul nikdy neměl – standardní INSERT s 14denním triálem.
+        final trialEndsAt = now.add(const Duration(days: 14)).toIso8601String();
+        await SupabaseService.safeFrom('tenant_modules', tenantId).insert({
+          'module_id': module.id,
+          'status': 'active',
+          'is_trial': true,
           'trial_ends_at': trialEndsAt,
-        },
-      );
+        });
+
+        await AuditLogService.log(
+          tenantId: tenantId,
+          userId: user?.id,
+          actionType: 'MODULE_ACTIVATED',
+          tableName: 'tenant_modules',
+          details: {
+            'module': widget.moduleKey,
+            'price': module.price,
+            'trial': true,
+            'trial_ends_at': trialEndsAt,
+          },
+        );
+      } else {
+        // B) Záznam existuje – kontrolujeme, zda trial nevypršel.
+        final raw = existing['trial_ends_at'];
+        DateTime? trialEndsAt;
+        if (raw is DateTime) {
+          trialEndsAt = raw.toUtc();
+        } else if (raw is String) {
+          trialEndsAt = DateTime.tryParse(raw)?.toUtc();
+        }
+
+        if (trialEndsAt != null && trialEndsAt.isBefore(now)) {
+          // Trial vypršel – místo chybové hlášky nabídneme nákup (potvrzovací dialog + _purchaseModule).
+          if (!mounted) return;
+          await _showPurchaseConfirmAndRun(module, tenantId);
+          return;
+        }
+
+        // Trial stále běží nebo bez data – pouze obnovíme zapnutí (update, neměníme trial_ends_at).
+        await SupabaseService.safeFrom('tenant_modules', tenantId)
+            .update({'status': 'active', 'deleted_at': null})
+            .eq('module_id', module.id);
+
+        await AuditLogService.log(
+          tenantId: tenantId,
+          userId: user?.id,
+          actionType: 'MODULE_REACTIVATED',
+          tableName: 'tenant_modules',
+          details: {'module': widget.moduleKey},
+        );
+      }
 
       ref.invalidate(activeModuleKeysProvider);
+      ref.invalidate(tenantActiveModuleIdsProvider(tenantId));
 
       if (!mounted) return;
       Navigator.of(context).pop();
@@ -121,23 +284,19 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
       );
     } on PostgrestException catch (e) {
       if (!mounted) return;
-      final isDuplicate = e.code == '23505';
-      final message = isDuplicate
-          ? 'admin.premium_already_active'.tr()
-          : 'admin.premium_activation_error'.tr(namedArgs: {'message': e.message});
+      if (kDebugMode) debugPrint('premium trial Postgrest: ${e.message}');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(message),
+          content: Text('common.generic_error_user_friendly'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
         ),
       );
-      if (isDuplicate) Navigator.of(context).pop();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('admin.premium_activation_error'.tr(namedArgs: {'message': e.toString()})),
+          content: Text('common.generic_error_user_friendly'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
         ),
@@ -145,6 +304,37 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
     } finally {
       if (mounted) setState(() => _isActivating = false);
     }
+  }
+
+  /// Spustí nákup (potvrzovací dialog + UPDATE). Volá se po kliknutí na „Koupit plnou verzi“.
+  Future<void> _onBuyFullVersion() async {
+    if (_isActivating) return;
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    final modules = ref.read(allModulesProvider).valueOrNull ?? [];
+    final module = _moduleByKey(modules);
+    if (tenantId == null || tenantId.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('common.error_no_tenant'.tr()),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    if (module == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.premium_module_not_found'.tr()),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    await _showPurchaseConfirmAndRun(module, tenantId);
   }
 
   @override
@@ -155,12 +345,24 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
     final module = modulesAsync.valueOrNull != null
         ? _moduleByKey(modulesAsync.valueOrNull!)
         : null;
+    final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
 
-    final priceStr = module?.price != null ? module!.price!.toStringAsFixed(0) : '—';
+    // Jednorázově načteme stav trialu (vypršený → zobrazit „Koupit plnou verzi“).
+    if (module != null && tenantId != null && tenantId.isNotEmpty && !_trialCheckStarted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _loadTrialState(tenantId, module.id);
+      });
+    }
+
+    final priceStr = module?.price != null ? module!.price!.toStringAsFixed(0) : 'common.placeholder_dash'.tr();
     final currency = 'EUR';
+    final isExpired = _trialExpired == true;
     final primaryLabel = module != null
-        ? 'admin.premium_activate_trial'.tr(namedArgs: {'price': priceStr, 'currency': currency})
+        ? (isExpired
+            ? 'admin.premium_buy_module'.tr(namedArgs: {'price': priceStr})
+            : 'admin.premium_activate_trial'.tr(namedArgs: {'price': priceStr, 'currency': currency}))
         : 'admin.premium_upsell_upgrade_btn'.tr();
+    final onPrimaryPressed = isExpired ? _onBuyFullVersion : _activateTrial;
 
     return AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -216,7 +418,7 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
               ),
               const SizedBox(width: 12),
               FilledButton(
-                onPressed: _isActivating ? null : _activateTrial,
+                onPressed: _isActivating ? null : onPrimaryPressed,
                 child: _isActivating
                     ? const SizedBox(
                         width: 20,

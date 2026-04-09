@@ -1,7 +1,9 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
+import 'package:falconest/features/admin/providers/apartment_live_context_provider.dart';
 
 /// Hodnoty dynamicky vypočítaného stavu apartmánu – vracíme i18n klíče (ne české texty).
 /// Volající má použít status.tr() pro lokalizovaný výstup.
@@ -22,12 +24,16 @@ DateTime? _parseReservationDate(String? s) {
       int.parse(dParts[1]),
       int.parse(dParts[0]),
     );
-  } catch (_) {
+  } catch (e, st) {
+    AppLogger.error('apartment_status_provider._parseReservationDate selhalo', e, st);
     return null;
   }
 }
 
-/// KROK A: Dnešní datum spadá do intervalu [checkIn, checkOut] rezervace?
+/// KROK 1 (Obsazeno): Dnešní kalendářní den spadá do intervalu [checkIn, checkOut] rezervace?
+///
+/// PROČ celý den odjezdu jako „obsazeno“: dashboard je denní – dispečer vidí konzistentně
+/// „host ještě může být ubytován“ až do konce dne odjezdu (stejně jako původní logika).
 bool _isTodayWithinReservation(String? checkIn, String? checkOut) {
   final start = _parseReservationDate(checkIn);
   final end = _parseReservationDate(checkOut);
@@ -39,25 +45,27 @@ bool _isTodayWithinReservation(String? checkIn, String? checkOut) {
   return !today.isBefore(startDay) && !today.isAfter(endDay);
 }
 
-/// KROK B: Existuje úkol typu úklid se statusem jiným než dokončený?
+/// Typ úkolu = úklid (DB + legacy české řetězce).
+bool _isCleaningTaskType(String taskType) {
+  final type = taskType.toLowerCase().trim();
+  return type == 'cleaning' || type.contains('cleaning') || type.contains('úklid');
+}
+
+/// Pojistka: otevřený (nedokončený) úklid s plánem do konce dneška nebo v minulosti.
 ///
-/// DŮLEŽITÉ: DB ukládá anglické stavy (completed, done, in_progress, assigned, pending).
-/// Záměrně porovnáváme proti anglickým DB hodnotám – nikoli proti českému 'Hotovo',
-/// které by nikdy nesedělo a způsobilo by chybný stav „K úklidu“ i pro dokončené úkoly.
-bool _hasOpenCleaningTask(List<TaskRow> tasks, String apartmentId) {
+/// PROČ stále ignorujeme čistě budoucí termíny: ruční úklid naplánovaný za týden není
+/// „urgentní špína dnes“, ale turnover (KROK 2) ji stejně vyřeší po odjezdu hostů.
+bool _hasOpenCleaningTaskDueByEndOfToday(List<TaskRow> tasks, String apartmentId) {
   final now = DateTime.now();
   final endOfToday = DateTime(now.year, now.month, now.day, 23, 59, 59, 999);
 
   for (final t in tasks) {
     if (t.apartmentId != apartmentId) continue;
-    final type = (t.taskType).toLowerCase().trim();
-    final isCleaning = type == 'cleaning' || type.contains('cleaning') || type.contains('úklid');
-    if (!isCleaning) continue;
+    if (t.deletedAt != null) continue;
+    if (!_isCleaningTaskType(t.taskType)) continue;
     final s = (t.status).toLowerCase().trim();
     if (_isCompletedStatus(s)) continue;
-    // A) Ignorujeme návrhy – byt není reálně „K úklidu", dokud dispečer nepotvrdí.
     if (_isDraftOrProposalStatus(s)) continue;
-    // B) Ignorujeme úkoly v budoucnu – úklid na příští týden neznamená „K úklidu" dnes.
     final taskDate = t.scheduledStart ?? t.dueDate;
     if (taskDate.isAfter(endOfToday)) continue;
     return true;
@@ -79,6 +87,56 @@ bool _isCompletedStatus(String status) {
       status == 'dokončeno';
 }
 
+/// Nejnovější **den konce pobytu** u rezervací, které už skončily před dneškem (check-out včera a dřív).
+///
+/// PROČ `endDay < today`: v den odjezdu je byt stále „Obsazeno“ (KROK 1), turnover řešíme až následující dny.
+DateTime? _latestStayEndDayBeforeToday(
+  List<ReservationRow> reservations,
+  String apartmentId,
+  DateTime todayStart,
+) {
+  DateTime? best;
+  for (final r in reservations) {
+    if (r.apartmentId != apartmentId) continue;
+    if (r.status == 'cancelled') continue;
+    final end = _parseReservationDate(r.checkOut);
+    if (end == null) continue;
+    final endDay = DateTime(end.year, end.month, end.day);
+    if (!endDay.isBefore(todayStart)) continue;
+    if (best == null || endDay.isAfter(best)) best = endDay;
+  }
+  return best;
+}
+
+/// Nejnovější **kalendářní den** dokončení úklidu u bytu (podle `completed_at`, lokální čas).
+DateTime? _latestCompletedCleaningDay(List<TaskRow> tasks, String apartmentId) {
+  DateTime? best;
+  for (final t in tasks) {
+    if (t.apartmentId != apartmentId) continue;
+    if (t.deletedAt != null) continue;
+    if (!_isCleaningTaskType(t.taskType)) continue;
+    if (!_isCompletedStatus(t.status)) continue;
+    final raw = t.completedAt ?? t.scheduledStart;
+    if (raw == null) continue;
+    final local = raw.isUtc ? raw.toLocal() : raw;
+    final day = DateTime(local.year, local.month, local.day);
+    if (best == null || day.isAfter(best)) best = day;
+  }
+  return best;
+}
+
+/// Po odjezdu hostů chybí dokončený úklid: poslední checkout je **novější** než poslední hotový úklid.
+///
+/// PROČ `isBefore`: pokud není žádný dokončený úklid (`lastClean == null`), vracíme true.
+bool _needsCleaningAfterCheckout(
+  DateTime? lastStayEndDay,
+  DateTime? lastCleanDay,
+) {
+  if (lastStayEndDay == null) return false;
+  if (lastCleanDay == null) return true;
+  return lastCleanDay.isBefore(lastStayEndDay);
+}
+
 /// Vrátí dynamický stav apartmánu pro dnešek z předaných seznamů rezervací a úkolů.
 /// Použij pro hromadné počítání stavů (např. na nástěnce) bez nutnosti watchovat
 /// apartmentStatusProvider pro každý byt zvlášť.
@@ -87,6 +145,10 @@ String getApartmentStatusForToday(
   List<TaskRow> tasks,
   String apartmentId,
 ) {
+  final now = DateTime.now();
+  final todayStart = DateTime(now.year, now.month, now.day);
+
+  // KROK 1 – Obsazeno hosty (dnešní den uvnitř [checkIn, checkOut]).
   for (final r in reservations) {
     if (r.apartmentId != apartmentId) continue;
     if (r.status == 'cancelled') continue;
@@ -94,49 +156,55 @@ String getApartmentStatusForToday(
       return apartmentStatusOccupied;
     }
   }
-  if (_hasOpenCleaningTask(tasks, apartmentId)) {
+
+  // KROK 2a – Turnover: po skončeném pobytu musí existovat dokončený úklid alespoň v den checkoutu nebo později.
+  final lastStayEnd = _latestStayEndDayBeforeToday(reservations, apartmentId, todayStart);
+  final lastCleanDay = _latestCompletedCleaningDay(tasks, apartmentId);
+  if (_needsCleaningAfterCheckout(lastStayEnd, lastCleanDay)) {
     return apartmentStatusNeedsCleaning;
+  }
+
+  // KROK 2b – Pojistka: ruční otevřený úklid s termínem do konce dneška (nebo po splatnosti).
+  if (_hasOpenCleaningTaskDueByEndOfToday(tasks, apartmentId)) {
+    return apartmentStatusNeedsCleaning;
+  }
+
+  // KROK 3 – Volno / připraveno.
+  return apartmentStatusClean;
+}
+
+/// Obsazeno jen z rezervací – při čekání na stream úkolů nesmíme ztratit KROK 1.
+String _occupiedFromReservationsOnly(
+  List<ReservationRow> resList,
+  String apartmentId,
+) {
+  for (final r in resList) {
+    if (r.apartmentId != apartmentId) continue;
+    if (r.status == 'cancelled') continue;
+    if (_isTodayWithinReservation(r.checkIn, r.checkOut)) {
+      return apartmentStatusOccupied;
+    }
   }
   return apartmentStatusClean;
 }
 
-/// Provider dynamického stavu apartmánu – počítá se z Rezervací a Úkolů v reálném čase.
+/// Provider dynamického stavu apartmánu – rezervace a úkoly z [apartmentStatusContextReservationsProvider]
+/// a [todayApartmentTasksProvider] (žádná vazba na měsíc v modulu Úkoly).
 ///
-/// KROK A (Hosté): Existuje rezervace, kde dnešní datum spadá do [checkIn, checkOut]
-/// a status není 'cancelled'? → apartments.status.occupied.
-///
-/// KROK B (Úklid): Pokud není obsazeno, existuje úkol typu cleaning se statusem
-/// jiným než completed/done? → apartments.status.to_clean.
-///
-/// KROK C: Jinak → apartments.status.clean (Volno).
+/// KROK 1: dnes v intervalu rezervace → occupied.
+/// KROK 2: po checkoutu chybí dokončený úklid **nebo** otevřený úklid do konce dneška → to_clean.
+/// KROK 3: jinak clean.
 final apartmentStatusProvider =
     Provider.autoDispose.family<String, String>((ref, apartmentId) {
-  final reservations = ref.watch(adminReservationsProvider);
-  final tasks = ref.watch(adminTasksStreamProvider);
+  final reservations = ref.watch(apartmentStatusContextReservationsProvider);
+  final tasks = ref.watch(todayApartmentTasksProvider);
 
   return reservations.when(
-    data: (resList) {
-      // KROK A – Hosté
-      for (final r in resList) {
-        if (r.apartmentId != apartmentId) continue;
-        if (r.status == 'cancelled') continue;
-        if (_isTodayWithinReservation(r.checkIn, r.checkOut)) {
-          return apartmentStatusOccupied;
-        }
-      }
-
-      // KROK B – Úklid (pouze pokud není obsazeno)
-      return tasks.when(
-        data: (taskList) {
-          if (_hasOpenCleaningTask(taskList, apartmentId)) {
-            return apartmentStatusNeedsCleaning;
-          }
-          return apartmentStatusClean;
-        },
-        loading: () => apartmentStatusClean,
-        error: (_, _) => apartmentStatusClean,
-      );
-    },
+    data: (resList) => tasks.when(
+      data: (taskList) => getApartmentStatusForToday(resList, taskList, apartmentId),
+      loading: () => _occupiedFromReservationsOnly(resList, apartmentId),
+      error: (_, _) => apartmentStatusClean,
+    ),
     loading: () => apartmentStatusClean,
     error: (_, _) => apartmentStatusClean,
   );

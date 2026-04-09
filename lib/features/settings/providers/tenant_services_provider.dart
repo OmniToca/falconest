@@ -18,10 +18,8 @@ class TenantServicesRepository {
 
   /// Načte seznam aktivních služeb (deleted_at IS NULL) seřazených podle order_index.
   static Future<List<TenantServiceModel>> fetchList(String tenantId) async {
-    final res = await SupabaseService.client
-        .from('tenant_services')
+    final res = await SupabaseService.safeFrom('tenant_services', tenantId)
         .select()
-        .eq('tenant_id', tenantId)
         .isFilter('deleted_at', null)
         .order('order_index', ascending: true);
     final list = res as List;
@@ -34,7 +32,8 @@ class TenantServicesRepository {
   /// Vloží novou službu. [model.tenantId] musí odpovídat aktuálnímu tenantu (kontroluje RLS).
   static Future<void> insert(TenantServiceModel model) async {
     if (model.name.trim().isEmpty) throw ArgumentError('Název služby je povinný');
-    await SupabaseService.client.from('tenant_services').insert(model.toJson());
+    await SupabaseService.safeFrom('tenant_services', model.tenantId)
+        .insert(SupabaseService.safeInsertPayload(model.tenantId, model.toJson()));
   }
 
   /// Aktualizuje existující službu (podle model.id). Soft delete se dělá přes [softDelete].
@@ -55,14 +54,16 @@ class TenantServicesRepository {
     payload['required_role'] = model.requiredRole ?? 'any';
     payload['duration_minutes'] = model.durationMinutes;
     payload['requires_photo'] = model.requiresPhoto;
-    await SupabaseService.client.from('tenant_services').update(payload).eq('id', model.id);
+    await SupabaseService.safeFrom('tenant_services', model.tenantId)
+        .update(payload)
+        .eq('id', model.id);
   }
 
   /// Měkké smazání: nastaví deleted_at = now(). Záznam zůstane v DB, v seznamu se neukáže.
-  static Future<void> softDelete(String serviceId) async {
+  static Future<void> softDelete(String tenantId, String serviceId) async {
+    if (tenantId.trim().isEmpty) throw ArgumentError('tenantId je povinný');
     if (serviceId.trim().isEmpty) throw ArgumentError('serviceId je povinný');
-    await SupabaseService.client
-        .from('tenant_services')
+    await SupabaseService.safeFrom('tenant_services', tenantId)
         .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
         .eq('id', serviceId.trim());
   }

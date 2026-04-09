@@ -3,11 +3,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/database/drift/app_database.dart';
 import 'package:falconest/core/database/drift/repositories/drift_apartment_repository.dart';
 import 'package:falconest/core/database/drift/repositories/drift_client_repository.dart';
+import 'package:falconest/core/database/drift/repositories/drift_employee_cash_repository.dart';
 import 'package:falconest/core/database/drift/repositories/drift_message_template_repository.dart';
 import 'package:falconest/core/database/drift/repositories/drift_pending_mutation_repository.dart';
 import 'package:falconest/core/database/drift/repositories/drift_reservation_repository.dart';
+import 'package:falconest/core/database/drift/repositories/drift_staff_absence_repository.dart';
+import 'package:falconest/core/database/drift/repositories/drift_task_checklist_repository.dart';
+import 'package:falconest/core/database/drift/repositories/drift_task_payout_repository.dart';
 import 'package:falconest/core/database/drift/repositories/drift_task_repository.dart';
 import 'package:falconest/core/database/drift/repositories/drift_tenant_repository.dart';
+import 'package:falconest/core/database/drift/repositories/drift_user_profile_repository.dart';
 
 /// Provider pro Drift (SQLite) databázi – paralelní implementace pro 100 % offline stabilitu.
 ///
@@ -56,6 +61,32 @@ final driftTenantRepositoryProvider = Provider<DriftTenantRepository>((ref) {
   return DriftTenantRepository(db);
 });
 
+/// Lokální výplaty a provize workera (`task_payouts` / `task_commissions` v SQLite).
+///
+/// PROČ: Obrazovka „Moje výdělky“ čte výhradně z Driftu po sync – žádný přímý Supabase dotaz z UI.
+final driftTaskPayoutRepositoryProvider = Provider<DriftTaskPayoutRepository>((ref) {
+  final db = ref.watch(driftDatabaseProvider);
+  return DriftTaskPayoutRepository(db);
+});
+
+/// Lokální `staff_absences` pro Worker (offline čtení + okamžitý zápis nové žádosti).
+final driftStaffAbsenceRepositoryProvider = Provider<DriftStaffAbsenceRepository>((ref) {
+  final db = ref.watch(driftDatabaseProvider);
+  return DriftStaffAbsenceRepository(db);
+});
+
+/// Lokální zaměstnanecká hotovost (`employee_cash_*`) pro Worker peněženku.
+final driftEmployeeCashRepositoryProvider = Provider<DriftEmployeeCashRepository>((ref) {
+  final db = ref.watch(driftDatabaseProvider);
+  return DriftEmployeeCashRepository(db);
+});
+
+/// Cache řádku `profiles` pro přihlášeného uživatele (drawer offline).
+final driftUserProfileRepositoryProvider = Provider<DriftUserProfileRepository>((ref) {
+  final db = ref.watch(driftDatabaseProvider);
+  return DriftUserProfileRepository(db);
+});
+
 /// Provider pro Drift repozitář šablon zpráv – Worker čte šablony v terénu offline.
 final driftMessageTemplateRepositoryProvider =
     Provider<DriftMessageTemplateRepository>((ref) {
@@ -71,31 +102,53 @@ final driftMessageTemplateRepositoryProvider =
 class DriftSyncRepos {
   DriftSyncRepos({
     required this.task,
+    required this.taskChecklist,
+    required this.taskPayout,
+    required this.staffAbsence,
+    required this.employeeCash,
     required this.apartment,
     required this.client,
     required this.reservation,
     required this.tenant,
     required this.messageTemplate,
+    required this.userProfile,
   });
 
   final DriftTaskRepository task;
+  final DriftTaskChecklistRepository taskChecklist;
+  final DriftTaskPayoutRepository taskPayout;
+  final DriftStaffAbsenceRepository staffAbsence;
+  final DriftEmployeeCashRepository employeeCash;
   final DriftApartmentRepository apartment;
   final DriftClientRepository client;
   final DriftReservationRepository reservation;
   final DriftTenantRepository tenant;
   final DriftMessageTemplateRepository messageTemplate;
+  final DriftUserProfileRepository userProfile;
 }
 
 /// Provider pro DriftSyncRepos – injektuje se do WorkerSyncService při sync.
 final driftSyncReposProvider = Provider<DriftSyncRepos>((ref) {
   return DriftSyncRepos(
     task: ref.watch(driftTaskRepositoryProvider),
+    taskChecklist: ref.watch(driftTaskChecklistRepositoryProvider),
+    taskPayout: ref.watch(driftTaskPayoutRepositoryProvider),
+    staffAbsence: ref.watch(driftStaffAbsenceRepositoryProvider),
+    employeeCash: ref.watch(driftEmployeeCashRepositoryProvider),
     apartment: ref.watch(driftApartmentRepositoryProvider),
     client: ref.watch(driftClientRepositoryProvider),
     reservation: ref.watch(driftReservationRepositoryProvider),
     tenant: ref.watch(driftTenantRepositoryProvider),
     messageTemplate: ref.watch(driftMessageTemplateRepositoryProvider),
+    userProfile: ref.watch(driftUserProfileRepositoryProvider),
   );
+});
+
+/// Lokální checklisty k úkolům (Dynamic Checklists) – zápis worker změn a sync pull.
+final driftTaskChecklistRepositoryProvider = Provider<DriftTaskChecklistRepository>((ref) {
+  final db = ref.watch(driftDatabaseProvider);
+  final pending = ref.watch(driftPendingMutationRepositoryProvider);
+  return DriftTaskChecklistRepository(db, pending);
 });
 
 /// Provider pro Drift repozitář úkolů – implementuje ITaskRepository.

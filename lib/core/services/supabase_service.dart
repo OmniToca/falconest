@@ -125,6 +125,48 @@ class SafeTenantTable {
     return SupabaseService.client.from(_table).insert(payload);
   }
 
+  /// UPSERT – při _scoped projde [safeInsertPayload] každý řádek (mapa nebo seznam map).
+  ///
+  /// PROČ: Stejná Frontend Firewall jako u INSERT – super admin s prázdným [currentTenantId]
+  /// chová se jako holý klient (globální HQ operace); jinak se tenant_id vnutí do payloadu.
+  PostgrestFilterBuilder upsert(
+    dynamic data, {
+    String? onConflict,
+    bool ignoreDuplicates = false,
+    bool defaultToNull = false,
+  }) {
+    dynamic prepared = data;
+    if (_scoped) {
+      if (data is List) {
+        prepared = data.map((e) {
+          if (e is Map<String, dynamic>) {
+            return SupabaseService.safeInsertPayload(_tenantId, Map<String, dynamic>.from(e));
+          }
+          if (e is Map) {
+            return SupabaseService.safeInsertPayload(
+              _tenantId,
+              Map<String, dynamic>.from(e),
+            );
+          }
+          return e;
+        }).toList();
+      } else if (data is Map<String, dynamic>) {
+        prepared = SupabaseService.safeInsertPayload(_tenantId, data);
+      } else if (data is Map) {
+        prepared = SupabaseService.safeInsertPayload(
+          _tenantId,
+          Map<String, dynamic>.from(data),
+        );
+      }
+    }
+    return SupabaseService.client.from(_table).upsert(
+      prepared,
+      onConflict: onConflict,
+      ignoreDuplicates: ignoreDuplicates,
+      defaultToNull: defaultToNull,
+    );
+  }
+
   /// UPDATE – při _scoped přidá .eq('tenant_id', _tid) za .update(...).
   PostgrestFilterBuilder update(Map<String, dynamic> data) {
     var b = SupabaseService.client.from(_table).update(data);

@@ -9,3 +9,30 @@ entrypoint = "./functions/create-checkout/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/create-checkout/*.html" ]
+
+# PROČ: Při `verify_jwt = true` API gateway často vrátí 401 „Invalid JWT“ (Flutter Web,
+# zastaralý stav FunctionsClientu, pg_cron s Bearer = service role JWT místo user JWT).
+# Vypnutím ověření na bráně a kontrolou v [authorizeAutomationDispatchRequest] v
+# `functions/automation-dispatch/index.ts` propustíme jak cron (Bearer == service role key),
+# tak ruční „Odeslat okamžitě“ (platný user access_token + admin/manager v profiles).
+[functions.automation-dispatch]
+verify_jwt = false
+
+# PROČ: Resend volá POST na veřejnou URL bez Supabase JWT – ověření podpisu Svix uvnitř
+# funkce `resend-webhook` (env `RESEND_WEBHOOK_SECRET`).
+[functions.resend-webhook]
+verify_jwt = false
+
+# PROČ: Twilio Status Callback neposílá Supabase JWT – autentizuje se podpisem
+# `X-Twilio-Signature` (viz `functions/twilio-webhook/index.ts`, `TWILIO_AUTH_TOKEN`).
+[functions.twilio-webhook]
+verify_jwt = false
+
+# PROČ: Home Assistant a jiné integrace volají GET s export_token v URL bez Supabase JWT;
+# autorizuje pouze hash tokenu uvnitř Edge funkce + RPC get_calendar_feed_data.
+[functions.export_calendar]
+verify_jwt = false
+
+# PROČ: pg_cron volá GET s anon key (stejně jako template-reminders); bez JWT na bráně.
+[functions.upcoming-task-reminder]
+verify_jwt = false

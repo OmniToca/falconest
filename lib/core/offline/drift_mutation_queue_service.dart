@@ -1,15 +1,20 @@
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 
 import 'package:falconest/core/database/drift/repositories/drift_pending_mutation_repository.dart';
+import 'package:falconest/core/database/drift/repositories/drift_task_checklist_repository.dart';
 import 'package:falconest/core/database/drift/repositories/drift_task_repository.dart';
+import 'package:falconest/core/offline/offline_checklist_photo_processor.dart';
 import 'package:falconest/core/offline/mutation_queue_interface.dart';
+import 'package:falconest/core/offline/pending_mutation_list_item.dart';
 import 'package:falconest/core/offline/offline_cash_collection_processor.dart';
 import 'package:falconest/core/offline/offline_company_expense_processor.dart';
 import 'package:falconest/core/offline/offline_issue_task_processor.dart'
     show processOfflineIssueTask, ProcessIssueTaskException;
+import 'package:falconest/core/offline/mutation_queue_exceptions.dart';
 import 'package:falconest/core/offline/offline_photo_task_processor.dart';
 import 'package:falconest/core/services/absence_notification_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 
 /// Drift implementace fronty mutací – zapisuje do SQLite místo Isar.
 ///
@@ -17,10 +22,16 @@ import 'package:falconest/core/services/supabase_service.dart';
 /// Důvod: zajištění 100 % offline běhu na iOS bez výpadků ("Collection id is invalid").
 /// Původní Isar MutationQueueService zůstává v kódu jako bezpečnostní pojistka.
 class DriftMutationQueueService implements MutationQueueServiceInterface {
-  DriftMutationQueueService(this._repo, [this._taskRepo]);
+  DriftMutationQueueService(
+    this._repo, [
+    this._taskRepo,
+    this._checklistRepo,
+  ]);
 
   final DriftPendingMutationRepository _repo;
   final DriftTaskRepository? _taskRepo;
+  /// PROČ: Upload fotek checklistu potřebuje po úspěchu zapsat Drift – stejná vrstva jako u úkolů.
+  final DriftTaskChecklistRepository? _checklistRepo;
 
   @override
   Future<void> enqueueMutation({
@@ -36,11 +47,13 @@ class DriftMutationQueueService implements MutationQueueServiceInterface {
         payload: payload,
         recordId: recordId,
       );
-    } catch (e) {
+    } catch (e, st) {
       if (kDebugMode) {
-        // ignore: avoid_print
-        print('DriftMutationQueueService.enqueueMutation ERROR: $e');
+        debugPrint('DriftMutationQueueService.enqueueMutation ERROR: $e');
+        debugPrint('$st');
       }
+      // PROČ: Volající musí vědět, že zápis do fronty selhal – jinak by uživatel ztratil data bez zpětné vazby.
+      rethrow;
     }
   }
 
@@ -52,8 +65,8 @@ class DriftMutationQueueService implements MutationQueueServiceInterface {
       try {
         final payload = m.payload;
         if (payload == null || payload.isEmpty) {
-          await _repo.deleteById(m.id);
-          continue;
+          // PROČ: Prázdná mutace se nesmí tiše smazat – zůstane ve frontě pro diagnostiku / opravu dat.
+          throw EmptyQueuedMutationPayloadException('mutation id=${m.id}');
         }
 
         switch (m.actionType.toUpperCase()) {
@@ -69,58 +82,102 @@ class DriftMutationQueueService implements MutationQueueServiceInterface {
           case 'OFFLINE_TASK_COMPLETE_WITH_PHOTOS':
             await processOfflineTaskCompleteWithPhotos(payload, driftTaskRepository: _taskRepo);
             break;
+          case 'UPLOAD_CHECKLIST_PHOTO':
+            await processUploadChecklistPhoto(
+              payload,
+              checklistRepo: _checklistRepo,
+            );
+            break;
           case 'INSERT':
-            await SupabaseService.client.from(m.tableName).insert(payload);
+            final insertTid = payload['tenant_id']?.toString();
+            if (insertTid != null && insertTid.isNotEmpty) {
+              // Bezpečnostní vynucení tenant_id klauzule přes safeFrom (payload + insert scope).
+              await SupabaseService.safeFrom(m.tableName, insertTid).insert(
+                    Map<String, dynamic>.from(payload),
+                  );
+            } else {
+              throw MissingQueuedMutationTenantIdException(
+                tableName: m.tableName,
+                action: m.actionType,
+              );
+            }
             // Po úspěšném odeslání absence z fronty notifikujeme adminy (zvoneček).
             if (m.tableName == 'staff_absences') {
               try {
                 await AbsenceNotificationService.notifyAdminsAboutAbsenceFromPayload(payload);
-              } catch (_) {}
+              } catch (e, st) {
+                AppLogger.error('DriftMutationQueueService: notifikace adminů po INSERT staff_absences z fronty selhala', e, st);
+              }
             }
             break;
           case 'UPDATE':
-            if (m.recordId == null || m.recordId!.isEmpty) continue;
-            var updateQuery = SupabaseService.client
-                .from(m.tableName)
-                .update(payload)
-                .eq('id', m.recordId!);
-            final tenantId = payload['tenant_id']?.toString();
-            if (tenantId != null && tenantId.isNotEmpty) {
-              updateQuery = updateQuery.eq('tenant_id', tenantId);
+            if (m.recordId == null || m.recordId!.isEmpty) {
+              throw MissingRecordIdException(actionType: m.actionType, tableName: m.tableName);
             }
-            await updateQuery;
+            final updateTid = payload['tenant_id']?.toString();
+            if (updateTid != null && updateTid.isNotEmpty) {
+              await SupabaseService.safeFrom(m.tableName, updateTid)
+                  .update(Map<String, dynamic>.from(payload))
+                  .eq('id', m.recordId!);
+            } else {
+              throw MissingQueuedMutationTenantIdException(
+                tableName: m.tableName,
+                action: m.actionType,
+              );
+            }
+            break;
+          // PROČ: Worker checklist používá vlastní action pro čitelnost fronty; chování je shodné s UPDATE.
+          case 'UPDATE_CHECKLIST_ITEM':
+            if (m.recordId == null || m.recordId!.isEmpty) {
+              throw MissingRecordIdException(actionType: m.actionType, tableName: m.tableName);
+            }
+            final checklistUpdateTid = payload['tenant_id']?.toString();
+            if (checklistUpdateTid != null && checklistUpdateTid.isNotEmpty) {
+              await SupabaseService.safeFrom(m.tableName, checklistUpdateTid)
+                  .update(Map<String, dynamic>.from(payload))
+                  .eq('id', m.recordId!);
+            } else {
+              throw MissingQueuedMutationTenantIdException(
+                tableName: m.tableName,
+                action: m.actionType,
+              );
+            }
             break;
           case 'DELETE':
-            if (m.recordId == null || m.recordId!.isEmpty) continue;
-            var deleteQuery = SupabaseService.client
-                .from(m.tableName)
-                .delete()
-                .eq('id', m.recordId!);
-            final tenantId = payload['tenant_id']?.toString();
-            if (tenantId != null && tenantId.isNotEmpty) {
-              deleteQuery = deleteQuery.eq('tenant_id', tenantId);
+            if (m.recordId == null || m.recordId!.isEmpty) {
+              throw MissingRecordIdException(actionType: m.actionType, tableName: m.tableName);
             }
-            await deleteQuery;
+            final deleteTid = payload['tenant_id']?.toString();
+            if (deleteTid != null && deleteTid.isNotEmpty) {
+              await SupabaseService.safeFrom(m.tableName, deleteTid)
+                  .delete()
+                  .eq('id', m.recordId!);
+            } else {
+              throw MissingQueuedMutationTenantIdException(
+                tableName: m.tableName,
+                action: m.actionType,
+              );
+            }
             break;
           default:
-            continue;
+            throw UnknownMutationTypeException(m.actionType);
         }
 
+        // PROČ: Mazat řádek fronty jen po prokazatelně úspěšném dokončení větve výše.
         await _repo.deleteById(m.id);
-      } catch (e) {
-        // Síťové chyby nebo 5xx z Edge Function = mutace zůstane ve frontě k opakování
+      } catch (e, st) {
+        // Síťové chyby nebo 5xx = zastavíme celé zpracování; mutace zůstávají (včetně aktuální).
         if (DriftMutationQueueService.isRetryableError(e)) {
           if (kDebugMode) {
-            // ignore: avoid_print
-            print('DriftMutationQueueService.processQueue: retryable error, stopping: $e');
+            debugPrint('DriftMutationQueueService.processQueue: retryable error, stopping: $e');
           }
           return;
         }
+        // PROČ: Jiné chyby (neplatný payload, 4xx, neznámý typ…) – mutaci NEMAŽEME; pokračujeme další položkou.
         if (kDebugMode) {
-          // ignore: avoid_print
-          print('DriftMutationQueueService.processQueue: non-retryable error, removing: $e');
+          debugPrint('DriftMutationQueueService.processQueue: keeping mutation in queue: $e');
+          debugPrint('$st');
         }
-        await _repo.deleteById(m.id);
       }
     }
   }
@@ -128,6 +185,12 @@ class DriftMutationQueueService implements MutationQueueServiceInterface {
   @override
   Future<int> getPendingCount() async {
     return _repo.getCount();
+  }
+
+  @override
+  Future<List<PendingMutationListItem>> getPendingMutations() async {
+    final rows = await _repo.getAllOrderedByCreatedAt();
+    return rows.map(PendingMutationListItem.fromRow).toList();
   }
 
   /// Rozpozná síťovou chybu – shodná logika jako MutationQueueService.isNetworkError.

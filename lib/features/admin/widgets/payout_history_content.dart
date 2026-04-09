@@ -1,4 +1,5 @@
 import 'package:easy_localization/easy_localization.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -6,6 +7,7 @@ import 'package:falconest/core/presentation/widgets/app_card.dart';
 import 'package:falconest/core/providers/tenant_currency_provider.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/core/services/settlement_export_service.dart';
+import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/features/admin/providers/current_tenant_name_provider.dart';
 import 'package:falconest/features/admin/providers/settlements_provider.dart';
 
@@ -57,13 +59,20 @@ class _PayoutHistoryContentState extends ConsumerState<PayoutHistoryContent> {
     var groups = ref.read(payoutHistoryReportProvider(param)).valueOrNull;
     groups ??= await ref.read(payoutHistoryReportProvider(param).future);
     if (!context.mounted) return;
+    // PROČ: Bezprostředně po kontrole mounted – ref.future await výše; analyzer nerozvine podmínku napříč větvemi.
+    // ignore: use_build_context_synchronously
+    final messenger = ScaffoldMessenger.of(context);
+    // ignore: use_build_context_synchronously
+    final localeStr = context.locale.toString();
+    // PROČ: Barvu chyby si uložíme před async voláním, aby po await už nebylo
+    // potřeba znovu číst BuildContext.
+    // ignore: use_build_context_synchronously
+    final errorColor = context.colors.error;
     final groupsList = groups ?? <PayoutGroup>[];
     if (groupsList.isEmpty) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('admin.settlements.history_empty'.tr())),
-        );
-      }
+      messenger.showSnackBar(
+        SnackBar(content: Text('admin.settlements.history_empty'.tr())),
+      );
       return;
     }
 
@@ -72,11 +81,12 @@ class _PayoutHistoryContentState extends ConsumerState<PayoutHistoryContent> {
       final currency = ref.read(currentTenantCurrencyProvider).valueOrNull ?? 'EUR';
       final tenantName = ref.read(currentTenantNameProvider).valueOrNull ?? '';
       final monthParam = DateTime(_selectedMonth.year, _selectedMonth.month, 1);
+      final monthLabel = DateFormat.yMMMM(localeStr).format(monthParam);
 
       await SettlementExportService.exportPayoutHistoryToPdf(
         month: monthParam,
-        monthLabel: _formatMonthYear(),
-        locale: context.locale.toString(),
+        monthLabel: monthLabel,
+        locale: localeStr,
         data: groupsList,
         tenantCurrency: currency,
         tenantName: tenantName.trim().isNotEmpty ? tenantName : null,
@@ -99,20 +109,20 @@ class _PayoutHistoryContentState extends ConsumerState<PayoutHistoryContent> {
           'export_pdf_summary_hourly_rate': 'admin.settlements.export_pdf_summary_hourly_rate'.tr(),
         },
       );
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('admin.settlements.export_success'.tr())),
-        );
-      }
+      if (!context.mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('admin.settlements.export_success'.tr())),
+      );
     } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(e.toString()),
-            backgroundColor: Colors.red.shade700,
-          ),
-        );
-      }
+      if (kDebugMode) debugPrint('payout export PDF: $e');
+      if (!context.mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('common.generic_error_user_friendly'.tr()),
+          // PROČ: error feedback musí respektovat globální error token tématu.
+          backgroundColor: errorColor,
+        ),
+      );
     } finally {
       if (mounted) setState(() => _isExporting = false);
     }
@@ -187,20 +197,17 @@ class _PayoutHistoryContentState extends ConsumerState<PayoutHistoryContent> {
           child: asyncReport.when(
             loading: () => const Center(child: CircularProgressIndicator()),
             error: (err, _) {
-              final msg = 'admin.settlements.history_load_error'.tr();
-              final safeMsg = msg.isEmpty || msg == 'admin.settlements.history_load_error'
-                  ? err.toString()
-                  : msg;
+              if (kDebugMode) debugPrint('payoutHistoryReport: $err');
               return Center(
                 child: Padding(
                   padding: const EdgeInsets.all(24),
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
+                      Icon(Icons.error_outline, size: 48, color: context.colors.error),
                       const SizedBox(height: 16),
                       Text(
-                        safeMsg,
+                        'admin.settlements.history_load_error'.tr(),
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
@@ -223,14 +230,14 @@ class _PayoutHistoryContentState extends ConsumerState<PayoutHistoryContent> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.history, size: 64, color: Colors.grey.shade400),
+                      Icon(Icons.history, size: 64, color: context.colors.outline),
                       const SizedBox(height: 16),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 32),
                         child: Text(
                           'admin.settlements.history_empty'.tr(),
                           style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                                color: Colors.grey.shade600,
+                                color: context.colors.onSurfaceVariant,
                               ),
                           textAlign: TextAlign.center,
                         ),
@@ -279,7 +286,11 @@ class _HistoryRowCard extends StatelessWidget {
             Icon(
               group.isEmployee ? Icons.person : Icons.business,
               size: 20,
-              color: group.isEmployee ? Colors.blue.shade700 : Colors.purple.shade700,
+              // PROČ: barevné odlišení typu skupiny (employee/partner)
+              // centralizujeme do custom color tokenů.
+              color: group.isEmployee
+                  ? context.customColors.groupTypeBlue
+                  : context.customColors.groupTypePurple,
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -294,7 +305,7 @@ class _HistoryRowCard extends StatelessWidget {
               formatAmount(group.totalAmount),
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.bold,
-                    color: Colors.green.shade700,
+                    color: context.customColors.success,
                   ),
             ),
           ],

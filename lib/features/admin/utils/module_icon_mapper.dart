@@ -5,6 +5,11 @@ import 'package:flutter/material.dart';
 /// DB má pouze string klíče (např. 'finance', 'warehouse', 'staff').
 /// Tento mapper poskytuje ikonu a label pro sidebar; [tabIndex] je index v IndexedStack
 /// (null = modul zatím nemá obrazovku, zobrazí se placeholder / paywall).
+///
+/// PROČ dvojí styl klíčů názvů: hlavní moduly mají historicky `admin.menu_*`. Pod-moduly
+/// bez vlastní route (např. [settlements], [custom_twilio_whatsapp]) nemají nadpis z routy,
+/// proto jejich název musí být v i18n pod `modules.<key>.title` – jinak UI spadne na
+/// generické [admin.menu_module] („Modul“) a ikonu puzzle ([Icons.extension_rounded]).
 class ModuleIconMapper {
   ModuleIconMapper._();
 
@@ -15,6 +20,7 @@ class ModuleIconMapper {
     'reservations': Icons.calendar_month_rounded,
     'tasks': Icons.task_alt_rounded,
     'planning_calendar': Icons.calendar_view_week_rounded,
+    'map': Icons.map_outlined,
     'finance': Icons.attach_money_rounded,
     'finance_export': Icons.receipt_long_rounded,
     'reports': Icons.analytics_rounded,
@@ -24,9 +30,11 @@ class ModuleIconMapper {
     'smart_lock': Icons.lock_rounded,
     'automation': Icons.smart_toy_rounded,
     'automatic_tasks': Icons.auto_awesome,
+    'settlements': Icons.payments_rounded,
+    'custom_twilio_whatsapp': Icons.chat_rounded,
   };
 
-  /// i18n klíč pro název položky menu (admin.menu_*).
+  /// i18n klíč pro název položky menu ([admin.menu_*] nebo [modules.<key>.title]).
   static const Map<String, String> labelKeys = {
     'dashboard': 'admin.menu_dashboard',
     'staff': 'admin.menu_staff',
@@ -34,6 +42,7 @@ class ModuleIconMapper {
     'reservations': 'admin.menu_reservations',
     'tasks': 'admin.menu_tasks',
     'planning_calendar': 'admin.menu_planning_calendar',
+    'map': 'admin.menu_map',
     'finance': 'admin.menu_finance',
     'finance_export': 'admin.menu_finance_export',
     'reports': 'admin.menu_reports',
@@ -43,6 +52,8 @@ class ModuleIconMapper {
     'smart_lock': 'admin.menu_smart_lock',
     'automation': 'admin.menu_automation',
     'automatic_tasks': 'admin.menu_automatic_tasks',
+    'settlements': 'modules.settlements.title',
+    'custom_twilio_whatsapp': 'modules.custom_twilio_whatsapp.title',
   };
 
   /// Index záložky v AdminLayout IndexedStack. Null = modul bez obrazovky (placeholder).
@@ -53,15 +64,18 @@ class ModuleIconMapper {
     'reservations': 3,
     'tasks': 4,
     'planning_calendar': 5,
-    'finance': 6,
+    'map': 6,
+    'finance': 7,
     'finance_export': null,
-    'reports': 7,
-    'clients': 8,
-    'communication': 9,
+    'reports': 8,
+    'clients': 9,
+    'communication': 10,
     'warehouse': null,
     'smart_lock': null,
-    'automation': null,
+    'automation': 11,
     'automatic_tasks': null,
+    'settlements': null,
+    'custom_twilio_whatsapp': null,
   };
 
   static IconData getIcon(String moduleKey) =>

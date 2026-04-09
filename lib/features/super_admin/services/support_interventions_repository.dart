@@ -1,4 +1,5 @@
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 
 /// Jeden záznam z tabulky [support_interventions] – zásah podpory (Magic Login).
 ///
@@ -111,7 +112,9 @@ class SupportInterventionsRepository {
     for (final e in list) {
       try {
         result.add(_parseRow(Map<String, dynamic>.from(e)));
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('SupportInterventionsRepository: parsování řádku (listInterventionsInPeriod) selhalo', e, st);
+      }
     }
     return result;
   }
@@ -132,7 +135,9 @@ class SupportInterventionsRepository {
     for (final e in list) {
       try {
         result.add(_parseRowWithJoins(Map<String, dynamic>.from(e)));
-      } catch (_) {}
+      } catch (e, st) {
+        AppLogger.error('SupportInterventionsRepository: parsování řádku (listInterventions) selhalo', e, st);
+      }
     }
     return result;
   }
@@ -157,11 +162,15 @@ class SupportInterventionsRepository {
     try {
       final p = m['profiles'];
       if (p is Map) profileName = (p['name'] as String?)?.trim();
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('SupportInterventionsRepository: čtení profiles join v _parseRowWithJoins selhalo', e, st);
+    }
     try {
       final t = m['tenants'];
       if (t is Map) tenantName = (t['name'] as String?)?.trim();
-    } catch (_) {}
+    } catch (e, st) {
+      AppLogger.error('SupportInterventionsRepository: čtení tenants join v _parseRowWithJoins selhalo', e, st);
+    }
     return SupportInterventionRow(
       id: row.id,
       profileId: row.profileId,

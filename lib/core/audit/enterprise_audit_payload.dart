@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
 
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 
 /// Konstanty pro pole [triggered_by] v details – zda akci vyvolal uživatel, kaskáda nebo systém.
 ///
@@ -51,15 +52,25 @@ class EnterpriseAuditPayload {
   /// PROČ: Ukládáme actor_snapshot do details v době akce – pokud by byl actor později smazán
   /// nebo změněn, JOIN by v budoucnu selhal a v audit logu by chybělo „kdo to udělal“. Snapshot
   /// zaručuje neměnnost kontextu. Vrací null při chybě nebo nepřihlášeném uživateli.
-  static Future<Map<String, String>?> getCurrentActorSnapshot() async {
+  ///
+  /// [tenantId] – při neprázdném hodnotě dotaz přes [safeFrom] (Super Admin v kontextu agentury).
+  static Future<Map<String, String>?> getCurrentActorSnapshot({String? tenantId}) async {
     try {
       final userId = SupabaseService.client.auth.currentUser?.id;
       if (userId == null || userId.isEmpty) return null;
-      final res = await SupabaseService.client
-          .from('profiles')
-          .select('auth_id, first_name, last_name, name, email')
-          .eq('auth_id', userId)
-          .maybeSingle();
+      final dynamic res;
+      if (tenantId != null && tenantId.isNotEmpty) {
+        res = await SupabaseService.safeFrom('profiles', tenantId)
+            .select('auth_id, first_name, last_name, name, email')
+            .eq('auth_id', userId)
+            .maybeSingle();
+      } else {
+        res = await SupabaseService.client
+            .from('profiles')
+            .select('auth_id, first_name, last_name, name, email')
+            .eq('auth_id', userId)
+            .maybeSingle();
+      }
       if (res == null) return null;
       final map = Map<String, dynamic>.from(res as Map);
       final first = (map['first_name']?.toString() ?? '').trim();
@@ -73,7 +84,8 @@ class EnterpriseAuditPayload {
         'name': displayName.isEmpty ? (email.isNotEmpty ? email : userId) : displayName,
         'email': email.isEmpty ? '' : email,
       };
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('EnterpriseAuditPayload.getCurrentActorSnapshot: dotaz profiles selhal', e, st);
       return null;
     }
   }
@@ -173,7 +185,8 @@ class EnterpriseAuditPayload {
     try {
       const encoder = JsonEncoder.withIndent('  ');
       return encoder.convert(state);
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.error('EnterpriseAuditPayload.formatStateForDisplay: JsonEncoder selhal', e, st);
       return state.toString();
     }
   }

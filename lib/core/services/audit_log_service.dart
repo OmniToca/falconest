@@ -16,7 +16,7 @@ class AuditLogService {
     Map<String, dynamic>? details,
   }) async {
     try {
-      await SupabaseService.client.from('audit_logs').insert({
+      await SupabaseService.safeFrom('audit_logs', tenantId).insert({
         'tenant_id': tenantId,
         'user_id': userId,
         'action_type': actionType,
@@ -56,7 +56,8 @@ class AuditLogService {
     String? reason,
     Map<String, dynamic>? extra,
   }) async {
-    final actorSnapshot = await EnterpriseAuditPayload.getCurrentActorSnapshot();
+    final actorSnapshot =
+        await EnterpriseAuditPayload.getCurrentActorSnapshot(tenantId: tenantId);
     final details = EnterpriseAuditPayload.buildDetails(
       recordName: recordName,
       actorSnapshot: actorSnapshot,

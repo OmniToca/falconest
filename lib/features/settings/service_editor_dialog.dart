@@ -174,7 +174,7 @@ class _ServiceEditorDialogState extends ConsumerState<ServiceEditorDialog> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('settings.service_save_error'.tr(namedArgs: {'error': e.toString()})),
+            content: Text('common.generic_error_user_friendly'.tr()),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),

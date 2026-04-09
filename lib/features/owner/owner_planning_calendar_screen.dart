@@ -3,7 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/features/calendar/providers/planning_calendar_provider.dart';
-import 'package:falconest/features/owner/providers/owner_planning_calendar_provider.dart';
+import 'package:falconest/features/calendar/widgets/planning_grid_slot_widgets.dart';
+import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
+import 'package:falconest/features/owner/providers/owner_planning_calendar_apartment_filter_provider.dart';
+import 'package:falconest/features/owner/providers/owner_planning_calendar_events_provider.dart';
+import 'package:falconest/features/owner/providers/owner_reservations_provider.dart';
+import 'package:falconest/features/owner/widgets/owner_task_detail_dialog.dart';
 import 'package:falconest/features/admin/providers/task_categories_provider.dart';
 import 'package:falconest/features/admin/models/task_category_model.dart';
 import 'package:falconest/utils/task_visuals.dart';
@@ -15,9 +20,12 @@ import 'package:falconest/utils/task_visuals.dart';
 const int _gridStartHour = 0;
 const int _gridEndHour = 24;
 const int _slotMinutes = 15;
-const double _slotHeight = 18;
+const double _slotHeight = kPlanningGridSlotHeight;
 const double _timeColumnWidth = 48;
 const double _dayHeaderHeight = 32;
+
+/// Výška řádku All-Day hlavičky pro rezervace (obsazenost bytu).
+const double _allDayHeaderHeight = 44;
 
 int get _slotsPerHour => 60 ~/ _slotMinutes;
 int get _totalSlots => (_gridEndHour - _gridStartHour) * _slotsPerHour;
@@ -32,6 +40,66 @@ const List<String> _dayKeys = [
   'planning_calendar.sat',
   'planning_calendar.sun',
 ];
+
+/// Horní lišta: výběr bytu pro zúžení dat v kalendáři (stejný týden, méně událostí v síti).
+///
+/// PROČ: Při více bytech majitele skrývá vizuální šum; `null` = všechny vlastněné jednotky.
+class _OwnerCalendarApartmentFilterBar extends ConsumerWidget {
+  const _OwnerCalendarApartmentFilterBar();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final apartmentsAsync = ref.watch(ownerApartmentsProvider);
+    return apartmentsAsync.when(
+      data: (apartments) {
+        if (apartments.length < 2) {
+          return const SizedBox.shrink();
+        }
+        final filter = ref.watch(ownerPlanningCalendarApartmentFilterProvider);
+        final effective = (filter == null || apartments.any((a) => a.id == filter))
+            ? filter
+            : null;
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(24, 12, 24, 0),
+          child: InputDecorator(
+            decoration: InputDecoration(
+              labelText: 'owner.calendar_filter_label'.tr(),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String?>(
+                isExpanded: true,
+                isDense: true,
+                value: effective,
+                items: [
+                  DropdownMenuItem<String?>(
+                    value: null,
+                    child: Text('owner.calendar_filter_all_apartments'.tr()),
+                  ),
+                  ...apartments.map(
+                    (a) => DropdownMenuItem<String?>(
+                      value: a.id,
+                      child: Text(a.name),
+                    ),
+                  ),
+                ],
+                onChanged: (v) {
+                  ref.read(ownerPlanningCalendarApartmentFilterProvider.notifier).state = v;
+                },
+              ),
+            ),
+          ),
+        );
+      },
+      loading: () => const SizedBox.shrink(),
+      error: (Object e, StackTrace st) => const SizedBox.shrink(),
+    );
+  }
+}
 
 /// Obrazovka plánovacího kalendáře pro majitele – týdenní pohled, read-only.
 class OwnerPlanningCalendarScreen extends ConsumerStatefulWidget {
@@ -64,8 +132,10 @@ class _OwnerPlanningCalendarScreenState
     return d.subtract(Duration(days: d.weekday - 1));
   }
 
-  void _prevWeek() => setState(() => _weekStart = _weekStart.subtract(const Duration(days: 7)));
-  void _nextWeek() => setState(() => _weekStart = _weekStart.add(const Duration(days: 7)));
+  void _prevWeek() =>
+      setState(() => _weekStart = _weekStart.subtract(const Duration(days: 7)));
+  void _nextWeek() =>
+      setState(() => _weekStart = _weekStart.add(const Duration(days: 7)));
 
   void _jumpToToday() {
     setState(() => _weekStart = _getMonday(DateTime.now()));
@@ -79,29 +149,39 @@ class _OwnerPlanningCalendarScreenState
     });
   }
 
-  /// Zobrazí read-only detail úkolu – bez editace, bez jmen personálu.
+  /// Zobrazí read-only detail úkolu – sdílený dialog s popisem a fotkami.
   void _showReadOnlyDetail(PlanningTask task) {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => _OwnerTaskDetailDialog(task: task),
+    OwnerTaskDetailDialog.show(
+      context,
+      OwnerTaskDetailData(
+        title: task.title,
+        taskType: task.taskType,
+        apartmentName: task.apartmentName,
+        scheduledStart: task.scheduledStart,
+        status: task.status ?? 'pending',
+        description: task.description.trim().isEmpty ? null : task.description,
+        mediaUrls: task.mediaUrls,
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final tasksAsync = ref.watch(ownerPlanningCalendarTasksProvider(_weekStart));
-    final categoriesByCode = ref.watch(taskCategoriesProvider).valueOrNull ?? {};
+    final eventsAsync = ref.watch(
+      ownerPlanningCalendarEventsProvider(_weekStart),
+    );
+    final categoriesByCode =
+        ref.watch(taskCategoriesProvider).valueOrNull ?? {};
     final locale = context.locale.toString();
     final dateFormat = DateFormat('d.M.', locale);
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text('owner.calendar_title'.tr()),
-      ),
+      appBar: AppBar(title: Text('owner.calendar_title'.tr())),
       backgroundColor: const Color(0xFFF5F5F5),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          const _OwnerCalendarApartmentFilterBar(),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
             child: Row(
@@ -120,9 +200,9 @@ class _OwnerPlanningCalendarScreenState
                 Text(
                   '${dateFormat.format(_weekStart)} – ${dateFormat.format(_weekStart.add(const Duration(days: 6)))}',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                        color: Colors.black87,
-                      ),
+                    fontWeight: FontWeight.w600,
+                    color: Colors.black87,
+                  ),
                 ),
                 const SizedBox(width: 12),
                 IconButton.filled(
@@ -138,7 +218,10 @@ class _OwnerPlanningCalendarScreenState
                 OutlinedButton(
                   onPressed: _jumpToToday,
                   style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
                     foregroundColor: Colors.grey.shade800,
                     side: BorderSide(color: Colors.grey.shade400),
                   ),
@@ -154,7 +237,10 @@ class _OwnerPlanningCalendarScreenState
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   final w = constraints.maxWidth;
-                  final dayColumnWidth = ((w - _timeColumnWidth) / 7).clamp(80.0, double.infinity);
+                  final dayColumnWidth = ((w - _timeColumnWidth) / 7).clamp(
+                    80.0,
+                    double.infinity,
+                  );
                   final totalWidth = _timeColumnWidth + 7 * dayColumnWidth;
                   return Container(
                     decoration: BoxDecoration(
@@ -172,28 +258,82 @@ class _OwnerPlanningCalendarScreenState
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        // 1. Hlavička s názvy dnů
                         _DayHeaderRow(
                           weekStart: _weekStart,
                           dayColumnWidth: dayColumnWidth,
                           dateFormat: dateFormat,
                         ),
+                        // 2. All-Day hlavička + časová mřížka: MUSÍ být v Expanded, aby měly ohraničenou výšku a mřížka mohla scrollovat.
                         Expanded(
-                          child: tasksAsync.when(
-                            data: (tasks) => _OwnerWeekGridBody(
-                              weekStart: _weekStart,
-                              tasks: tasks,
-                              categoriesByCode: categoriesByCode,
-                              onTaskTap: _showReadOnlyDetail,
-                              dayColumnWidth: dayColumnWidth,
-                              totalWidth: totalWidth,
-                              verticalScrollController: _verticalScrollController,
+                          child: eventsAsync.when(
+                            data: (events) {
+                              final reservationEvents = events
+                                  .where((e) => e.isReservation)
+                                  .toList();
+                              final taskEvents = events
+                                  .where((e) => !e.isReservation)
+                                  .toList();
+                              final tasks = taskEvents
+                                  .map((e) => e.task!)
+                                  .toList();
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _OwnerAllDayHeader(
+                                    weekStart: _weekStart,
+                                    dayColumnWidth: dayColumnWidth,
+                                    reservationEvents: reservationEvents,
+                                  ),
+                                  Expanded(
+                                    child: _OwnerWeekGridBody(
+                                      weekStart: _weekStart,
+                                      tasks: tasks,
+                                      categoriesByCode: categoriesByCode,
+                                      onTaskTap: _showReadOnlyDetail,
+                                      dayColumnWidth: dayColumnWidth,
+                                      totalWidth: totalWidth,
+                                      verticalScrollController:
+                                          _verticalScrollController,
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
+                            loading: () => Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                _OwnerAllDayHeader(
+                                  weekStart: _weekStart,
+                                  dayColumnWidth: dayColumnWidth,
+                                  reservationEvents: [],
+                                ),
+                                const Expanded(
+                                  child: Center(
+                                    child: CircularProgressIndicator(),
+                                  ),
+                                ),
+                              ],
                             ),
-                            loading: () => const Center(child: CircularProgressIndicator()),
-                            error: (e, _) => Center(
-                              child: Text(
-                                'owner.calendar_error'.tr(namedArgs: {'error': '$e'}),
-                                textAlign: TextAlign.center,
-                              ),
+                            error: (e, _) => Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                _OwnerAllDayHeader(
+                                  weekStart: _weekStart,
+                                  dayColumnWidth: dayColumnWidth,
+                                  reservationEvents: [],
+                                ),
+                                Expanded(
+                                  child: Center(
+                                    child: Text(
+                                      'owner.calendar_error'.tr(
+                                        namedArgs: {'error': '$e'},
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ),
@@ -311,7 +451,132 @@ class _DayHeaderRow extends StatelessWidget {
   }
 }
 
+/// All-Day hlavička: zobrazuje rezervace (obsazenost bytu) jako bloky v každém dni.
+/// Rezervace mají jinou barvu než úkoly (modrá/tyrkysová), aby na první pohled
+/// bylo zřejmé „tady bydlí host“. Jedna rezervace = jeden blok přes celý sloupec dne.
+class _OwnerAllDayHeader extends StatelessWidget {
+  const _OwnerAllDayHeader({
+    required this.weekStart,
+    required this.dayColumnWidth,
+    required this.reservationEvents,
+  });
+
+  final DateTime weekStart;
+  final double dayColumnWidth;
+  final List<OwnerCalendarEvent> reservationEvents;
+
+  @override
+  Widget build(BuildContext context) {
+    final lineColor = Colors.grey.withValues(alpha: 0.25);
+    final weekStartNorm = DateTime(
+      weekStart.year,
+      weekStart.month,
+      weekStart.day,
+    );
+
+    return Row(
+      children: [
+        SizedBox(
+          width: _timeColumnWidth,
+          height: _allDayHeaderHeight,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: Colors.grey.shade50,
+              border: Border(
+                right: BorderSide(color: lineColor),
+                bottom: BorderSide(color: lineColor),
+              ),
+            ),
+            child: Center(
+              child: Text(
+                'owner.calendar_all_day'.tr(),
+                style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
+        ),
+        ...List.generate(7, (dayIndex) {
+          final day = weekStartNorm.add(Duration(days: dayIndex));
+          final forDay = reservationEvents.where((e) {
+            final d = e.start;
+            return d.year == day.year &&
+                d.month == day.month &&
+                d.day == day.day;
+          }).toList();
+
+          return Container(
+            width: dayColumnWidth,
+            height: _allDayHeaderHeight,
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade50,
+              border: Border(
+                right: BorderSide(color: lineColor),
+                bottom: BorderSide(color: lineColor),
+              ),
+            ),
+            child: ListView.builder(
+              itemCount: forDay.length,
+              itemBuilder: (context, i) {
+                final ev = forDay[i];
+                final r = ev.reservation!;
+                final label = _reservationLabel(r);
+                final chipBg = Colors.blue.withValues(alpha: 0.2);
+                final chipBorder = Colors.blue.shade400.withValues(alpha: 0.6);
+                final chipFg = Colors.blue.shade800;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: chipBg,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: chipBorder, width: 1),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            label,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w500,
+                              color: chipFg,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  /// Text bloku: jména hostů nebo „Rezervace“ + název bytu.
+  static String _reservationLabel(OwnerReservation r) {
+    if (r.guestName != null && r.guestName!.trim().isNotEmpty) {
+      return r.guestName!.trim();
+    }
+    return 'owner.calendar_reservation'.tr();
+  }
+}
+
 /// Tělo mřížky – horizontální a vertikální scroll, read-only karty.
+/// POUZE úkoly: pozicování přes getProcessedTasksForWeek zůstává beze změny.
 class _OwnerWeekGridBody extends StatefulWidget {
   const _OwnerWeekGridBody({
     required this.weekStart,
@@ -345,7 +610,8 @@ class _OwnerWeekGridBodyState extends State<_OwnerWeekGridBody> {
       if (_initialScrollDone) return;
       if (!widget.verticalScrollController.hasClients) return;
       final offset = 8 * _slotsPerHour * _slotHeight;
-      final maxExtent = widget.verticalScrollController.position.maxScrollExtent;
+      final maxExtent =
+          widget.verticalScrollController.position.maxScrollExtent;
       widget.verticalScrollController.jumpTo(offset.clamp(0.0, maxExtent));
       if (mounted) setState(() => _initialScrollDone = true);
     });
@@ -354,7 +620,11 @@ class _OwnerWeekGridBodyState extends State<_OwnerWeekGridBody> {
   Widget _buildCurrentTimeIndicator(double gridHeight) {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
-    final weekStartNorm = DateTime(widget.weekStart.year, widget.weekStart.month, widget.weekStart.day);
+    final weekStartNorm = DateTime(
+      widget.weekStart.year,
+      widget.weekStart.month,
+      widget.weekStart.day,
+    );
     final dayIndex = today.difference(weekStartNorm).inDays;
     if (dayIndex < 0 || dayIndex > 6) return const SizedBox.shrink();
     final minutesFromMidnight = now.hour * 60 + now.minute;
@@ -376,7 +646,6 @@ class _OwnerWeekGridBodyState extends State<_OwnerWeekGridBody> {
       widget.weekStart,
       _gridStartHour,
     );
-    final lineColor = Colors.grey.withValues(alpha: 0.25);
     final gridHeight = _totalGridHeight();
 
     return SingleChildScrollView(
@@ -397,26 +666,13 @@ class _OwnerWeekGridBodyState extends State<_OwnerWeekGridBody> {
                     width: _timeColumnWidth,
                     height: gridHeight,
                     child: Column(
-                      children: List.generate(_totalSlots, (i) {
-                        final totalMinutes = _gridStartHour * 60 + i * _slotMinutes;
+                      children: List<Widget>.generate(_totalSlots, (i) {
+                        final totalMinutes =
+                            _gridStartHour * 60 + i * _slotMinutes;
                         final h = totalMinutes ~/ 60;
                         final m = totalMinutes % 60;
-                        final showLabel = m == 0;
-                        return SizedBox(
-                          height: _slotHeight,
-                          child: showLabel
-                              ? Align(
-                                  alignment: Alignment.topRight,
-                                  child: Padding(
-                                    padding: const EdgeInsets.only(right: 4, top: 0),
-                                    child: Text(
-                                      '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}',
-                                      style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                                    ),
-                                  ),
-                                )
-                              : null,
-                        );
+                        if (m != 0) return const PlanningGridTimeEmptySlot();
+                        return PlanningGridTimeLabeledSlot(hour: h, minute: m);
                       }),
                     ),
                   ),
@@ -424,30 +680,13 @@ class _OwnerWeekGridBodyState extends State<_OwnerWeekGridBody> {
                     width: 7 * widget.dayColumnWidth,
                     height: gridHeight,
                     child: Row(
-                      children: List.generate(7, (dayIndex) {
-                        return Container(
+                      children: List<Widget>.generate(
+                        7,
+                        (_) => PlanningGridDayColumn(
                           width: widget.dayColumnWidth,
-                          decoration: BoxDecoration(
-                            border: Border(right: BorderSide(color: lineColor)),
-                          ),
-                          child: Column(
-                            children: List.generate(
-                              _totalSlots,
-                              (_) => Container(
-                                height: _slotHeight,
-                                decoration: BoxDecoration(
-                                  border: Border(
-                                    bottom: BorderSide(
-                                      color: lineColor.withValues(alpha: 0.6),
-                                      width: 0.5,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        );
-                      }),
+                          slotCount: _totalSlots,
+                        ),
+                      ),
                     ),
                   ),
                 ],
@@ -455,22 +694,31 @@ class _OwnerWeekGridBodyState extends State<_OwnerWeekGridBody> {
               ...processed.map((p) {
                 final backgroundColor = TaskVisuals.getBackgroundColor(
                   p.task.taskType,
-                  categoriesByCode: widget.categoriesByCode.isNotEmpty ? widget.categoriesByCode : null,
+                  categoriesByCode: widget.categoriesByCode.isNotEmpty
+                      ? widget.categoriesByCode
+                      : null,
                 );
                 final borderColor = TaskVisuals.getBorderColor(
                   p.task.taskType,
-                  categoriesByCode: widget.categoriesByCode.isNotEmpty ? widget.categoriesByCode : null,
+                  categoriesByCode: widget.categoriesByCode.isNotEmpty
+                      ? widget.categoriesByCode
+                      : null,
                 );
-                final startMinutes = p.task.scheduledStart.hour * 60 +
+                final startMinutes =
+                    p.task.scheduledStart.hour * 60 +
                     p.task.scheduledStart.minute -
                     _gridStartHour * 60;
                 if (startMinutes < 0) return const SizedBox.shrink();
-                final durationMinutes = parseDurationMinutesFromDescription(p.task.description);
+                final durationMinutes = planningTaskBlockDurationMinutes(
+                  p.task,
+                );
                 final top = (startMinutes / _slotMinutes) * _slotHeight + 1;
-                final height = (durationMinutes / _slotMinutes) * _slotHeight - 2;
+                final height =
+                    (durationMinutes / _slotMinutes) * _slotHeight - 2;
                 if (height < 20) return const SizedBox.shrink();
                 final cellW = widget.dayColumnWidth - 2;
-                final left = _timeColumnWidth +
+                final left =
+                    _timeColumnWidth +
                     p.dayIndex * widget.dayColumnWidth +
                     1 +
                     (p.colIndex / p.totalCols) * cellW;
@@ -527,7 +775,9 @@ class _OwnerTaskCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final rawCode = task.taskType.trim().isEmpty ? 'other' : task.taskType.toLowerCase().trim();
+    final rawCode = task.taskType.trim().isEmpty
+        ? 'other'
+        : task.taskType.toLowerCase().trim();
     final code = rawCode.replaceAll('-', '_');
     final categoryLabel = 'admin.task_type_$code'.tr();
     final apartmentLabel = task.apartmentName ?? task.title;
@@ -543,9 +793,7 @@ class _OwnerTaskCard extends StatelessWidget {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(8),
               color: backgroundColor,
-              border: Border(
-                left: BorderSide(color: borderColor, width: 4),
-              ),
+              border: Border(left: BorderSide(color: borderColor, width: 4)),
               boxShadow: [
                 BoxShadow(
                   color: Colors.black.withValues(alpha: 0.08),
@@ -565,7 +813,9 @@ class _OwnerTaskCard extends StatelessWidget {
                     Icon(
                       TaskVisuals.getIcon(
                         task.taskType,
-                        categoriesByCode: categoriesByCode.isNotEmpty ? categoriesByCode : null,
+                        categoriesByCode: categoriesByCode.isNotEmpty
+                            ? categoriesByCode
+                            : null,
                       ),
                       size: 12,
                       color: _textPrimary,
@@ -606,89 +856,6 @@ class _OwnerTaskCard extends StatelessWidget {
             ),
           ),
         ),
-      ),
-    );
-  }
-}
-
-/// Read-only dialog s detailem úkolu – bez editace, bez jmen personálu.
-class _OwnerTaskDetailDialog extends StatelessWidget {
-  const _OwnerTaskDetailDialog({required this.task});
-
-  final PlanningTask task;
-
-  static String _taskTypeLabelKey(String taskType) {
-    final code = (taskType.trim().isEmpty ? 'other' : taskType.toLowerCase()).replaceAll('-', '_');
-    return 'admin.task_type_$code';
-  }
-
-  static String _statusLabel(String? status) {
-    if (status == null || status.trim().isEmpty) return 'task_status.assigned'.tr();
-    final s = status.trim().toLowerCase();
-    if (s == 'in_progress') return 'task_status.in_progress'.tr();
-    if (s == 'completed' || s == 'done') return 'task_status.completed'.tr();
-    if (s == 'problem') return 'task_status.problem'.tr();
-    return 'task_status.assigned'.tr();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final timeStr = '${task.scheduledStart.hour.toString().padLeft(2, '0')}:${task.scheduledStart.minute.toString().padLeft(2, '0')}';
-    final dateStr = DateFormat('d.M.yyyy', context.locale.toString()).format(task.scheduledStart);
-
-    return AlertDialog(
-      title: Text('owner.task_detail_title'.tr()),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _DetailRow(label: 'owner.task_detail_type'.tr(), value: _taskTypeLabelKey(task.taskType).tr()),
-            _DetailRow(label: 'owner.task_detail_title_label'.tr(), value: task.title),
-            _DetailRow(label: 'owner.task_detail_apartment'.tr(), value: (task.apartmentName == null || task.apartmentName!.trim().isEmpty) ? 'common.unknown'.tr() : task.apartmentName!),
-            _DetailRow(label: 'owner.task_detail_staff'.tr(), value: 'owner.tasks_staff_label'.tr()),
-            _DetailRow(label: 'owner.task_detail_date'.tr(), value: '$dateStr $timeStr'),
-            _DetailRow(label: 'owner.task_detail_status'.tr(), value: _statusLabel(task.status)),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: Text('common.cancel'.tr()),
-        ),
-      ],
-    );
-  }
-}
-
-class _DetailRow extends StatelessWidget {
-  const _DetailRow({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 100,
-            child: Text(
-              label,
-              style: TextStyle(
-                fontWeight: FontWeight.w600,
-                color: Colors.grey.shade700,
-              ),
-            ),
-          ),
-          Expanded(
-            child: Text(value),
-          ),
-        ],
       ),
     );
   }

@@ -400,7 +400,7 @@ class _AuditLogRow extends StatelessWidget {
     final agencyName = (entry.tenantId != null
             ? (tenantIdToName[entry.tenantId] ?? entry.tenantId)
             : null) ??
-        '—';
+        'common.placeholder_dash'.tr();
     final actorFromSnapshot = EnterpriseAuditPayload.getActorNameFromSnapshot(entry.details);
     final actorName = actorFromSnapshot ??
         (entry.userId == null || entry.userId!.isEmpty
@@ -414,7 +414,7 @@ class _AuditLogRow extends StatelessWidget {
     if (deviceLabel != null) metaParts.add(deviceLabel);
     metaParts.add(recordSuffix);
     final metadataLine = metaParts.join(_metadataSeparator);
-    final detailsLine = formatAuditLogDetailsForDisplay(entry.details);
+    final detailsLine = formatAuditLogDetailsForDisplay(entry.details, actionType: entry.actionType);
     final hasExpandableDetail = EnterpriseAuditPayload.getPreviousState(entry.details) != null ||
         EnterpriseAuditPayload.getNewState(entry.details) != null;
 
@@ -422,7 +422,7 @@ class _AuditLogRow extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         Icon(
-          getAuditLogIconForTable(entry.tableName),
+          getAuditLogIconForAction(entry.actionType, entry.tableName),
           size: 20,
           color: theme.colorScheme.primary.withValues(alpha: 0.8),
         ),
