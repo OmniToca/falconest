@@ -4,11 +4,17 @@
 
 ---
 
-### Synchronizace s fyzickou databází (`realna_db.csv`)
+### Synchronizace s fyzickou databází (export `information_schema`)
 
-Hlavní tabulka níže byla **srovnána 2026-03-28** s exportem sloupců ze Supabase (`realna_db.csv`). Dříve dokumentace obsahovala zastaralé nebo chybějící záznamy oproti produkci.
+Hlavní tabulka sloupců níže byla **srovnána 2026-04-09** se živým exportem sloupců z produkční Supabase (CSV: tabulka, sloupec, datový typ, nullable). Typy odpovídají přesně tomu, co vrací **`information_schema.columns`** (u PostGIS geometrií je ve sloupci „Typ dat“ hodnota **USER-DEFINED**, nikoli text `geometry`).
 
-**Co bylo doplněno (existovalo v DB, chybělo v MD):**
+**Poslední synchronizace (2026-04-09) oproti předchozí verzi MD:**
+
+- **Doplněno:** tabulka **owner_cash_transit_settlements** – evidence vyúčtování průtokové (transit) hotovosti vůči majiteli u konkrétní rezervace; vazba na **employee_cash_transactions** volitelná; stav a audit (**settled_at** / **settled_by**, **created_at** / **updated_at**).
+- **Typy ve sloupci „Typ dat“:** **apartments.geo_location**, **clients.geo_location**, **tasks.geo_location** přepsány na **USER-DEFINED** (v CSV z exportu); fyzický typ v PostgreSQL zůstává PostGIS **geometry(Point, 4326)** – viz migrace a sekce PostGIS níže.
+- **V tomto exportu nefiguruje** tabulka **upcoming_task_reminder_log** (historicky migrace `20260403280000_upcoming_task_reminder_log.sql`). Není uvedena v kanonické tabulce sloupců níže; pokud ji potřebuješ v dotazech, ověř existenci v konkrétní instanci (`to_regclass('public.upcoming_task_reminder_log')`).
+
+**Starší doplňky (kontext, stále platné pro produkt):**
 
 - Tabulky **automation_message_queue**, **automation_rules** – fronta a pravidla automatizovaných zpráv; sloupce typu **USER-DEFINED** odpovídají PostgreSQL enumům (např. kanál, stav fronty) – přesné názvy typů viz migrace / `\dT` v psql.
 - Tabulky **checklist_templates**, **checklist_template_items** – šablony checklistů pro úkoly.
@@ -17,14 +23,13 @@ Hlavní tabulka níže byla **srovnána 2026-03-28** s exportem sloupců ze Supa
 - Tabulka **tenant_usage_monthly** – agregace počtu odeslaných zpráv podle měsíce a kanálu.
 - Tabulka **platform_messaging_rates** – referenční ceny zpráv pro HQ / fakturaci.
 - Sloupce **apartment_services.checklist_template_id**, **apartments.parking_instructions**, **apartments.review_link**, **tenants.integration_settings** (jsonb NOT NULL – prázdný objekt `{}` pokud bez integrací).
-- Tabulka **tenant_ui_preferences** – brandové barvy UI na úrovni tenanta (primární/sekundární HEX); **updated_at** pro Timestamp Merging při synci z klienta. *Dokumentováno návrhem 2026-04-02; po nasazení migrace v Supabase doplnit řádek do exportu `realna_db.csv`.*
-- Rozšíření **postgis** (schéma `extensions`), sloupce **apartments.geo_location**, **tasks.geo_location**, **clients.geo_location** (`geometry(Point, 4326)`), GIST indexy **idx_apartments_geo**, **idx_tasks_geo**, **idx_clients_geo** – migrace `20260403000000_enable_postgis_and_geo.sql` + `20260403020000_add_geo_to_clients.sql` (2026-04-03).
+- Tabulka **tenant_ui_preferences** – brandové barvy UI na úrovni tenanta (primární/sekundární HEX); **updated_at** pro Timestamp Merging při synci z klienta.
+- Rozšíření **postgis** (schéma `extensions`), sloupce **apartments.geo_location**, **tasks.geo_location**, **clients.geo_location** (ve schématu **geometry(Point, 4326)**), GIST indexy **idx_apartments_geo**, **idx_tasks_geo**, **idx_clients_geo** – migrace `20260403000000_enable_postgis_and_geo.sql` + `20260403020000_add_geo_to_clients.sql` (2026-04-03).
 - Sloupce **search_vector** (tsvector, `GENERATED ... STORED`, konfigurace `simple`) na **clients**, **apartments**, **tasks**, **reservations** + GIN indexy **idx_*_search** – migrace `20260403010000_add_fts_vectors.sql` (2026-04-03).
 - Tabulka **notification_preferences** – místo čtyř sloupců `*_enabled` je **12 booleanských sloupců** (4 typy událostí × 3 kanály: **web** = in-app zvoneček, **push** = FCM, **email**) – migrace `20260403220000_notification_preferences_channels.sql` (2026-04-03).
 - Tabulka **notifications** – sloupec **metadata** (jsonb NOT NULL, výchozí `{}`) pro data UI (např. `task_id` u prokliku) – migrace `20260403240000_notifications_metadata_new_task_web.sql` (2026-04-03).
 - Trigger **`tasks_enqueue_new_assignment_push`** na **tasks** (AFTER INSERT OR UPDATE OF **assigned_to**) volá funkci **`enqueue_internal_push_on_new_task_assignment()`** – multi-channel doručení (fronta **internal_push** / **email**, řádek v **notifications**) podle kanálových přepínačů; typování času v těle zprávy viz sekce *notifications* níže.
 - Konvence **JSONB `tasks.metadata`**: kromě stávajících klíčů (hotovost, odhad minut, …) klient ukládá volitelně **`custom_tags`** — pole `{ "label": string, "color": "#RRGGBB" }` pro vlastní štítky na admin Kanbanu (2026-04).
-- Tabulka **upcoming_task_reminder_log** – PK (**task_id**, **scheduled_start**) pro idempotenci Edge **upcoming-task-reminder** (bez duplicit při push bez web kanálu); migrace `20260403280000_upcoming_task_reminder_log.sql` + pg_cron `20260403281000_upcoming_task_reminder_cron.sql`.
 - **Údržba DB (Fáze 5.2)** – funkce **`public.maintenance_data_cleanup()`** (migrace `20260407220000_maintenance_cleanup_cron.sql`): fyzické mazání řádků v **tenant_message_log** a **audit_logs** starších než **6 měsíců**; fyzické mazání soft-deleted záznamů v **tasks** a **reservations** s **deleted_at** starším než **1 rok**; pg_cron job **`maintenance-data-cleanup-weekly`** (neděle **03:00 UTC**). **VACUUM ANALYZE** pro **apartments**, **tasks**, **clients** kvůli PostGIS/GIST (PostgreSQL neumožňuje VACUUM uvnitř PL/pgSQL funkce) – tři samostatné pg_cron joby **`maintenance-vacuum-geo-apartments`**, **`maintenance-vacuum-geo-tasks`**, **`maintenance-vacuum-geo-clients`** v neděli **04:00–04:02 UTC**; dokumentační funkce **`public.maintenance_vacuum_geo()`** vrací text s odkazem na cron (migrace `20260407221000_postgis_vacuum_cron.sql`).
 
 **Co bylo odstraněno z dokumentace (v DB fyzicky neexistuje):**
@@ -36,7 +41,7 @@ Hlavní tabulka níže byla **srovnána 2026-03-28** s exportem sloupců ze Supa
 - **clients.language_code** a **reservations.guest_language**: typ v exportu je obecné **character varying** (bez délky v CSV); nullable **YES**. Vlastní constraint `varchar(2)` nebo default může být v DB nad rámec tohoto exportu – ověř v SQL, pokud na tom závisí migrace.
 - U řady sloupců byly v MD rozšířené poznámky v buňce „NULL“ (např. soft delete); v hlavní tabulce jsou nyní jen **YES** / **NO** jako ve **realna_db.csv**. Sémantiku (soft delete, výchozí hodnoty) drží textové sekce níže u příslušných tabulek.
 
-**Pořadí řádků:** řazeno podle pořadí tabulek a sloupců v souboru `realna_db.csv` (kopie fyzického stavu).
+**Pořadí řádků:** řazeno podle pořadí tabulek a sloupců v posledním schváleném exportu z produkce (stejné pořadí jako vstupní CSV z `information_schema`).
 
 ---
 
@@ -95,7 +100,7 @@ Hlavní tabulka níže byla **srovnána 2026-03-28** s exportem sloupců ze Supa
 | apartments | managed_from | date | YES |
 | apartments | parking_instructions | text | YES |
 | apartments | review_link | text | YES |
-| apartments | geo_location | geometry(Point, 4326) | YES |
+| apartments | geo_location | USER-DEFINED | YES |
 | apartments | search_vector | tsvector | NO |
 | app_super_admins | id | uuid | NO |
 | audit_logs | id | uuid | NO |
@@ -183,7 +188,7 @@ Hlavní tabulka níže byla **srovnána 2026-03-28** s exportem sloupců ze Supa
 | clients | profile_id | uuid | YES |
 | clients | agency_id | uuid | YES |
 | clients | language_code | character varying | YES |
-| clients | geo_location | geometry(Point, 4326) | YES |
+| clients | geo_location | USER-DEFINED | YES |
 | clients | search_vector | tsvector | NO |
 | cron_edge_config | key | text | NO |
 | cron_edge_config | value | text | NO |
@@ -280,6 +285,18 @@ Hlavní tabulka níže byla **srovnána 2026-03-28** s exportem sloupců ze Supa
 | notifications | is_read | boolean | NO |
 | notifications | metadata | jsonb | NO |
 | notifications | created_at | timestamp with time zone | YES |
+| owner_cash_transit_settlements | id | uuid | NO |
+| owner_cash_transit_settlements | tenant_id | uuid | NO |
+| owner_cash_transit_settlements | reservation_id | uuid | NO |
+| owner_cash_transit_settlements | amount | numeric | NO |
+| owner_cash_transit_settlements | currency | text | NO |
+| owner_cash_transit_settlements | settled_at | timestamp with time zone | YES |
+| owner_cash_transit_settlements | settled_by | uuid | YES |
+| owner_cash_transit_settlements | status | text | NO |
+| owner_cash_transit_settlements | employee_cash_transaction_id | uuid | YES |
+| owner_cash_transit_settlements | notes | text | YES |
+| owner_cash_transit_settlements | created_at | timestamp with time zone | YES |
+| owner_cash_transit_settlements | updated_at | timestamp with time zone | YES |
 | payout_snapshots | id | uuid | NO |
 | payout_snapshots | tenant_id | uuid | NO |
 | payout_snapshots | payout_period | date | NO |
@@ -442,7 +459,7 @@ Hlavní tabulka níže byla **srovnána 2026-03-28** s exportem sloupců ze Supa
 | tasks | last_communication_template_id | uuid | YES |
 | tasks | last_communication_template_context | text | YES |
 | tasks | last_communication_at | timestamp with time zone | YES |
-| tasks | geo_location | geometry(Point, 4326) | YES |
+| tasks | geo_location | USER-DEFINED | YES |
 | tasks | search_vector | tsvector | NO |
 | tenant_calendar_feed_tokens | id | uuid | NO |
 | tenant_calendar_feed_tokens | tenant_id | uuid | NO |
@@ -576,7 +593,7 @@ Edge funkce **`export_calendar`** sestaví VEVENT: vlastnost **GEO** jen při pl
 
 Pro Realtime streamy a časté filtry na `tenant_id` / `apartment_id` jsou zásadní následující indexy. Bez nich dochází u velkých tenantů (1000+ záznamů) k full table scan.
 
-**PostGIS** (rozšíření ve schématu `extensions`): sloupce `geo_location` na `apartments`, `tasks` a `clients` + GIST indexy pro prostorové dotazy.
+**PostGIS** (rozšíření ve schématu `extensions`): sloupce `geo_location` na `apartments`, `tasks` a `clients` (v PostgreSQL typ **geometry(Point, 4326)**; v exportu **`information_schema`** se typ často ukáže jako **USER-DEFINED**) + GIST indexy pro prostorové dotazy.
 
 **Full-Text Search:** sloupce `search_vector` (tsvector, generované, konfigurace `simple`) na `clients`, `apartments`, `tasks`, `reservations` + GIN indexy pro `@@` / `plainto_tsquery`.
 
@@ -602,6 +619,8 @@ Pro Realtime streamy a časté filtry na `tenant_id` / `apartment_id` jsou zása
 | payout_snapshots | idx_payout_snapshots_tenant_period | tenant_id, payout_period | Historie výplat podle měsíce. |
 | billing_shortfall_transfers | idx_billing_shortfall_transfers_tenant | tenant_id | Rychlý výběr převodů nedoplatků v rámci tenanta. |
 | billing_shortfall_transfers | idx_billing_shortfall_transfers_client_created | client_id, created_at | Chronologický výpis převodů nedoplatků pro klienta. |
+| owner_cash_transit_settlements | idx_owner_cash_transit_settlements_tenant | tenant_id | RLS a přehledy transit vyúčtování v rámci tenanta (migrace `20260404120000`). |
+| owner_cash_transit_settlements | idx_owner_cash_transit_settlements_reservation | reservation_id | Jeden pohled na záznamy podle pobytu; ochrana proti duplicitnímu settlementu řeší aplikační vrstva / unikátní constraint podle nasazení. |
 | tenant_ui_preferences | (UNIQUE constraint tenant_ui_preferences_tenant_id_key) | tenant_id | Jedinečnost tenant_id – jeden řádek vzhledu na agenturu (index vzniká z UNIQUE). |
 
 **SQL pro vytvoření (spustit v Supabase SQL Editoru):**
@@ -699,7 +718,7 @@ Dřívější jednosloupcové příznaky `*_enabled` byly nahrazeny touto matic�
 
 - **`daily-task-summary`** – úkoly `assigned` na **dnešní den** (časová zóna provozu v kódu). Čte **`daily_summary_web` / `daily_summary_push` / `daily_summary_email`**. **Push:** FCM s lokalizačními klíči (jako dříve). **Web:** INSERT do **`notifications`** (`type` = `daily_summary`). **E-mail:** řádek ve **`automation_message_queue`** (kanál `email`, `editable_payload.source` = `daily_summary`). Push lze vypnout bez Firebase – web/e-mail fungují i bez `FIREBASE_*` secrets.
 - **`template-reminders`** – pg_cron 7/11/15/19 (Madrid). Transfer úkoly, časová okna T1/T2/T3. Čte **`template_reminders_*`**. **Push:** FCM (loc klíče). **Web:** `notifications` (`type` = `template_reminder`). **E-mail:** fronta s `source` = `template_reminder`.
-- **`upcoming-task-reminder`** – pg_cron každých **15 min** (`invoke_upcoming_task_reminder`). Úkoly se **`scheduled_start`** v okně cca **50–70 min** od teď (UTC). Idempotence: **`upcoming_task_reminder_log`**. Čte **`upcoming_task_*`**. **Web / e-mail / push** stejný vzor; push používá český text + `data.route` na `/worker/task/<id>`.
+- **`upcoming-task-reminder`** – pg_cron každých **15 min** (`invoke_upcoming_task_reminder`). Úkoly se **`scheduled_start`** v okně cca **50–70 min** od teď (UTC). Idempotence závisí na nasazení (např. dedikovaná log tabulka v migraci `20260403280000` – v aktuálním exportu `information_schema` z 2026-04-09 **nebyla uvedena**; ověř v DB). Čte **`upcoming_task_*`**. **Web / e-mail / push** stejný vzor; push používá český text + `data.route` na `/worker/task/<id>`.
 
 **Konfigurace cronu:** `cron_edge_config` klíče `*_url` a `*_anon_key` (např. `upcoming_task_reminder_url`, `template_reminders_url`). Vyžaduje secrets u funkcí používajících FCM: `FIREBASE_PROJECT_ID`, `FIREBASE_SERVICE_ACCOUNT_JSON`.
 
@@ -753,6 +772,23 @@ Modul **Finance** je hlavní modul (zdarma) obsahující **Zaměstnaneckou pokla
 **Registr modulů:**
 - **finance** – hlavní modul, zdarma (price_eur = 0), show_in_menu = true.
 - **finance_export** – placený sub-modul, parent_module_key = 'finance', show_in_menu = false, price_eur = 29, pricing_type = 'fixed'.
+
+### Tabulka owner_cash_transit_settlements – transit hotovost vůči majiteli
+
+**Účel:** Uzavřít průtokovou hotovost u pobytu: částka, která prošla přes pracovníka/agenturu a má být **vyúčtována majiteli** (ne tržba agentury). Záznam je vždy vázaný na **rezervaci** (`reservation_id`) a **tenant_id** (multi-tenant).
+
+**Sloupce (stav dle exportu information_schema 2026-04-09):**
+
+- **amount**, **currency** – vyúčtovaná částka a měna.
+- **status** – workflow stavu settlementu (hodnoty dle aplikační logiky / RPC).
+- **settled_at**, **settled_by** – kdy a kým byl záznam uzavřen (nullable = ještě nevyplněno v DB nebo čeká na doplnění podle procesu).
+- **employee_cash_transaction_id** – volitelná vazba na konkrétní položku v **employee_cash_transactions** (audit propojení s pokladnou pracovníka).
+- **notes** – volitelná poznámka k vyúčtování.
+- **created_at**, **updated_at** – audit časů (nullable v exportu – ověř defaulty a triggery v SQL, pokud potřebuješ NOT NULL).
+
+**Aplikační vrstva:** `ReservationCashTransitRepository` (`settleTransitCash`, ochrana proti duplicitám) čte a zapisuje přes `SupabaseService.safeFrom('owner_cash_transit_settlements', …)`.
+
+**RLS:** Politiky z migrace `20260404120000_owner_cash_transit_settlements.sql` – staff tenanta (kromě property_owner) SELECT; majitel SELECT jen pro rezervace na svých bytech; INSERT/UPDATE/DELETE admin/manager (a super_admin).
 
 ---
 
