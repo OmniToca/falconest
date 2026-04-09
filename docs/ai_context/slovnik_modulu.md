@@ -10,6 +10,7 @@ Hlavní mapa projektu: účel modulů, logických bloků a pozadí bez vlastní 
 - **Auth:** `authNotifierProvider` (ChangeNotifier) – session, tenant, role; často kombinováno s `pinUnlockedProvider`.
 - **Data worker na mobilu:** Drift SQLite přes `driftDatabaseProvider`, `driftTaskRepositoryProvider`, `driftSyncReposProvider` atd.
 - **Úkoly na webu / admin:** převážně Supabase přímo v providerech a repozitářích.
+- **Přehled schopností produktu (CTO/PO):** věcný popis toho, co systém reálně umí podle kódu – `docs/ai_context/system_features_overview.md` (doplňuje tento slovník souhrnem pro management, ne nahrazuje provider mapu).
 
 ---
 
@@ -40,6 +41,7 @@ Hlavní mapa projektu: účel modulů, logických bloků a pozadí bez vlastní 
 | `SupabaseService` | Klient a bezpečné dotazy s `tenant_id`. |
 | **`tenant_ui_preferences` (DB)** | Supabase + Drift: brandové barvy tenanta (`primary_color`, `secondary_color`, `updated_at` pro Timestamp Merging). RLS: čte kdokoli v tenantovi, zapisuje admin/manager. Migrace `20260402140000_tenant_ui_preferences.sql`. |
 | `AuditLogService` | Zápis auditních událostí. |
+| **Údržba DB (Supabase)** | pg_cron: `maintenance_data_cleanup()` (mazání starých logů a soft-delete záznamů), tři joby `VACUUM ANALYZE` pro mapové tabulky; Edge **export_calendar** – in-memory rate limit 20 req/min na hash iCal tokenu. Migrace `20260407220000`, `20260407221000`. |
 | `MediaService` / `PhotoService` | Upload médií (úkoly, checklisty). |
 | `BillingActionService`, `BillingExportService`, `BillingPdfService` | Fakturace, exporty, PDF. |
 | `SettlementExportService` | Export vyrovnání. |
@@ -72,15 +74,15 @@ Hlavní layout: `AdminLayout` (spodní navigace / sekce).
 | Oblast | Popis | Hlavní providery |
 |--------|--------|------------------|
 | **Dashboard** | Operativní přehled (plán, flotila, lehká KPI: komunikace/automatizace, CRM, absence); bez těžkých analytických dotazů. | `dashboardSummaryProvider`, `adminDashboardTasksProvider`, `adminTasksTrendProvider`, `automationSummaryProvider`, `messagingHealthProvider`, `messagingFailuresProvider`, `newClientsThisMonthProvider`, `upcomingAbsencesProvider` |
-| **Úkoly** | Seznam, filtry, měsíc, stream, přiřazování. | `adminTasksProvider`, `adminTasksStreamProvider`, `selectedTaskMonthProvider`, `tasksForReservationProvider`, `taskByIdProvider`, `tasksForApartmentProvider`, `tasksForMemberProvider`, `clientTasksProvider`, `adminDashboardTasksProvider` |
+| **Úkoly** | Seznam, filtry, měsíc, stream, přiřazování. Kanban karta zobrazuje počet fotek z `media_urls`, pokud není prázdné. | `adminTasksProvider`, `adminTasksStreamProvider`, `selectedTaskMonthProvider`, `tasksForReservationProvider`, `taskByIdProvider`, `tasksForApartmentProvider`, `tasksForMemberProvider`, `clientTasksProvider`, `adminDashboardTasksProvider` |
 | **Úkoly – těžký výpočet mimo UI** | Smart generátor (fáze C: kolize, přiřazení) a simulace přepočtu personálu běží v `Isolate.run` na iOS/Android/desktop; na webu stejná logika synchronně (`kIsWeb`). Soubor nesmí importovat `admin_tasks_provider` (cyklus). | `lib/features/admin/providers/admin_tasks_isolate_workers.dart` |
 | **Kanban – granulární sloupce** | `tasksBySystemStatusProvider` (`Provider.family` + `KanbanColumnTasks` s value equality) filtruje úkoly podle systémového statusu a `kanbanTasksSearchQueryProvider`; sloupec se překreslí jen při změně „svých“ dat. `kanbanHasVisibleTasksProvider` řídí prázdný stav bez globálního `watch` celého streamu na Scaffoldu. | `tasksBySystemStatusProvider`, `kanbanTasksSearchQueryProvider`, `kanbanHasVisibleTasksProvider` v `admin_tasks_provider.dart` |
-| **Rezervace** | Kanban / seznam, trendy; bez polí `is_owner_block` / `agency_collects_payment` v UI ani modelech. Kanban (záložka Seznam): granulární sloupce přes `reservationsBySystemStatusProvider` (`Provider.family` + `KanbanColumnReservations`), vyhledávání `kanbanReservationsSearchQueryProvider`, prázdný stav `kanbanHasVisibleReservationsProvider`; karty používají `premiumCardDecoration` stejně jako úkoly. | `adminReservationsProvider`, `adminReservationsStreamProvider`, `reservationsBySystemStatusProvider`, `kanbanReservationsSearchQueryProvider`, `kanbanHasVisibleReservationsProvider`, `clientReservationsProvider`, `reservationsForApartmentProvider`, `adminReservationsTrendsProvider` |
+| **Rezervace** | Kanban / seznam, trendy; bez polí `is_owner_block` / `agency_collects_payment` v UI ani modelech. Kanban (záložka Seznam): granulární sloupce přes `reservationsBySystemStatusProvider` (`Provider.family` + `KanbanColumnReservations`), vyhledávání `kanbanReservationsSearchQueryProvider`, prázdný stav `kanbanHasVisibleReservationsProvider`; karty používají `premiumCardDecoration` stejně jako úkoly. Model `ReservationRow` obsahuje `created_at` pro štítek stáří záznamu v Kanbanu (`reservationRecordAgeLabel` v `admin_reservation_utils.dart`). | `adminReservationsProvider`, `adminReservationsStreamProvider`, `reservationsBySystemStatusProvider`, `kanbanReservationsSearchQueryProvider`, `kanbanHasVisibleReservationsProvider`, `clientReservationsProvider`, `reservationsForApartmentProvider`, `adminReservationsTrendsProvider` |
 | **Apartmány** | Seznam bytů, stránkování; měsíční obsazenost z přesného SQL řezu; stav bytu nezávislý na měsíci v modulu Úkoly. | `apartmentsProvider`, `apartmentsFullListProvider`, `apartmentsLoadingMoreProvider`, `currentMonthReservationsProvider`, `apartmentStatusContextReservationsProvider`, `todayApartmentTasksProvider`, `apartmentStatusProvider` |
 | **Stav apartmánů** | Dashboard flotila + karty bytů: rezervace v okně ~400 dní, úklidy přes `watchTasksRawForApartmentStatus` (ne `selectedTaskMonthProvider`). | `apartmentStatusProvider`, `todayApartmentTasksProvider`, `apartmentStatusContextReservationsProvider` |
 | **Tým** | Členové, absence, finance člena, dostupnost k úkolu + absence radar. Vytížení na kartě personálu z úzkého okna úkolů (ne měsíc ze záložky Úkoly). | `adminTeamProvider`, `teamFullListProvider`, `staffAbsencesProvider`, `upcomingAbsencesProvider`, `availableTeamForTaskProvider`, `memberFinancesProvider`, `teamLoadingMoreProvider`, `teamWeeklyWorkloadTasksProvider` |
-| **Klienti (CRM)** | Stránkované vyhledávání přes Supabase `.textSearch('search_vector', …, config: simple, type: websearch)` v `ClientRepository.getPaginatedClients` (GIN/tsvector); tři záložky = tři dotazy s filtrem `client_type`. Lehká mapa agentur, COUNT doporučení, adresář, portál, finance. | `paginatedClientsByTabProvider`, `clientsLoadingMoreByTabProvider`, `agencyNamesMapProvider`, `recommendedClientsCountByAgencyProvider`, `clientsRecommendedListByAgencyProvider`, `clientsFullListProvider`, `invalidatePaginatedClientTabs`, `clientAddressesProvider`, `clientPortalStatusProvider`, `addClientProvider`, `updateClientProvider`, `softDeleteClientProvider`, `clientFinancesProvider` |
-| **Finance – fakturace** | Přehledy fakturace, reporty. | `billingReportProvider`, `clientBillingProvider`, `financeTabProvider` |
+| **Klienti (CRM)** | Stránkované vyhledávání přes Supabase `.textSearch('search_vector', …, config: simple, type: websearch)` v `ClientRepository.getPaginatedClients` (GIN/tsvector); tři záložky = tři dotazy s filtrem `client_type`. Lehká mapa agentur, COUNT doporučení, adresář, portál, finance. V detailu klienta (`client_detail_dialog`) jsou e-mail a telefon klikatelné (`mailto:` / `tel:` přes `url_launcher`). | `paginatedClientsByTabProvider`, `clientsLoadingMoreByTabProvider`, `agencyNamesMapProvider`, `recommendedClientsCountByAgencyProvider`, `clientsRecommendedListByAgencyProvider`, `clientsFullListProvider`, `invalidatePaginatedClientTabs`, `clientAddressesProvider`, `clientPortalStatusProvider`, `addClientProvider`, `updateClientProvider`, `softDeleteClientProvider`, `clientFinancesProvider` |
+| **Finance – fakturace** | Přehledy fakturace, reporty; před uzamčením měsíce varování při úkolech bez přiřazení (`assigned_to` + `assigned_user_ids`) nebo s povinnou fotkou bez `media_urls`. Kurzy měn: `currenciesProvider` používá in-memory TTL 1 h (`CurrencyService.fetchCurrenciesCached`). | `billingReportProvider`, `clientBillingProvider`, `financeTabProvider`, `currenciesProvider` |
 | **Finance – hotovost / peněženky** | Peněženky zaměstnanců, transakce, výpadky výběru. | `employeeCashWalletsProvider`, `myCashWalletProvider`, `myCashTransactionsProvider`, `walletTransactionsProvider`, `failedCashCollectionsProvider`, `cashShortfallsCountProvider`, `walletBalanceProvider` |
 | **Vyúčtování / settlements** | Čekající výplaty, historie, seskupení. | `pendingSettlementsProvider`, `taskSettlementsProvider`, `groupedPendingPayoutsProvider`, `payoutHistoryReportProvider`, `taskIdsWithPayoutsProvider`, `taskIdsWithCommissionsProvider`, `lockedFinancialTaskIdsProvider` |
 | **Reporty** | Měsíční reporty provozu (grafy fl_chart). Agregace v Dartu z úkolů měsíce (limit 2000); jména bytů/personálu jsou v `ApartmentRevenue.displayName` a `EmployeePerformance.memberDisplayName` (snapshot při výpočtu), aby UI grafů nesledovalo `apartmentsFullListProvider` / `teamFullListProvider`. Apartmány/tým se v `reportsDataProvider` načítají přes `ref.read(...future)` (ne watch listů). | `reportsMonthProvider`, `reportsDataProvider` |
@@ -124,7 +126,7 @@ Hlavní layout: `AdminLayout` (spodní navigace / sekce).
 | **Checklist u úkolu** | Drift instance + fotky (IO/stub). | `workerTaskChecklistProvider` |
 | **Synchronizace** | Pull úkolů, šablon, push pending (Timestamp merge). | `workerSyncStateProvider`, `workerPendingSyncCountProvider` (logika v `WorkerSyncService` – mobil/web) |
 | **Výdělky** | Souhrn odměn. | `myEarningsProvider` |
-| **Absence** | Vlastní absence pracovníka. | `workerAbsencesProvider` |
+| **Absence** | Vlastní absence pracovníka; na `worker_absences_screen` lokální filtr (Vše / Schválené / Čekající a zamítnuté) nad seznamem bez změny dat v provideru. | `workerAbsencesProvider` |
 | **Týdenní statistiky** | Přehled za týden. | `weeklyStatsProvider` |
 | **Peněženka (worker UI)** | Zobrazení hotovostní peněženky. | sdílené s `finance_cash_provider` dle kontextu |
 
@@ -138,14 +140,15 @@ Layout: `OwnerLayout`.
 
 | Modul | Popis | Providery |
 |-------|--------|-----------|
-| **Dashboard** | Přehled pro majitele. | kombinace owner providerů |
+| **Dashboard** | Přehled pro majitele; první záložka v `OwnerLayout`, routa `/owner/dashboard`. | kombinace owner providerů |
 | **Apartmány** | Seznam bytů majitele. | `ownerApartmentsProvider` |
-| **Detail apartmánu** | Stav, údaje jednoho bytu. | `ownerApartmentDetailProvider` |
+| **Detail apartmánu** | Stav, údaje jednoho bytu; odkaz `review_link`, sekce iCal (RPC `get_owner_calendar_feed_url_for_apartment`). | `ownerApartmentDetailProvider` |
 | **Úkoly** | Úkoly v kontextu majitele. | `ownerTasksProvider` |
-| **Rezervace** | Rezervace u majitele; legacy sloupce `is_owner_block` / `agency_collects_payment` z produktu odstraněny (2026-04). | `ownerReservationsProvider` |
-| **Plánovací kalendář** | Úkoly + all-day rezervace; rezervace z DB jen pro kalendářní měsíc obsahující zobrazený týden (`ownerReservationsForPlanningCalendarProvider`), ne celá historie. | `ownerPlanningCalendarTasksProvider`, `ownerPlanningCalendarEventsProvider`, `ownerReservationsForPlanningCalendarProvider` |
+| **Rezervace** | Rezervace u majitele; blokace vlastního pobytu (`metadata.is_owner_stay`, `guest_name` konstanta); legacy sloupce `is_owner_block` / `agency_collects_payment` z produktu odstraněny (2026-04). | `ownerReservationsProvider` |
+| **Plánovací kalendář** | Úkoly + all-day rezervace; rezervace z DB jen pro kalendářní měsíc obsahující zobrazený týden (`ownerReservationsForPlanningCalendarProvider`), ne celá historie; volitelný výběr jednoho bytu (`ownerPlanningCalendarApartmentFilterProvider` = null = všechny vlastněné). | `ownerPlanningCalendarTasksProvider`, `ownerPlanningCalendarEventsProvider`, `ownerReservationsForPlanningCalendarProvider`, `ownerPlanningCalendarApartmentFilterProvider` |
 | **Služby bytu** | Volitelné služby z pohledu majitele. | `ownerApartmentServicesOptionsProvider` |
-| **Fakturace majitele** | Snapshots vyúčtování. | `ownerBillingSnapshotsProvider` |
+| **Fakturace majitele** | Snapshots vyúčtování + sekce firemních výdajů (COMPANY_EXPENSE) se schválením v `metadata`. | `ownerBillingSnapshotsProvider`, `ownerCompanyExpensesProvider` |
+| **Nástěnka – metriky** | Počty pobytů 14 dní + součet nezařazených owner služeb vůči snapshotům. | `ownerDashboardMetricsProvider` |
 | **Hlášení závad / task detail** | Dialogy vázané na úkoly. | owner task providery |
 
 ---
@@ -277,6 +280,41 @@ Layout: `OwnerLayout`.
 - **`lib/features/admin/screens/admin_map_dispatch_screen.dart`** – mapový dispečink (flutter_map + OSM): živé markery pro byty a úkoly se souřadnicemi z `apartmentsFullListProvider` a `adminTasksStreamProvider`; záložka v `AdminLayout` [IndexedStack] pod modulem DB `key = map` ([ModuleIconMapper]).
 - **`lib/core/services/geocoding_service.dart`** – geokódování textové adresy přes OSM Nominatim (`User-Agent: FalcoNest/1.0`); tlačítko „Získat GPS“ u adresy bytu a u lokace externího úkolu.
 - **`supabase/functions/export_calendar`** + RPC **`get_calendar_feed_data`** – HTTP GET s `export_token` → `.ics` pro Home Assistant atd. RPC vrací mimo základní sloupce i **`feed_task_type`** (typ služby pro HA: kód z katalogu / úkolu / titulku), **`feed_agency_price`** (cena agentury z **`tasks.metadata.amount_to_collect`**) a **`feed_transit_price`** (průtoková cena z **`tasks.metadata.transit_amount_to_collect`**). Geodata: `geo_latitude` / `geo_longitude` (úkol nebo byt; v SQL **`extensions.ST_Y` / `extensions.ST_X`**). Ve VEVENT **GEO** jen při platném páru souřadnic, rozšířené **LOCATION**. Vlastnost **DESCRIPTION**: lidský kontext + případně „Navigovat: …“, a **na konci** strukturovaný blok pro HA (oddělovač **`---`**, pak **`Type:`**, **`AgencyPrice:`**, **`TransitPrice:`** z polí `feed_*`). Migrace: **`20260403150000_calendar_feed_geo_postgis_qualify.sql`** (GEO/SQL), **`20260405120000_calendar_feed_ha_automation_fields.sql`** (RPC + HA pole; obsahuje **`DROP FUNCTION …`** před **`CREATE`**, jinak chyba **42P13** při změně návratového typu).
+
+### Worker – rychlé interakce v terénu (2026-04, fáze 4.1)
+
+- **`worker_task_checklist_widget_io.dart`** – `Dismissible` na položce checklistu (stejný zápis jako checkbox přes **`WorkerTaskChecklistOpsController`**).
+- **`ITaskRepository.appendWorkerQuickNote`** – append do **`tasks.description`** (Drift + Supabase / fronta **`UPDATE`**).
+- **`worker_task_detail_screen.dart`** – FAB + dialog rychlé poznámky.
+- **`worker_dashboard_screen.dart`** – seskupení karet podle bytu / adresy (`_locationGroupKey`), řazení v rámci dne chronologicky.
+
+### Worker – média, merge, hotovost (2026-04, fáze 4.2)
+
+- **`PhotoAnnotationScreen`** + **`pickWorkerPhotoWithAnnotation`** – červené kreslení přes fotku, export PNG; napojeno na **`TaskPhotoUploader`** a hlášení závad.
+- **`WorkerSyncService.pushPendingUpdates`** – volitelný **`onSmartMergeApplied`** po Smart Merge konfliktu; snack přes **`transientI18nSnackKeyProvider`** (`WorkerSyncStateNotifier`, **`NetworkSyncWatcher`**).
+- **`worker_dashboard_screen.dart`** – **`_HighCashWalletWarningBanner`** (`myCashWalletProvider`, práh 500).
+
+### Admin – CRM rychlé filtry, mapové trasy, audit úkolu (2026-04, fáze 3.2)
+
+- **`lib/features/admin/screens/admin_clients_screen.dart`** – rychlé filtry (`FilterChip`): klienti s **`profile_id`** (portál), klienti bez e-mailu; lokálně nad načteným seznamem spolu s vyhledáváním.
+- **`lib/features/admin/screens/admin_map_dispatch_screen.dart`** – filtr pracovníka; **`PolylineLayer`**: chronologické spojnice mezi dnešními úkoly stejného assignee (≥2 GPS body).
+- **`taskAuditLogsProvider`** (`task_audit_logs_provider.dart`) + **`TaskAuditHistorySection`** – audit z **`audit_logs`** pro **`table_name = tasks`** a **`record_id`** = id úkolu; **`AuditLogRepository.fetchLogsForRecord`**.
+
+### Admin – Kanban hromadné akce, štítky úkolů, historie komunikace u rezervace (2026-04)
+
+- **`lib/features/admin/admin_tasks_screen.dart`** – výběr více úkolů (režim výběru / dlouhé podržení), hromadná změna stavu a přiřazení přes **`AdminTasksNotifier.bulkUpdateTaskStatus`** / **`bulkAssignTasks`**; vlastní štítky ukládané do **`tasks.metadata.custom_tags`** (viz **`TaskCustomTag`**).
+- **`lib/features/admin/providers/automation_log_repository.dart`** – **`fetchForReservation`**: log z **`tenant_message_log`** přes frontu **`automation_message_queue`** s **`entity_id`** = rezervace.
+- **`reservationMessageLogProvider`** (`automation_log_provider.dart`) – data pro záložku historie.
+- **`lib/features/admin/widgets/reservation_communication_history_section.dart`** – záložka v **`EditReservationDialog`**.
+
+### Skryté backendové mechanismy (audit 2026-04)
+
+- **XLSX import pipeline rezervací** – `lib/features/admin/services/reservation_import_service.dart` (`generateExcelTemplate`, `processImport`, `parseServiceCell`): tenant-specific šablona se `srv_*` sloupci, dávkové zpracování rezervací, mapování služeb (`tenant_services` + `apartment_services`), fallback časů a oddělený insert do `reservation_services`, včetně „soft warning“ přístupu pro neznámé služby.
+- **iCal sync idempotence a deduplikace** – `lib/features/admin/services/ical_sync_service.dart` (`syncIcalUrl`): synchronizace přes Edge funkci, validace eventů, deduplikace dle `external_uid`, insert pouze nových rezervací, návrat metrik (`insertedCount`, `skippedDuplicates`) pro bezpečný opakovaný sync.
+- **Automation queue runtime řízení** – `lib/features/admin/providers/automation_queue_repository.dart` (`cancelMessage`, `scheduleSendNow`, `invokeAutomationDispatch`, `insertAdhocMessage`, `updateMessagePayload`): ruční operativa fronty (cancel/send-now), ad-hoc zprávy, manuální dispatch mimo cron a konzistentní úpravy payloadu.
+- **Cash transit state engine rezervace** – `lib/core/repositories/cash/reservation_cash_transit_repository.dart` (`resolve`, `settleTransitCash`): výpočet stavové fáze průtokové hotovosti (`awaitingCollection`, `withWorker`, `atAgencyVault`, `settledToOwner`) a settlement ochrany proti duplicitnímu vyúčtování.
+- **Task insert guardrail (sanitizace payloadu)** – `lib/core/repositories/task/supabase_task_insert_repository.dart` + `lib/core/repositories/task/task_insert_sanitizer.dart`: centralizované vynucení `tenant_id`, normalizace času (`scheduled_start`, `due_date`), doplnění `metadata.estimated_minutes` a bezpečný merge metadata bez přepsání kritických klíčů.
+- **Team offboarding logic (odpojení otevřených úkolů)** – `lib/features/admin/providers/admin_team_repository.dart` (`softDeleteTeamMember`, `unassignOpenTasksForMember`): při odchodu člena bezpečné odpojení úkolů z `assigned_to`/`assigned_user_ids`, reset workflow statusu a auditní stopa (`unassigned_info`).
 
 ---
 
