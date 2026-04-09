@@ -10,7 +10,8 @@ Hlavní tabulka sloupců níže byla **srovnána 2026-04-09** se živým exporte
 
 **Poslední synchronizace (2026-04-09) oproti předchozí verzi MD:**
 
-- **Doplněno:** tabulka **owner_cash_transit_settlements** – evidence vyúčtování průtokové (transit) hotovosti vůči majiteli u konkrétní rezervace; vazba na **employee_cash_transactions** volitelná; stav a audit (**settled_at** / **settled_by**, **created_at** / **updated_at**).
+- **Doplněno (2026-04-09, migrace `20260409143000_owner_cash_dispositions.sql` – finální verze):** tabulka **owner_cash_disposition_requests** úspěšně navržena a zdokumentována: žádosti majitele o dispozici (**settlement_id** → **owner_cash_transit_settlements**); sloupce **disposition_type** a **status** jako **text** s **CHECK** (bez PostgreSQL enumů); RLS mapuje **owner_profile_id** na **profiles.id** přes **`auth_id = auth.uid()`**; migrace **nemění** tabulku **owner_cash_transit_settlements**. Aktualizace **updated_at** při změně stavu žádosti řeší aplikace (`OwnerCashDispositionRepository.updateRequestStatus`).
+- **Doplněno:** tabulka **owner_cash_transit_settlements** – evidence vyúčtování průtokové (transit) hotovosti vůči majiteli u konkrétní rezervace; vazba na **employee_cash_transactions** volitelná; sloupce **settled_by**, **notes**, **status**, **employee_cash_transaction_id** atd. dle produkčního exportu (tuto migraci nemění).
 - **Typy ve sloupci „Typ dat“:** **apartments.geo_location**, **clients.geo_location**, **tasks.geo_location** přepsány na **USER-DEFINED** (v CSV z exportu); fyzický typ v PostgreSQL zůstává PostGIS **geometry(Point, 4326)** – viz migrace a sekce PostGIS níže.
 - **V tomto exportu nefiguruje** tabulka **upcoming_task_reminder_log** (historicky migrace `20260403280000_upcoming_task_reminder_log.sql`). Není uvedena v kanonické tabulce sloupců níže; pokud ji potřebuješ v dotazech, ověř existenci v konkrétní instanci (`to_regclass('public.upcoming_task_reminder_log')`).
 
@@ -297,6 +298,16 @@ Hlavní tabulka sloupců níže byla **srovnána 2026-04-09** se živým exporte
 | owner_cash_transit_settlements | notes | text | YES |
 | owner_cash_transit_settlements | created_at | timestamp with time zone | YES |
 | owner_cash_transit_settlements | updated_at | timestamp with time zone | YES |
+| owner_cash_disposition_requests | id | uuid | NO |
+| owner_cash_disposition_requests | tenant_id | uuid | NO |
+| owner_cash_disposition_requests | settlement_id | uuid | NO |
+| owner_cash_disposition_requests | owner_profile_id | uuid | NO |
+| owner_cash_disposition_requests | disposition_type | text | NO |
+| owner_cash_disposition_requests | amount | numeric | NO |
+| owner_cash_disposition_requests | status | text | NO |
+| owner_cash_disposition_requests | admin_notes | text | YES |
+| owner_cash_disposition_requests | created_at | timestamp with time zone | NO |
+| owner_cash_disposition_requests | updated_at | timestamp with time zone | NO |
 | payout_snapshots | id | uuid | NO |
 | payout_snapshots | tenant_id | uuid | NO |
 | payout_snapshots | payout_period | date | NO |
@@ -621,6 +632,10 @@ Pro Realtime streamy a časté filtry na `tenant_id` / `apartment_id` jsou zása
 | billing_shortfall_transfers | idx_billing_shortfall_transfers_client_created | client_id, created_at | Chronologický výpis převodů nedoplatků pro klienta. |
 | owner_cash_transit_settlements | idx_owner_cash_transit_settlements_tenant | tenant_id | RLS a přehledy transit vyúčtování v rámci tenanta (migrace `20260404120000`). |
 | owner_cash_transit_settlements | idx_owner_cash_transit_settlements_reservation | reservation_id | Jeden pohled na záznamy podle pobytu; ochrana proti duplicitnímu settlementu řeší aplikační vrstva / unikátní constraint podle nasazení. |
+| owner_cash_disposition_requests | idx_owner_cash_disposition_requests_tenant | tenant_id | Filtry podle tenanta (RLS staff). |
+| owner_cash_disposition_requests | idx_owner_cash_disposition_requests_owner | owner_profile_id | Seznam žádostí majitele. |
+| owner_cash_disposition_requests | idx_owner_cash_disposition_requests_settlement | settlement_id | Vazba na settlement; součty „zamčených“ částek. |
+| owner_cash_disposition_requests | idx_owner_cash_disposition_requests_status | tenant_id, status | Přehledy podle stavu žádosti. |
 | tenant_ui_preferences | (UNIQUE constraint tenant_ui_preferences_tenant_id_key) | tenant_id | Jedinečnost tenant_id – jeden řádek vzhledu na agenturu (index vzniká z UNIQUE). |
 
 **SQL pro vytvoření (spustit v Supabase SQL Editoru):**
@@ -780,15 +795,29 @@ Modul **Finance** je hlavní modul (zdarma) obsahující **Zaměstnaneckou pokla
 **Sloupce (stav dle exportu information_schema 2026-04-09):**
 
 - **amount**, **currency** – vyúčtovaná částka a měna.
-- **status** – workflow stavu settlementu (hodnoty dle aplikační logiky / RPC).
-- **settled_at**, **settled_by** – kdy a kým byl záznam uzavřen (nullable = ještě nevyplněno v DB nebo čeká na doplnění podle procesu).
+- **status** – sémantika v aplikaci mimo jiné **`available`** / **`pending_disposition`** / **`fully_disbursed`** (ověř CHECK constraint v konkrétní DB, migrace `20260409143000` tabulku settlements nemění).
+- **settled_at**, **settled_by** – kdy a kým byl záznam uzavřen (nullable podle nasazení).
 - **employee_cash_transaction_id** – volitelná vazba na konkrétní položku v **employee_cash_transactions** (audit propojení s pokladnou pracovníka).
 - **notes** – volitelná poznámka k vyúčtování.
 - **created_at**, **updated_at** – audit časů (nullable v exportu – ověř defaulty a triggery v SQL, pokud potřebuješ NOT NULL).
 
-**Aplikační vrstva:** `ReservationCashTransitRepository` (`settleTransitCash`, ochrana proti duplicitám) čte a zapisuje přes `SupabaseService.safeFrom('owner_cash_transit_settlements', …)`.
+**Aplikační vrstva:** `lib/features/owner/repositories/reservation_cash_transit_repository.dart` – `ReservationCashTransitRepository` (`resolve`, `settleTransitCash`, `listSettlementsForOwnerProfile`, `getAvailableBalanceForOwner`); model **`OwnerCashTransitSettlement`**.
 
 **RLS:** Politiky z migrace `20260404120000_owner_cash_transit_settlements.sql` – staff tenanta (kromě property_owner) SELECT; majitel SELECT jen pro rezervace na svých bytech; INSERT/UPDATE/DELETE admin/manager (a super_admin).
+
+### Tabulka owner_cash_disposition_requests – žádost majitele o dispozici
+
+**Účel:** Odděleně od uznané částky zaznamenat **co má agentura s penězi udělat** (výplata na účet, zápočet na fakturu, vyzvednutí v trezoru). Vazba **`settlement_id`** → **`owner_cash_transit_settlements`** (povinná).
+
+- **disposition_type** – CHECK: `bank_transfer`, `invoice_credit`, `vault_pickup`.
+- **status** – CHECK: `pending`, `approved`, `rejected`, `completed`.
+- **admin_notes** – interní poznámka dispečinku při zpracování.
+
+**Aplikační vrstva:** `OwnerCashDispositionRepository` (`lib/features/owner/repositories/owner_cash_disposition_repository.dart`), model **`OwnerCashDispositionRequest`**.
+
+**RLS (migrace `20260409143000`):** majitel SELECT jen řádky, kde `owner_profile_id = (SELECT id FROM public.profiles WHERE auth_id = auth.uid() LIMIT 1)`; INSERT jen `property_owner` se shodným profilem a platnou vazbou settlement → rezervace → `apartment_owners`; staff (kromě majitele) SELECT v rámci tenanta; admin/manager UPDATE/DELETE.
+
+**updated_at:** migrace nedefinuje trigger; při změně stavu žádosti nastavuje aplikace (`updateRequestStatus`).
 
 ---
 
