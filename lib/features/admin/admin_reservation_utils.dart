@@ -266,6 +266,8 @@ String reservationTaskTypeLabelKey(String taskType) {
       return 'admin.task_type_issue';
     case 'material':
       return 'admin.task_type_material';
+    case 'rent_collection':
+      return 'admin.task_type_rent_collection';
     default:
       return 'admin.task_type_other';
   }

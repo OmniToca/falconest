@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
 import 'package:falconest/core/theme/premium_card_decoration.dart';
 import 'package:falconest/core/services/currency_service.dart';
+import 'package:falconest/features/admin/screens/admin_owner_cash_requests_screen.dart';
 import 'package:falconest/features/admin/screens/admin_settlements_screen.dart';
 import 'package:falconest/features/admin/screens/finance_billing_screen.dart';
 import 'package:falconest/features/admin/premium_upsell_dialog.dart';
@@ -31,7 +32,7 @@ class _FinanceDashboardScreenState extends ConsumerState<FinanceDashboardScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
   }
 
   @override
@@ -77,10 +78,12 @@ class _FinanceDashboardScreenState extends ConsumerState<FinanceDashboardScreen>
           // TabBar: Zaměstnanecká pokladna | Vyúčtování | Podklady pro fakturaci
           TabBar(
             controller: _tabController,
+            isScrollable: true,
             tabs: [
               Tab(text: 'admin.finance.title'.tr()),
               Tab(child: _SettlementsTabLabel(isActive: hasSettlements)),
               Tab(child: _FinanceExportTabLabel(isActive: hasExport)),
+              Tab(text: 'admin.finance.owner_cash_requests_tab'.tr()),
             ],
           ),
           Expanded(
@@ -94,6 +97,7 @@ class _FinanceDashboardScreenState extends ConsumerState<FinanceDashboardScreen>
                 hasExport
                     ? const FinanceBillingContent(inDialog: false)
                     : _FinanceExportLockedPlaceholder(),
+                const AdminOwnerCashRequestsScreen(),
               ],
             ),
           ),

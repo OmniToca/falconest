@@ -58,8 +58,14 @@ class CashWalletRepository {
 
     try {
       // Frontend Firewall: [safeFrom] místo holého klienta (Super Admin bypass RLS).
-      final safeWallets = SupabaseService.safeFrom('employee_cash_wallets', tenantId);
-      final safeTx = SupabaseService.safeFrom('employee_cash_transactions', tenantId);
+      final safeWallets = SupabaseService.safeFrom(
+        'employee_cash_wallets',
+        tenantId,
+      );
+      final safeTx = SupabaseService.safeFrom(
+        'employee_cash_transactions',
+        tenantId,
+      );
       final safeTasks = SupabaseService.safeFrom('tasks', tenantId);
 
       String? resolvedReservationId = reservationId?.trim();
@@ -97,10 +103,10 @@ class CashWalletRepository {
       double currentBalance;
 
       if (existing == null) {
-        final insertRes = await safeWallets.insert({
-          'profile_id': profileId,
-          'balance': 0,
-        }).select('id').single();
+        final insertRes = await safeWallets
+            .insert({'profile_id': profileId, 'balance': 0})
+            .select('id')
+            .single();
         walletId = insertRes['id'] as String;
         currentBalance = 0;
       } else {
@@ -117,8 +123,10 @@ class CashWalletRepository {
         if (resolvedReservationId != null && resolvedReservationId.isNotEmpty)
           'reservation_id': resolvedReservationId,
         'amount': amount,
-        if (transitPortion != null && transitPortion > 0) 'transit_portion': transitPortion,
-        if (expectedAmount != null && expectedAmount > 0) 'expected_amount': expectedAmount,
+        if (transitPortion != null && transitPortion > 0)
+          'transit_portion': transitPortion,
+        if (expectedAmount != null && expectedAmount > 0)
+          'expected_amount': expectedAmount,
         if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
         'transaction_type': 'COLLECTED_FROM_GUEST',
         'created_by': profileId,
@@ -126,18 +134,25 @@ class CashWalletRepository {
 
       // (c) Zvýšení balance v peněžence
       final newBalance = currentBalance + amount;
-      await safeWallets.update({
-        'balance': newBalance,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('id', walletId);
+      await safeWallets
+          .update({
+            'balance': newBalance,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          })
+          .eq('id', walletId);
 
       // PROČ: Informujeme dispečink o pohybu hotovosti. Zabaleno v try-catch,
       // aby případný výpadek notifikací neshodil finanční transakci.
       // Nedoplatek (amount < expected_amount) → varovná notifikace s typem finance_shortfall.
-      final isShortfall = expectedAmount != null && expectedAmount > 0 && amount < expectedAmount;
+      final isShortfall =
+          expectedAmount != null &&
+          expectedAmount > 0 &&
+          amount < expectedAmount;
       if (isShortfall) {
         final diff = expectedAmount - amount;
-        final notePart = (note != null && note.trim().isNotEmpty) ? note.trim() : '';
+        final notePart = (note != null && note.trim().isNotEmpty)
+            ? note.trim()
+            : '';
         await _sendAdminNotification(
           tenantId: tenantId,
           profileId: profileId,
@@ -150,7 +165,8 @@ class CashWalletRepository {
           tenantId: tenantId,
           profileId: profileId,
           title: 'Nová hotovost',
-          message: 'Pracovník právě zaznamenal příjem ${amount.toStringAsFixed(2)} EUR.',
+          message:
+              'Pracovník právě zaznamenal příjem ${amount.toStringAsFixed(2)} EUR.',
         );
       }
     } catch (e) {
@@ -166,9 +182,11 @@ class CashWalletRepository {
             'profile_id': profileId,
             'task_id': taskId,
             'amount': amount,
-            if (expectedAmount != null && expectedAmount > 0) 'expected_amount': expectedAmount,
+            if (expectedAmount != null && expectedAmount > 0)
+              'expected_amount': expectedAmount,
             if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
-            if (presetTransactionId != null && presetTransactionId.trim().isNotEmpty)
+            if (presetTransactionId != null &&
+                presetTransactionId.trim().isNotEmpty)
               'transaction_id': presetTransactionId.trim(),
           },
         );
@@ -208,8 +226,14 @@ class CashWalletRepository {
     if (noteTrimmed.isEmpty) return;
 
     try {
-      final safeWallets = SupabaseService.safeFrom('employee_cash_wallets', tenantId);
-      final safeTx = SupabaseService.safeFrom('employee_cash_transactions', tenantId);
+      final safeWallets = SupabaseService.safeFrom(
+        'employee_cash_wallets',
+        tenantId,
+      );
+      final safeTx = SupabaseService.safeFrom(
+        'employee_cash_transactions',
+        tenantId,
+      );
 
       // (a) Nalezení peněženky – u firemního výdaje musí existovat (utrácíme z kapsy)
       final existing = await safeWallets
@@ -233,8 +257,10 @@ class CashWalletRepository {
         if (presetTid != null && presetTid.isNotEmpty) 'id': presetTid,
         'wallet_id': walletId,
         'task_id': null,
-        if (apartmentId != null && apartmentId.trim().isNotEmpty) 'apartment_id': apartmentId.trim(),
-        if (clientId != null && clientId.trim().isNotEmpty) 'client_id': clientId.trim(),
+        if (apartmentId != null && apartmentId.trim().isNotEmpty)
+          'apartment_id': apartmentId.trim(),
+        if (clientId != null && clientId.trim().isNotEmpty)
+          'client_id': clientId.trim(),
         'amount': negativeAmount,
         'transaction_type': 'COMPANY_EXPENSE',
         'note': noteTrimmed,
@@ -245,10 +271,12 @@ class CashWalletRepository {
 
       // (c) Snížení balance v peněžence
       final newBalance = currentBalance - amount;
-      await safeWallets.update({
-        'balance': newBalance,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('id', walletId);
+      await safeWallets
+          .update({
+            'balance': newBalance,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          })
+          .eq('id', walletId);
 
       // PROČ: Informujeme dispečink o pohybu hotovosti. Zabaleno v try-catch,
       // aby případný výpadek notifikací neshodil finanční transakci.
@@ -256,7 +284,8 @@ class CashWalletRepository {
         tenantId: tenantId,
         profileId: profileId,
         title: 'Nový firemní výdaj',
-        message: 'Pracovník zadal výdaj ${amount.toStringAsFixed(2)} EUR. Poznámka: $noteTrimmed',
+        message:
+            'Pracovník zadal výdaj ${amount.toStringAsFixed(2)} EUR. Poznámka: $noteTrimmed',
       );
     } catch (e) {
       if (!kIsWeb && MutationQueueService.isNetworkError(e)) {
@@ -271,7 +300,8 @@ class CashWalletRepository {
             'profile_id': profileId,
             'amount': amount,
             'note': noteTrimmed,
-            if (presetTransactionId != null && presetTransactionId.trim().isNotEmpty)
+            if (presetTransactionId != null &&
+                presetTransactionId.trim().isNotEmpty)
               'transaction_id': presetTransactionId.trim(),
             if (receiptImageUrl != null && receiptImageUrl.trim().isNotEmpty)
               'receipt_image_url': receiptImageUrl.trim(),
@@ -291,21 +321,31 @@ class CashWalletRepository {
   /// Vkládá se záporná transakce HANDED_TO_AGENCY a balance se sníží o [amountToClear].
   /// PROČ: Umožňuje částečný výběr (např. vybrat 359 EUR z 459 EUR, zůstane 100 EUR na vracení).
   ///
+  /// Návratová hodnota: `id` nově vloženého řádku v `employee_cash_transactions` (pro napojení
+  /// na `owner_cash_transit_settlements.employee_cash_transaction_id`). Při [amountToClear] ≤ 0 vrací `null`.
+  ///
   /// [adminProfileId] – profiles.id administrátora, který hotovost fyzicky převzal.
   /// Vyhazuje výjimku, pokud peněženka neexistuje nebo amountToClear > aktuální balance.
-  Future<void> receiveCashFromWorker({
+  Future<String?> receiveCashFromWorker({
     required String walletId,
     required String workerProfileId,
     required double amountToClear,
     required String adminProfileId,
     required String tenantId,
+
     /// Volitelná vazba na rezervaci – pro stav „v trezoru agentury“ v průtokové hotovosti.
     String? reservationId,
   }) async {
-    if (amountToClear <= 0) return;
+    if (amountToClear <= 0) return null;
 
-    final safeWallets = SupabaseService.safeFrom('employee_cash_wallets', tenantId);
-    final safeTx = SupabaseService.safeFrom('employee_cash_transactions', tenantId);
+    final safeWallets = SupabaseService.safeFrom(
+      'employee_cash_wallets',
+      tenantId,
+    );
+    final safeTx = SupabaseService.safeFrom(
+      'employee_cash_transactions',
+      tenantId,
+    );
 
     // (a) Načtení aktuálního zůstatku a validace – částečný výběr nesmí překročit balance
     final walletRow = await safeWallets
@@ -324,22 +364,30 @@ class CashWalletRepository {
     }
 
     final rid = reservationId?.trim();
-    // (b) Vložení záporné transakce HANDED_TO_AGENCY
-    await safeTx.insert({
-      'wallet_id': walletId,
-      'task_id': null,
-      if (rid != null && rid.isNotEmpty) 'reservation_id': rid,
-      'amount': -amountToClear,
-      'transaction_type': 'HANDED_TO_AGENCY',
-      'created_by': adminProfileId,
-    });
+    // (b) Vložení záporné transakce HANDED_TO_AGENCY + vrácení id pro audit (owner settlements).
+    final inserted = await safeTx
+        .insert({
+          'wallet_id': walletId,
+          'task_id': null,
+          if (rid != null && rid.isNotEmpty) 'reservation_id': rid,
+          'amount': -amountToClear,
+          'transaction_type': 'HANDED_TO_AGENCY',
+          'created_by': adminProfileId,
+        })
+        .select('id')
+        .single();
+    final handedTxId = inserted['id']?.toString();
 
     // (c) Snížení balance o vybranou částku (částečný výběr: zůstane zbytek; celý výběr: 0)
     final newBalance = currentBalance - amountToClear;
-    await safeWallets.update({
-      'balance': newBalance,
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }).eq('id', walletId);
+    await safeWallets
+        .update({
+          'balance': newBalance,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        })
+        .eq('id', walletId);
+
+    return (handedTxId != null && handedTxId.isNotEmpty) ? handedTxId : null;
   }
 
   /// Vklad základu (float / kasírtaška) – admin zaměstnanci vloží hotovost na začátek směny.
@@ -356,8 +404,14 @@ class CashWalletRepository {
   }) async {
     if (amount <= 0) return;
 
-    final safeWallets = SupabaseService.safeFrom('employee_cash_wallets', tenantId);
-    final safeTx = SupabaseService.safeFrom('employee_cash_transactions', tenantId);
+    final safeWallets = SupabaseService.safeFrom(
+      'employee_cash_wallets',
+      tenantId,
+    );
+    final safeTx = SupabaseService.safeFrom(
+      'employee_cash_transactions',
+      tenantId,
+    );
 
     // (a) Nalezení nebo vytvoření peněženky pro (tenant_id, profile_id) – stejná logika jako recordCashCollection
     final existing = await safeWallets
@@ -369,10 +423,10 @@ class CashWalletRepository {
     double currentBalance;
 
     if (existing == null) {
-      final insertRes = await safeWallets.insert({
-        'profile_id': profileId,
-        'balance': 0,
-      }).select('id').single();
+      final insertRes = await safeWallets
+          .insert({'profile_id': profileId, 'balance': 0})
+          .select('id')
+          .single();
       walletId = insertRes['id'] as String;
       currentBalance = 0;
     } else {
@@ -392,17 +446,23 @@ class CashWalletRepository {
 
     // (c) Zvýšení balance v peněžence
     final newBalance = currentBalance + amount;
-    await safeWallets.update({
-      'balance': newBalance,
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }).eq('id', walletId);
+    await safeWallets
+        .update({
+          'balance': newBalance,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        })
+        .eq('id', walletId);
   }
 
   /// Načte seznam peněženek zaměstnanců s join na profiles pro jména.
   /// Vrací mapu: walletId -> {id, profileId, balance, workerName}.
-  Future<List<EmployeeCashWalletRow>> fetchWalletsForTenant(String tenantId) async {
-    final res = await SupabaseService.safeFrom('employee_cash_wallets', tenantId)
-        .select('id, profile_id, balance, profiles(name, first_name, last_name)');
+  Future<List<EmployeeCashWalletRow>> fetchWalletsForTenant(
+    String tenantId,
+  ) async {
+    final res = await SupabaseService.safeFrom(
+      'employee_cash_wallets',
+      tenantId,
+    ).select('id, profile_id, balance, profiles(name, first_name, last_name)');
 
     final list = List<dynamic>.from(res as List);
     final rows = <EmployeeCashWalletRow>[];
@@ -410,7 +470,9 @@ class CashWalletRepository {
       final map = Map<String, dynamic>.from(e as Map);
       final id = map['id']?.toString().trim();
       final profileId = map['profile_id']?.toString().trim();
-      if (id == null || id.isEmpty || profileId == null || profileId.isEmpty) continue;
+      if (id == null || id.isEmpty || profileId == null || profileId.isEmpty) {
+        continue;
+      }
 
       final balance = _toDouble(map['balance']) ?? 0;
       final profilesData = map['profiles'];
@@ -423,15 +485,19 @@ class CashWalletRepository {
         } else {
           final first = (p['first_name'] as String?)?.trim() ?? '';
           final last = (p['last_name'] as String?)?.trim() ?? '';
-          workerName = '$first $last'.trim().isEmpty ? 'common.placeholder_dash'.tr() : '$first $last'.trim();
+          workerName = '$first $last'.trim().isEmpty
+              ? 'common.placeholder_dash'.tr()
+              : '$first $last'.trim();
         }
       }
-      rows.add(EmployeeCashWalletRow(
-        id: id,
-        profileId: profileId,
-        balance: balance,
-        workerName: workerName,
-      ));
+      rows.add(
+        EmployeeCashWalletRow(
+          id: id,
+          profileId: profileId,
+          balance: balance,
+          workerName: workerName,
+        ),
+      );
     }
     return rows;
   }
@@ -451,20 +517,21 @@ class CashWalletRepository {
   Stream<List<Map<String, dynamic>>> watchWalletsRaw(String tenantId) {
     if (tenantId.isEmpty) return Stream.value([]);
     return resilientSupabaseStream<List<Map<String, dynamic>>>(
-      streamBuilder: () => SupabaseService.safeFrom('employee_cash_wallets', tenantId)
-          .stream(primaryKey: ['id'])
-          .order('updated_at', ascending: false)
-          .limit(500)
-          .map((List<Map<String, dynamic>> rows) {
-            rows.sort((a, b) {
-              final aBal = _toDouble(a['balance']) ?? 0;
-              final bBal = _toDouble(b['balance']) ?? 0;
-              if (bBal > 0 && aBal <= 0) return 1;
-              if (aBal > 0 && bBal <= 0) return -1;
-              return (bBal - aBal).sign.toInt();
-            });
-            return rows;
-          }),
+      streamBuilder: () =>
+          SupabaseService.safeFrom('employee_cash_wallets', tenantId)
+              .stream(primaryKey: ['id'])
+              .order('updated_at', ascending: false)
+              .limit(500)
+              .map((List<Map<String, dynamic>> rows) {
+                rows.sort((a, b) {
+                  final aBal = _toDouble(a['balance']) ?? 0;
+                  final bBal = _toDouble(b['balance']) ?? 0;
+                  if (bBal > 0 && aBal <= 0) return 1;
+                  if (aBal > 0 && bBal <= 0) return -1;
+                  return (bBal - aBal).sign.toInt();
+                });
+                return rows;
+              }),
       debugLabel: 'CashWalletRepository.watchWalletsRaw',
     );
   }
@@ -478,18 +545,19 @@ class CashWalletRepository {
   Stream<List<Map<String, dynamic>>> watchTransactionsRaw(String tenantId) {
     if (tenantId.isEmpty) return Stream.value([]);
     return resilientSupabaseStream<List<Map<String, dynamic>>>(
-      streamBuilder: () => SupabaseService.safeFrom('employee_cash_transactions', tenantId)
-          .stream(primaryKey: ['id'])
-          .order('created_at', ascending: false)
-          .limit(500)
-          .map((List<Map<String, dynamic>> rows) {
-            rows.sort((a, b) {
-              final aT = a['created_at']?.toString() ?? '';
-              final bT = b['created_at']?.toString() ?? '';
-              return bT.compareTo(aT);
-            });
-            return rows;
-          }),
+      streamBuilder: () =>
+          SupabaseService.safeFrom('employee_cash_transactions', tenantId)
+              .stream(primaryKey: ['id'])
+              .order('created_at', ascending: false)
+              .limit(500)
+              .map((List<Map<String, dynamic>> rows) {
+                rows.sort((a, b) {
+                  final aT = a['created_at']?.toString() ?? '';
+                  final bT = b['created_at']?.toString() ?? '';
+                  return bT.compareTo(aT);
+                });
+                return rows;
+              }),
       debugLabel: 'CashWalletRepository.watchTransactionsRaw',
     );
   }
@@ -507,20 +575,24 @@ class CashWalletRepository {
   ) {
     if (tenantId.isEmpty || walletId.isEmpty) return Stream.value([]);
     return resilientSupabaseStream<List<Map<String, dynamic>>>(
-      streamBuilder: () => SupabaseService.safeFrom('employee_cash_transactions', tenantId)
-          .stream(primaryKey: ['id'])
-          .order('created_at', ascending: false)
-          .limit(200)
-          .map((List<Map<String, dynamic>> rows) {
-            final filtered =
-                rows.where((r) => (r['wallet_id']?.toString() ?? '') == walletId).toList();
-            filtered.sort((a, b) {
-              final aT = a['created_at']?.toString() ?? '';
-              final bT = b['created_at']?.toString() ?? '';
-              return bT.compareTo(aT);
-            });
-            return filtered;
-          }),
+      streamBuilder: () =>
+          SupabaseService.safeFrom('employee_cash_transactions', tenantId)
+              .stream(primaryKey: ['id'])
+              .order('created_at', ascending: false)
+              .limit(200)
+              .map((List<Map<String, dynamic>> rows) {
+                final filtered = rows
+                    .where(
+                      (r) => (r['wallet_id']?.toString() ?? '') == walletId,
+                    )
+                    .toList();
+                filtered.sort((a, b) {
+                  final aT = a['created_at']?.toString() ?? '';
+                  final bT = b['created_at']?.toString() ?? '';
+                  return bT.compareTo(aT);
+                });
+                return filtered;
+              }),
       debugLabel: 'CashWalletRepository.watchTransactionsRawForWallet',
     );
   }
@@ -552,7 +624,9 @@ class CashWalletRepository {
         agencyPlan = double.tryParse(rawA.toString()) ?? 0.0;
       }
     }
-    final afterAgency = collectedAmount > agencyPlan ? collectedAmount - agencyPlan : 0.0;
+    final afterAgency = collectedAmount > agencyPlan
+        ? collectedAmount - agencyPlan
+        : 0.0;
     final p = afterAgency < transitPlan ? afterAgency : transitPlan;
     if (p <= 0) return null;
     return p;
@@ -598,11 +672,16 @@ class CashWalletRepository {
       final safeRows = payloads
           .map((p) => SupabaseService.safeInsertPayload(tenantId, p))
           .toList();
-      await SupabaseService.safeFrom('notifications', tenantId).insert(safeRows);
+      await SupabaseService.safeFrom(
+        'notifications',
+        tenantId,
+      ).insert(safeRows);
     } catch (e) {
       if (kDebugMode) {
         // ignore: avoid_print
-        print('CashWalletRepository: Nepodařilo se odeslat notifikaci adminům: $e');
+        print(
+          'CashWalletRepository: Nepodařilo se odeslat notifikaci adminům: $e',
+        );
       }
     }
   }

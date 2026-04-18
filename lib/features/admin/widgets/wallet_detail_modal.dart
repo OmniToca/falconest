@@ -16,6 +16,7 @@ import 'package:falconest/features/admin/providers/admin_tasks_repository.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/finance_cash_provider.dart';
+import 'package:falconest/features/owner/repositories/reservation_cash_transit_repository.dart';
 import 'package:falconest/features/admin/providers/finance_tab_provider.dart';
 
 /// Prémiový modální dialog detailu peněženky zaměstnance.
@@ -38,8 +39,9 @@ class WalletDetailModal {
     return showGeneralDialog<void>(
       context: context,
       barrierDismissible: true,
-      barrierLabel: 'admin.finance.wallet_detail_title'
-          .tr(namedArgs: {'name': workerName}),
+      barrierLabel: 'admin.finance.wallet_detail_title'.tr(
+        namedArgs: {'name': workerName},
+      ),
       // PROČ: modal barrier má být centrálně řízený theme tokenem kvůli
       // jednotnému overlay vzhledu napříč admin modaly.
       barrierColor: context.customColors.modalBarrier,
@@ -94,11 +96,8 @@ class WalletDetailModal {
   ) {
     showDialog<void>(
       context: context,
-      builder: (ctx) => _IssueFloatDialog(
-        row: row,
-        ref: ref,
-        parentContext: context,
-      ),
+      builder: (ctx) =>
+          _IssueFloatDialog(row: row, ref: ref, parentContext: context),
     );
   }
 
@@ -132,7 +131,7 @@ class WalletDetailModal {
                         child: CircularProgressIndicator(
                           value: loadingProgress.expectedTotalBytes != null
                               ? loadingProgress.cumulativeBytesLoaded /
-                                  loadingProgress.expectedTotalBytes!
+                                    loadingProgress.expectedTotalBytes!
                               : null,
                         ),
                       ),
@@ -170,6 +169,7 @@ class _WalletDetailModalContent extends ConsumerStatefulWidget {
 
   final String walletId;
   final String workerName;
+
   /// Kontext od volající obrazovky – platný i po zavření modalu, použit pro otevření detailu úkolu.
   final BuildContext parentContext;
 
@@ -178,7 +178,8 @@ class _WalletDetailModalContent extends ConsumerStatefulWidget {
       _WalletDetailModalContentState();
 }
 
-class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalContent> {
+class _WalletDetailModalContentState
+    extends ConsumerState<_WalletDetailModalContent> {
   /// Lokální stav – zda zobrazit i starší transakce (historie před posledním odevzdáním).
   bool _showHistory = false;
 
@@ -191,8 +192,11 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
 
   /// Rozdělí transakce na aktuální (od posledního handoveru) a historii.
   /// Handover = HANDED_TO_AGENCY (odevzdáno agentuře). Aktuální = včetně handoveru.
-  static ({List<CashTransactionUIModel> current, List<CashTransactionUIModel> history})
-      _splitByLastHandover(List<CashTransactionUIModel> transactions) {
+  static ({
+    List<CashTransactionUIModel> current,
+    List<CashTransactionUIModel> history,
+  })
+  _splitByLastHandover(List<CashTransactionUIModel> transactions) {
     // Seřadíme od nejnovějších (stream může mít libovolné pořadí).
     final sorted = List<CashTransactionUIModel>.from(transactions)
       ..sort((a, b) {
@@ -247,7 +251,9 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
 
   @override
   Widget build(BuildContext context) {
-    final walletFromList = ref.watch(employeeCashWalletsProvider).valueOrNull
+    final walletFromList = ref
+        .watch(employeeCashWalletsProvider)
+        .valueOrNull
         ?.where((w) => w.id == widget.walletId)
         .firstOrNull;
     final row = walletFromList;
@@ -274,7 +280,9 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
                 BoxShadow(
                   // PROČ: stín navazujeme na modal barrier token, aby byl
                   // kontrast konzistentní mezi režimy.
-                  color: context.customColors.modalBarrier.withValues(alpha: 0.15),
+                  color: context.customColors.modalBarrier.withValues(
+                    alpha: 0.15,
+                  ),
                   blurRadius: 24,
                   offset: const Offset(0, 8),
                 ),
@@ -286,7 +294,9 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
               children: [
                 _buildHeader(context, displayName),
                 Flexible(
-                  child: ref.watch(walletTransactionsProvider(widget.walletId)).when(
+                  child: ref
+                      .watch(walletTransactionsProvider(widget.walletId))
+                      .when(
                         data: (transactions) => _buildBody(
                           context,
                           ref,
@@ -295,14 +305,15 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
                           hasDebt,
                           displayName,
                         ),
-                        loading: () => const Center(child: CircularProgressIndicator()),
+                        loading: () =>
+                            const Center(child: CircularProgressIndicator()),
                         error: (e, _) => Center(
-                              child: Text(
-                                'admin.finance.load_error'.tr(),
-                                style: TextStyle(color: context.colors.error),
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
+                          child: Text(
+                            'admin.finance.load_error'.tr(),
+                            style: TextStyle(color: context.colors.error),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
                       ),
                 ),
               ],
@@ -356,11 +367,16 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
         Expanded(
           child: ListView.builder(
             padding: const EdgeInsets.symmetric(vertical: 8),
-            itemCount: displayList.length + (history.isNotEmpty && !_showHistory ? 1 : 0),
+            itemCount:
+                displayList.length +
+                (history.isNotEmpty && !_showHistory ? 1 : 0),
             itemBuilder: (context, index) {
               if (index == displayList.length) {
                 return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
                   child: TextButton(
                     onPressed: () => setState(() => _showHistory = true),
                     child: Text('admin.finance.wallet_show_history'.tr()),
@@ -377,7 +393,9 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
                   context,
                   t.receiptImageUrl,
                 ),
-                onTap: hasTaskId ? () => _onTransactionTap(context, ref, t) : null,
+                onTap: hasTaskId
+                    ? () => _onTransactionTap(context, ref, t)
+                    : null,
               );
             },
           ),
@@ -408,19 +426,19 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
         children: [
           Text(
             displayName,
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 4),
           Text(
             balanceText,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: hasDebt
-                      ? context.colors.error
-                      : context.customColors.success,
-                ),
+              fontWeight: FontWeight.w600,
+              color: hasDebt
+                  ? context.colors.error
+                  : context.customColors.success,
+            ),
           ),
         ],
       ),
@@ -428,7 +446,11 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
   }
 
   /// Řádek tlačítek: Převzít hotovost (jen když je co převzít) a Vložit základ.
-  Widget _buildActionButtons(BuildContext context, WidgetRef ref, EmployeeCashWalletRow row) {
+  Widget _buildActionButtons(
+    BuildContext context,
+    WidgetRef ref,
+    EmployeeCashWalletRow row,
+  ) {
     final hasBalance = row.balance > 0;
     return SafeArea(
       child: Padding(
@@ -451,14 +473,14 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
               ),
             Expanded(
               child: OutlinedButton.icon(
-                  onPressed: () => _showIssueFloatDialog(context, ref, row),
-                  icon: const Icon(Icons.add_circle_outline, size: 20),
-                  label: Text('admin.finance.issue_float_btn'.tr()),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
+                onPressed: () => _showIssueFloatDialog(context, ref, row),
+                icon: const Icon(Icons.add_circle_outline, size: 20),
+                label: Text('admin.finance.issue_float_btn'.tr()),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
               ),
+            ),
           ],
         ),
       ),
@@ -467,18 +489,28 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
 
   /// Při tapnutí transakce: pokud má taskId, otevři detail úkolu v Admin kontextu.
   /// Nedoplatek (nevyřešený) neotevírá úkol – místo toho přepne na záložku Podklady pro fakturaci.
-  void _onTransactionTap(BuildContext context, WidgetRef ref, CashTransactionUIModel t) {
+  void _onTransactionTap(
+    BuildContext context,
+    WidgetRef ref,
+    CashTransactionUIModel t,
+  ) {
     final amount = _toDouble(t.raw['amount']);
     final expected = t.expectedAmount;
     final isResolved = t.raw['is_shortfall_resolved'] == true;
-    if (expected != null && amount != null && amount < expected && !isResolved) {
+    if (expected != null &&
+        amount != null &&
+        amount < expected &&
+        !isResolved) {
       Navigator.of(context).pop();
       final ctx = widget.parentContext;
-      ref.read(financeRequestedSubTabProvider.notifier).state = financeSubTabIndexBilling;
+      ref.read(financeRequestedSubTabProvider.notifier).state =
+          financeSubTabIndexBilling;
       AdminTabScope.of(ctx)?.call(adminTabIndexFinance);
       if (ctx.mounted) {
         ScaffoldMessenger.of(ctx).showSnackBar(
-          SnackBar(content: Text('admin.finance.shortfall_resolve_in_billing'.tr())),
+          SnackBar(
+            content: Text('admin.finance.shortfall_resolve_in_billing'.tr()),
+          ),
         );
       }
       return;
@@ -506,7 +538,9 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
             final switchToTab = AdminTabScope.of(ctx);
             if (switchToTab != null) switchToTab(adminTabIndexTasks);
             ScaffoldMessenger.of(ctx).showSnackBar(
-              SnackBar(content: Text('admin.finance.task_not_found_switch'.tr())),
+              SnackBar(
+                content: Text('admin.finance.task_not_found_switch'.tr()),
+              ),
             );
             return;
           }
@@ -553,11 +587,13 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
         children: [
           Expanded(
             child: Text(
-              'admin.finance.wallet_detail_title'.tr(namedArgs: {'name': displayName}),
+              'admin.finance.wallet_detail_title'.tr(
+                namedArgs: {'name': displayName},
+              ),
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: context.colors.onSurface,
-                  ),
+                fontWeight: FontWeight.bold,
+                color: context.colors.onSurface,
+              ),
             ),
           ),
           IconButton(
@@ -585,11 +621,8 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
   ) {
     showDialog<void>(
       context: context,
-      builder: (ctx) => _IssueFloatDialog(
-        row: row,
-        ref: ref,
-        parentContext: context,
-      ),
+      builder: (ctx) =>
+          _IssueFloatDialog(row: row, ref: ref, parentContext: context),
     );
   }
 }
@@ -598,7 +631,9 @@ class _WalletDetailModalContentState extends ConsumerState<_WalletDetailModalCon
 List<({String id, String label})> _receiveCashReservationOptions(
   List<CashTransactionUIModel> transactions,
 ) {
-  final split = _WalletDetailModalContentState._splitByLastHandover(transactions);
+  final split = _WalletDetailModalContentState._splitByLastHandover(
+    transactions,
+  );
   final byId = <String, String>{};
   for (final t in split.current) {
     if ((t.transactionType ?? '') != 'COLLECTED_FROM_GUEST') continue;
@@ -610,7 +645,8 @@ List<({String id, String label})> _receiveCashReservationOptions(
     final rid = t.reservationId;
     if (rid == null || rid.isEmpty) continue;
     final parts = <String>[
-      if (t.apartmentName != null && t.apartmentName!.isNotEmpty) t.apartmentName!,
+      if (t.apartmentName != null && t.apartmentName!.isNotEmpty)
+        t.apartmentName!,
       if (t.guestName != null && t.guestName!.isNotEmpty) t.guestName!,
     ];
     final label = parts.isEmpty
@@ -642,6 +678,7 @@ class _ReceiveCashDialog extends ConsumerStatefulWidget {
 class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
   late final TextEditingController _amountController;
   String? _amountError;
+  String? _reservationError;
   bool _isLoading = false;
   String? _reservationId;
   bool _userPickedReservation = false;
@@ -665,6 +702,23 @@ class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
     return double.tryParse(normalized);
   }
 
+  /// Určí, zda aktuální „batch“ od posledního handoveru obsahuje průtokovou hotovost majitele.
+  ///
+  /// PROČ: Pokud ano, dispečer MUSÍ vybrat rezervaci, jinak by se HANDED transakce neměla jak
+  /// spárovat do `owner_cash_transit_settlements` a vznikl by účetní sirotek.
+  bool _hasTransitCashInCurrentBatch(List<CashTransactionUIModel> txList) {
+    final split = _WalletDetailModalContentState._splitByLastHandover(txList);
+    for (final t in split.current) {
+      if ((t.transactionType ?? '') != 'COLLECTED_FROM_GUEST') continue;
+      final transitRaw = t.raw['transit_portion'];
+      final transit = transitRaw is num
+          ? transitRaw.toDouble()
+          : double.tryParse(transitRaw?.toString() ?? '');
+      if (transit != null && transit > 0) return true;
+    }
+    return false;
+  }
+
   Future<void> _submit() async {
     final amount = _parseAmount(_amountController.text);
     if (amount == null || amount <= 0 || amount > widget.row.balance) {
@@ -680,7 +734,10 @@ class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
 
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     final adminProfileId = ref.read(authNotifierProvider).state.profileId;
-    if (tenantId == null || tenantId.isEmpty || adminProfileId == null || adminProfileId.isEmpty) {
+    if (tenantId == null ||
+        tenantId.isEmpty ||
+        adminProfileId == null ||
+        adminProfileId.isEmpty) {
       if (mounted) {
         setState(() => _isLoading = false);
         ScaffoldMessenger.of(widget.parentContext).showSnackBar(
@@ -692,38 +749,93 @@ class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
 
     String? ridForSubmit = _reservationId;
     final txList = ref.read(walletTransactionsProvider(widget.row.id)).value;
+    var mustSelectReservation = false;
     if (txList != null) {
       final opts = _receiveCashReservationOptions(txList);
+      mustSelectReservation = _hasTransitCashInCurrentBatch(txList);
       if (ridForSubmit != null && !opts.any((o) => o.id == ridForSubmit)) {
         ridForSubmit = null;
       }
     }
+    if (mustSelectReservation &&
+        (ridForSubmit == null || ridForSubmit.trim().isEmpty)) {
+      setState(() {
+        _isLoading = false;
+        _reservationError =
+            'admin.finance.receive_reservation_required_for_transit'.tr();
+      });
+      return;
+    }
     final rid = ridForSubmit?.trim();
+    // DOČASNÝ DEBUG (požadavek incidentu): ověření průchodu vybrané rezervace do handover flow.
+    // ignore: avoid_print
+    print('Vybraná rezervace: ${rid ?? ''}');
     try {
-      await CashWalletRepository.instance.receiveCashFromWorker(
-        walletId: widget.row.id,
-        workerProfileId: widget.row.profileId,
-        amountToClear: amount,
-        adminProfileId: adminProfileId,
-        tenantId: tenantId,
-        reservationId: (rid != null && rid.isNotEmpty) ? rid : null,
-      );
+      final handedTxId = await CashWalletRepository.instance
+          .receiveCashFromWorker(
+            walletId: widget.row.id,
+            workerProfileId: widget.row.profileId,
+            amountToClear: amount,
+            adminProfileId: adminProfileId,
+            tenantId: tenantId,
+            reservationId: (rid != null && rid.isNotEmpty) ? rid : null,
+          );
+      // PROČ: Samotné HANDED_TO_AGENCY nestačí – majitelův zůstatek v portálu čte `owner_cash_transit_settlements`.
+      // Po převzetí s vazbou na rezervaci doplníme uznaný podíl (transit) až do výše předané částky.
+      var syncSuccess = true;
+      if (handedTxId != null &&
+          handedTxId.isNotEmpty &&
+          rid != null &&
+          rid.isNotEmpty) {
+        syncSuccess =
+            await ReservationCashTransitRepository.syncOwnerSettlementAfterHandedToAgency(
+              tenantId: tenantId,
+              reservationId: rid,
+              adminProfileId: adminProfileId,
+              workerProfileId: widget.row.profileId,
+              handedAmountPositive: amount,
+              handedTransactionId: handedTxId,
+            );
+      }
       ref.invalidate(employeeCashWalletsProvider);
       ref.invalidate(walletTransactionsProvider(widget.row.id));
       if (rid != null && rid.isNotEmpty) {
         ref.invalidate(reservationCashTransitProvider(rid));
       }
+      // Jakmile je hotovost účetně převzata, modal se vždy zavře; případné párování řešíme následně přes snack.
       if (!mounted) return;
       if (!widget.parentContext.mounted) return;
       Navigator.of(context).pop();
-      ScaffoldMessenger.of(widget.parentContext).showSnackBar(
-        SnackBar(
-          content: Text('admin.finance.receive_success'.tr()),
-          backgroundColor: context.customColors.success,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    } catch (e) {
+      if (syncSuccess) {
+        ScaffoldMessenger.of(widget.parentContext).showSnackBar(
+          SnackBar(
+            content: Text('admin.finance.receive_success'.tr()),
+            backgroundColor: context.customColors.success,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(widget.parentContext).showSnackBar(
+          SnackBar(
+            content: Text(
+              'admin.finance.receive_transit_pairing_failed'.tr(),
+              style: const TextStyle(color: Colors.white),
+            ),
+            backgroundColor: const Color(0xFFB00020),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e, st) {
+      // INCIDENT LOG: výrazný výpis runtime chyby se stacktrace (RLS, null, schema mismatch).
+      // ignore: avoid_print
+      print('=== TRANSIT CASH HANDOVER ERROR BEGIN ===');
+      // ignore: avoid_print
+      print(e);
+      // ignore: avoid_print
+      print(st);
+      // ignore: avoid_print
+      print('=== TRANSIT CASH HANDOVER ERROR END ===');
       if (mounted) {
         setState(() => _isLoading = false);
         if (widget.parentContext.mounted) {
@@ -743,8 +855,8 @@ class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
       orElse: () => <({String id, String label})>[],
     );
 
-    final reservationDropdownValue = _reservationId != null &&
-            options.any((o) => o.id == _reservationId)
+    final reservationDropdownValue =
+        _reservationId != null && options.any((o) => o.id == _reservationId)
         ? _reservationId
         : null;
 
@@ -774,7 +886,9 @@ class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
             const SizedBox(height: 20),
             TextFormField(
               controller: _amountController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
               decoration: InputDecoration(
                 labelText: 'admin.finance.receive_amount_label'.tr(),
                 hintText: 'admin.finance.receive_amount_hint'.tr(
@@ -795,15 +909,18 @@ class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
               Text(
                 'admin.finance.receive_reservation_hint'.tr(),
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
               const SizedBox(height: 8),
               DropdownButtonFormField<String?>(
                 // Controlled selection; `initialValue` does not follow stream/async updates.
                 // ignore: deprecated_member_use
                 value: reservationDropdownValue,
-                decoration: const InputDecoration(border: OutlineInputBorder()),
+                decoration: InputDecoration(
+                  border: const OutlineInputBorder(),
+                  errorText: _reservationError,
+                ),
                 items: [
                   DropdownMenuItem<String?>(
                     value: null,
@@ -819,9 +936,10 @@ class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
                 onChanged: _isLoading
                     ? null
                     : (v) => setState(() {
-                          _userPickedReservation = true;
-                          _reservationId = v;
-                        }),
+                        _userPickedReservation = true;
+                        _reservationId = v;
+                        _reservationError = null;
+                      }),
               ),
             ],
           ],
@@ -895,8 +1013,14 @@ class _IssueFloatDialogState extends State<_IssueFloatDialog> {
     });
 
     final tenantId = widget.ref.read(authNotifierProvider).tenantIdForData;
-    final adminProfileId = widget.ref.read(authNotifierProvider).state.profileId;
-    if (tenantId == null || tenantId.isEmpty || adminProfileId == null || adminProfileId.isEmpty) {
+    final adminProfileId = widget.ref
+        .read(authNotifierProvider)
+        .state
+        .profileId;
+    if (tenantId == null ||
+        tenantId.isEmpty ||
+        adminProfileId == null ||
+        adminProfileId.isEmpty) {
       if (mounted) {
         setState(() => _isLoading = false);
         ScaffoldMessenger.of(widget.parentContext).showSnackBar(
@@ -911,7 +1035,9 @@ class _IssueFloatDialogState extends State<_IssueFloatDialog> {
         tenantId: tenantId,
         profileId: widget.row.profileId,
         amount: amount,
-        note: _noteController.text.trim().isEmpty ? null : _noteController.text.trim(),
+        note: _noteController.text.trim().isEmpty
+            ? null
+            : _noteController.text.trim(),
         adminProfileId: adminProfileId,
       );
       widget.ref.invalidate(employeeCashWalletsProvider);
@@ -950,7 +1076,9 @@ class _IssueFloatDialogState extends State<_IssueFloatDialog> {
           children: [
             TextFormField(
               controller: _amountController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
               decoration: InputDecoration(
                 labelText: 'admin.finance.issue_float_amount_label'.tr(),
                 hintText: 'admin.finance.issue_float_amount_hint'.tr(),
@@ -1007,6 +1135,7 @@ class _TransactionTile extends StatelessWidget {
   final String Function(double) formatAmount;
   final String Function(DateTime) formatDate;
   final VoidCallback onReceiptTap;
+
   /// null = transakce bez úkolu (např. „Odevzdáno agentuře“) – neklikatelný řádek.
   final VoidCallback? onTap;
 
@@ -1026,7 +1155,8 @@ class _TransactionTile extends StatelessWidget {
     final createdAt = transaction.createdAt;
 
     /// Nedoplatek: klient zaplatil méně než očekávaná částka – vizuálně zvýrazníme řádek a důvod.
-    final isShortfall = expectedAmount != null &&
+    final isShortfall =
+        expectedAmount != null &&
         (amount - expectedAmount).abs() > 0.001 &&
         amount < expectedAmount;
 
@@ -1067,9 +1197,11 @@ class _TransactionTile extends StatelessWidget {
     // Pro transakce s client_id (např. externí výdaj): zobrazíme jméno klienta.
     String titleText;
     if (transaction.hasClientContext &&
-        (transaction.clientName != null && transaction.clientName!.isNotEmpty)) {
+        (transaction.clientName != null &&
+            transaction.clientName!.isNotEmpty)) {
       final clientPart = transaction.clientName!;
-      final typePart = transaction.clientType != null && transaction.clientType!.isNotEmpty
+      final typePart =
+          transaction.clientType != null && transaction.clientType!.isNotEmpty
           ? ' (${transaction.clientType})'
           : '';
       titleText = '$clientPart$typePart';
@@ -1114,13 +1246,18 @@ class _TransactionTile extends StatelessWidget {
       ),
     ];
     if (transaction.hasClientContext) {
-      final clientName = transaction.clientName ?? 'common.placeholder_dash'.tr();
+      final clientName =
+          transaction.clientName ?? 'common.placeholder_dash'.tr();
       final clientType = transaction.clientType;
       subtitleParts.add(const SizedBox(height: 2));
       subtitleParts.add(
         Row(
           children: [
-            Icon(Icons.person_outline, size: 14, color: context.colors.onSurfaceVariant),
+            Icon(
+              Icons.person_outline,
+              size: 14,
+              color: context.colors.onSurfaceVariant,
+            ),
             const SizedBox(width: 4),
             Text(
               '${'admin.finance.transaction_client_label'.tr()}: $clientName',
@@ -1177,8 +1314,9 @@ class _TransactionTile extends StatelessWidget {
                   style: TextStyle(
                     color: context.colors.error,
                     fontSize: 12,
-                    fontWeight:
-                        isShortfall ? FontWeight.bold : FontWeight.normal,
+                    fontWeight: isShortfall
+                        ? FontWeight.bold
+                        : FontWeight.normal,
                   ),
                 ),
               ),
@@ -1190,7 +1328,9 @@ class _TransactionTile extends StatelessWidget {
           Text(
             breakdownText,
             style: TextStyle(
-              color: isShortfall ? context.colors.error : context.colors.onSurface,
+              color: isShortfall
+                  ? context.colors.error
+                  : context.colors.onSurface,
               fontSize: 12,
               fontWeight: isShortfall ? FontWeight.bold : FontWeight.normal,
             ),
@@ -1305,7 +1445,9 @@ class _ClientTypeBadge extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.customColors.infoSubtle,
         borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: context.customColors.info.withValues(alpha: 0.3)),
+        border: Border.all(
+          color: context.customColors.info.withValues(alpha: 0.3),
+        ),
       ),
       child: Text(
         _label(),

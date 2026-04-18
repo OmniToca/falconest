@@ -99,24 +99,44 @@ class SuperAdminService {
             .maybeSingle();
 
         if (existing != null) {
-          // Obnovení: deleted_at = null, cancel_at_period_end = false (zrušení výpovědi, pokud si to klient rozmyslel).
-          await SupabaseService.client
+          // Obnovení zombie modulu musí vyčistit expirace i trial/fakturaci,
+          // jinak provider modul po refreshi znovu vyhodnotí jako neaktivní.
+          final response = await SupabaseService.client
               .from('tenant_modules')
-              .update({'deleted_at': null, 'cancel_at_period_end': false})
+              .update({
+                'deleted_at': null,
+                'cancel_at_period_end': false,
+                'valid_until': null,
+                'trial_ends_at': null,
+                'is_trial': false,
+                'stripe_subscription_id': null,
+              })
               .eq('tenant_id', tenantId)
               .eq('module_id', id)
               .select();
+          final rows = response as List<dynamic>;
+          if (rows.isEmpty) {
+            throw Exception('Chyba: Modul se nepodařilo aktivovat v databázi.');
+          }
         } else {
-          // INSERT nového záznamu – cancel_at_period_end = false pro čerstvě zapnutý modul.
-          await SupabaseService.client
+          // INSERT nového záznamu – explicitně nastavíme i expirační a trial/faktur. pole.
+          final response = await SupabaseService.client
               .from('tenant_modules')
               .insert({
                 'tenant_id': tenantId,
                 'module_id': id,
                 'deleted_at': null,
                 'cancel_at_period_end': false,
+                'valid_until': null,
+                'trial_ends_at': null,
+                'is_trial': false,
+                'stripe_subscription_id': null,
               })
               .select();
+          final rows = response as List<dynamic>;
+          if (rows.isEmpty) {
+            throw Exception('Chyba: Modul se nepodařilo aktivovat v databázi.');
+          }
         }
         if (kDebugMode) {
           debugPrint('[SuperAdminService] toggleModule ON: tenant=$tenantId module_id=$id');
@@ -124,11 +144,15 @@ class SuperAdminService {
       } else {
         // Odložené zrušení modulu na konec zúčtovacího období (Anti-churn ochrana).
         // Místo deleted_at nastavíme cancel_at_period_end = true – modul zůstává aktivní do konce měsíce.
-        await SupabaseService.client
+        final response = await SupabaseService.client
             .from('tenant_modules')
             .update({'cancel_at_period_end': true})
             .match({'tenant_id': tenantId, 'module_id': id})
             .select();
+        final rows = response as List<dynamic>;
+        if (rows.isEmpty) {
+          throw Exception('Chyba: Modul se nepodařilo deaktivovat v databázi.');
+        }
         if (kDebugMode) {
           debugPrint('[SuperAdminService] toggleModule OFF (cancel_at_period_end): tenant=$tenantId module_id=$id');
         }

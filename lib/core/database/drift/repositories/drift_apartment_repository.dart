@@ -1,4 +1,10 @@
 import 'package:drift/drift.dart';
+import 'package:falconest/core/constants/apartment_rental_constants.dart'
+    show
+        kApartmentRentalModeLongTerm,
+        kApartmentRentalModeShortTerm,
+        kApartmentRentCollectionModeNotification,
+        kApartmentRentCollectionModeTask;
 import 'package:falconest_drift/app_database.dart' as db;
 
 /// Drift repozitář pro byty – ekvivalent Isar ApartmentLocal.
@@ -47,6 +53,14 @@ class DriftApartmentRepository {
               checkOutTime: apt.checkOutTime,
               zoneId: apt.zoneId,
               parkingInstructions: apt.parkingInstructions,
+              investmentTrackingEnabled: apt.investmentTrackingEnabled,
+              rentalMode: apt.rentalMode,
+              leaseStartDate: apt.leaseStartDate,
+              leaseEndDate: apt.leaseEndDate,
+              rentAmount: apt.rentAmount,
+              rentDueDay: apt.rentDueDay,
+              rentCollectionMode: apt.rentCollectionMode,
+              rentTaskAssigneeId: apt.rentTaskAssigneeId,
               syncStatus: 0,
               localUpdatedAt: now,
               lastSyncedAt: now,
@@ -67,6 +81,14 @@ class DriftApartmentRepository {
               checkOutTime: Value(apt.checkOutTime),
               zoneId: Value(apt.zoneId),
               parkingInstructions: Value(apt.parkingInstructions),
+              investmentTrackingEnabled: Value(apt.investmentTrackingEnabled),
+              rentalMode: Value(apt.rentalMode),
+              leaseStartDate: Value(apt.leaseStartDate),
+              leaseEndDate: Value(apt.leaseEndDate),
+              rentAmount: Value(apt.rentAmount),
+              rentDueDay: Value(apt.rentDueDay),
+              rentCollectionMode: Value(apt.rentCollectionMode),
+              rentTaskAssigneeId: Value(apt.rentTaskAssigneeId),
               syncStatus: const Value(0),
               localUpdatedAt: now,
               lastSyncedAt: Value(now),
@@ -85,6 +107,56 @@ class DriftApartmentRepository {
     String? opt(String key) {
       final v = map[key]?.toString().trim();
       return (v == null || v.isEmpty) ? null : v;
+    }
+    final invRaw = map['investment_tracking_enabled'];
+    final investmentTracking = invRaw is bool
+        ? invRaw
+        : (invRaw?.toString().toLowerCase() == 'true');
+    final modeRaw = (map['rental_mode']?.toString() ?? '').trim().toLowerCase();
+    final rentalMode = modeRaw == kApartmentRentalModeLongTerm
+        ? kApartmentRentalModeLongTerm
+        : kApartmentRentalModeShortTerm;
+    final ra = map['rent_amount'];
+    double rentAmount = 0.0;
+    if (ra is num) {
+      rentAmount = ra.toDouble();
+    } else if (ra != null) {
+      rentAmount = double.tryParse(ra.toString()) ?? 0.0;
+    }
+    final rdd = map['rent_due_day'];
+    int rentDueDay = 1;
+    if (rdd is int) {
+      rentDueDay = rdd.clamp(1, 31);
+    } else if (rdd is num) {
+      rentDueDay = rdd.toInt().clamp(1, 31);
+    } else if (rdd != null) {
+      rentDueDay = int.tryParse(rdd.toString())?.clamp(1, 31) ?? 1;
+    }
+    final rcmRaw = (map['rent_collection_mode']?.toString() ?? '').trim().toLowerCase();
+    final rentCollectionMode = rcmRaw == kApartmentRentCollectionModeTask
+        ? kApartmentRentCollectionModeTask
+        : kApartmentRentCollectionModeNotification;
+    final rta = map['rent_task_assignee_id']?.toString().trim();
+    final rentTaskAssigneeId = (rta == null || rta.isEmpty) ? null : rta;
+    DateTime? leaseStart;
+    final ls = map['lease_start_date'];
+    if (ls != null) {
+      if (ls is DateTime) {
+        leaseStart = DateTime.utc(ls.year, ls.month, ls.day);
+      } else {
+        final d = DateTime.tryParse(ls.toString());
+        if (d != null) leaseStart = DateTime.utc(d.year, d.month, d.day);
+      }
+    }
+    DateTime? leaseEnd;
+    final le = map['lease_end_date'];
+    if (le != null) {
+      if (le is DateTime) {
+        leaseEnd = DateTime.utc(le.year, le.month, le.day);
+      } else {
+        final d = DateTime.tryParse(le.toString());
+        if (d != null) leaseEnd = DateTime.utc(d.year, d.month, d.day);
+      }
     }
     return db.Apartment(
       id: 0,
@@ -111,6 +183,14 @@ class DriftApartmentRepository {
         final t = v.toString();
         return t.trim().isEmpty ? null : t;
       }(),
+      investmentTrackingEnabled: investmentTracking,
+      rentalMode: rentalMode,
+      leaseStartDate: leaseStart,
+      leaseEndDate: leaseEnd,
+      rentAmount: rentAmount,
+      rentDueDay: rentDueDay,
+      rentCollectionMode: rentCollectionMode,
+      rentTaskAssigneeId: rentTaskAssigneeId,
       syncStatus: 0,
       localUpdatedAt: now,
       lastSyncedAt: now,

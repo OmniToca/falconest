@@ -17,6 +17,9 @@ class BillingSnapshotModel {
     required this.snapshotData,
     required this.lockedAt,
     this.lockedBy,
+    this.paymentStatus = 'unpaid',
+    this.paidAt,
+    this.invoicePdfUrl,
   });
 
   final String id;
@@ -26,6 +29,11 @@ class BillingSnapshotModel {
   final Map<String, dynamic> snapshotData;
   final DateTime lockedAt;
   final String? lockedBy;
+
+  /// `unpaid` | `paid` | `cash_offset` (CHECK v DB, migrace `20260410000000`).
+  final String paymentStatus;
+  final DateTime? paidAt;
+  final String? invoicePdfUrl;
 
   factory BillingSnapshotModel.fromJson(Map<String, dynamic> json) {
     final periodRaw = json['billing_period'];
@@ -47,6 +55,17 @@ class BillingSnapshotModel {
       locked = DateTime.now();
     }
     final data = json['snapshot_data'];
+    final payRaw = json['payment_status']?.toString().trim();
+    final paymentStatus = (payRaw != null && payRaw.isNotEmpty)
+        ? payRaw
+        : 'unpaid';
+    final paidRaw = json['paid_at'];
+    DateTime? paidAt;
+    if (paidRaw is DateTime) {
+      paidAt = paidRaw;
+    } else if (paidRaw is String) {
+      paidAt = DateTime.tryParse(paidRaw);
+    }
     return BillingSnapshotModel(
       id: (json['id'] as String?)?.trim() ?? '',
       tenantId: (json['tenant_id'] as String?)?.trim() ?? '',
@@ -55,6 +74,9 @@ class BillingSnapshotModel {
       snapshotData: data is Map<String, dynamic> ? data : {},
       lockedAt: locked,
       lockedBy: (json['locked_by'] as String?)?.trim(),
+      paymentStatus: paymentStatus,
+      paidAt: paidAt,
+      invoicePdfUrl: (json['invoice_pdf_url'] as String?)?.trim(),
     );
   }
 }
@@ -64,6 +86,10 @@ class BillingSnapshotModel {
 /// Majitel je propojen s klientem přes clients.profile_id. Získáme jeho
 /// client_id v rámci aktuálního tenant_id a stáhneme billing_snapshots
 /// pro tyto klienty, seřazené podle billing_period sestupně.
+///
+/// PROČ: Kvůli [IndexedStack] v [OwnerLayout] zůstává záložka Fakturace vždy v subtree –
+/// pro čerstvá data v investiční výsledovce se provider invaliduje při otevření
+/// [OwnerInvestmentDashboard].
 final ownerBillingSnapshotsProvider =
     FutureProvider<List<BillingSnapshotModel>>((ref) async {
   final profileId = ref.watch(authNotifierProvider).state.profileId;
@@ -94,7 +120,9 @@ final ownerBillingSnapshotsProvider =
   // Krok 2: Stáhnout billing_snapshots pro naše client_id, seřazeno sestupně.
   final snapshotsRes = await SupabaseService.client
       .from('billing_snapshots')
-      .select('id, tenant_id, client_id, billing_period, snapshot_data, locked_at, locked_by')
+      .select(
+        'id, tenant_id, client_id, billing_period, snapshot_data, locked_at, locked_by, payment_status, paid_at, invoice_pdf_url',
+      )
       .inFilter('client_id', clientIds)
       .order('billing_period', ascending: false);
 

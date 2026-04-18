@@ -17,6 +17,8 @@ import 'package:falconest/features/owner/providers/owner_apartments_provider.dar
 import 'package:falconest/features/owner/providers/owner_dashboard_metrics_provider.dart';
 import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
 import 'package:falconest/features/owner/providers/owner_reservations_provider.dart';
+import 'package:falconest/features/owner/widgets/owner_portal_ui.dart';
+import 'package:falconest/features/owner/widgets/owner_reservation_detail_sheet.dart';
 
 /// Přehled rezervací majitele – Kanban board podle stavu a možnost přidat rezervaci.
 ///
@@ -37,8 +39,10 @@ class _OwnerReservationsScreenState
     final reservationsAsync = ref.watch(ownerReservationsProvider);
 
     return Scaffold(
+      backgroundColor: Theme.of(context).colorScheme.surface,
       appBar: AppBar(
         title: Text('owner.reservations_title'.tr()),
+        surfaceTintColor: Colors.transparent,
         actions: [
           IconButton(
             tooltip: 'owner.reservations_block_owner_stay'.tr(),
@@ -301,6 +305,9 @@ class _OwnerReservationsKanbanBoard extends StatelessWidget {
   final void Function(OwnerReservation) onEditReservation;
   final void Function(OwnerReservation) onDeleteOwnerStay;
 
+  /// Pod touto šířkou se sloupce skládají pod sebe (mobil); od 600 px vždy horizontálně.
+  static const double _narrowKanbanMaxWidth = 600;
+
   static const _columns = [
     _ColConfig(displayStatuses: ['new'], labelKey: 'owner.kanban_new'),
     _ColConfig(
@@ -320,74 +327,117 @@ class _OwnerReservationsKanbanBoard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final screenHeight = MediaQuery.of(context).size.height;
-    return SizedBox(
-      height: screenHeight - 120,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 80),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: _columns.map((col) {
-            final columnReservations = reservations
-                .where((r) => col.displayStatuses.contains(r.status))
-                .toList();
-            return SizedBox(
-              width: 280,
-              height: screenHeight - 160,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade200,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    final headerStyle = tt.titleMedium?.copyWith(
+      fontWeight: FontWeight.w700,
+      letterSpacing: -0.2,
+      color: cs.onSurface,
+    );
+
+    /// PROČ: Horizontální Kanban (sloupce vedle sebe) je výchozí pro tablet i desktop.
+    /// Vertikální skládání jen na úzkém telefonu (< [_narrowKanbanMaxWidth]), aby se karty nepřepínaly při běžné šířce okna s postranním panelem.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isNarrow = constraints.maxWidth < _narrowKanbanMaxWidth;
+
+        if (isNarrow) {
+          return SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: _columns.map((col) {
+                final columnReservations = reservations
+                    .where((r) => col.displayStatuses.contains(r.status))
+                    .toList();
+                if (columnReservations.isEmpty) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 28),
                   child: Column(
-                    mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                          vertical: 12,
-                          horizontal: 14,
-                        ),
-                        child: Text(
-                          col.labelKey.tr(),
-                          style: Theme.of(context).textTheme.titleSmall
-                              ?.copyWith(fontWeight: FontWeight.bold),
-                        ),
+                      Text(
+                        '${col.labelKey.tr()} (${columnReservations.length})',
+                        style: headerStyle,
                       ),
-                      Expanded(
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.only(
-                            left: 8,
-                            right: 8,
-                            bottom: 12,
-                          ),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: columnReservations
-                                .map(
-                                  (r) => Padding(
-                                    padding: const EdgeInsets.only(bottom: 8),
-                                    child: _OwnerKanbanCard(
-                                      reservation: r,
-                                      onEdit: onEditReservation,
-                                      onDeleteOwnerStay: onDeleteOwnerStay,
-                                    ),
-                                  ),
-                                )
-                                .toList(),
+                      const SizedBox(height: 12),
+                      ...columnReservations.map(
+                        (r) => Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: _OwnerKanbanCard(
+                            reservation: r,
+                            onEdit: onEditReservation,
+                            onDeleteOwnerStay: onDeleteOwnerStay,
+                            onShowDetail: () => OwnerReservationDetailSheet.show(context, r),
                           ),
                         ),
                       ),
                     ],
                   ),
-                ),
-              ),
-            );
-          }).toList(),
-        ),
-      ),
+                );
+              }).toList(),
+            ),
+          );
+        }
+
+        return SizedBox(
+          height: screenHeight - 120,
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.fromLTRB(12, 16, 12, 80),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: _columns.map((col) {
+                final columnReservations = reservations
+                    .where((r) => col.displayStatuses.contains(r.status))
+                    .toList();
+                return SizedBox(
+                  width: 300,
+                  height: screenHeight - 160,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(4, 0, 4, 14),
+                          child: Text(
+                            '${col.labelKey.tr()} (${columnReservations.length})',
+                            style: headerStyle,
+                          ),
+                        ),
+                        Expanded(
+                          child: SingleChildScrollView(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: columnReservations
+                                  .map(
+                                    (r) => Padding(
+                                      padding: const EdgeInsets.only(bottom: 14),
+                                      child: _OwnerKanbanCard(
+                                        reservation: r,
+                                        onEdit: onEditReservation,
+                                        onDeleteOwnerStay: onDeleteOwnerStay,
+                                        onShowDetail: () =>
+                                            OwnerReservationDetailSheet.show(context, r),
+                                      ),
+                                    ),
+                                  )
+                                  .toList(),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -405,25 +455,49 @@ class _OwnerKanbanCard extends StatelessWidget {
     required this.reservation,
     required this.onEdit,
     required this.onDeleteOwnerStay,
+    required this.onShowDetail,
   });
 
   final OwnerReservation reservation;
   final void Function(OwnerReservation) onEdit;
   final void Function(OwnerReservation) onDeleteOwnerStay;
 
-  static Color _statusColor(String status) {
+  /// Otevře read-only detail pobytu včetně souvisejících úkolů.
+  final VoidCallback onShowDetail;
+
+  /// Pastelové pozadí + sytý text stejné rodiny barev (pill štítek stavu).
+  static (Color bg, Color fg) _statusPillColors(
+    BuildContext context,
+    String status,
+  ) {
+    final cs = Theme.of(context).colorScheme;
     switch (status) {
       case 'new':
-        return Colors.blue;
+        return (
+          Color.alphaBlend(cs.primary.withValues(alpha: 0.14), cs.surface),
+          cs.primary,
+        );
       case 'confirmed':
-        return Colors.green;
+        return (
+          Color.alphaBlend(cs.tertiary.withValues(alpha: 0.16), cs.surface),
+          cs.tertiary,
+        );
       case 'checked_in':
-        return Colors.deepPurple;
+        return (
+          Color.alphaBlend(const Color(0xFF7E57C2).withValues(alpha: 0.14), cs.surface),
+          const Color(0xFF5E35B1),
+        );
       case 'checked_out':
       case 'cancelled':
-        return Colors.grey;
+        return (
+          cs.surfaceContainerHighest.withValues(alpha: 0.65),
+          cs.onSurfaceVariant,
+        );
       default:
-        return Colors.blue;
+        return (
+          Color.alphaBlend(cs.primary.withValues(alpha: 0.14), cs.surface),
+          cs.primary,
+        );
     }
   }
 
@@ -451,6 +525,12 @@ class _OwnerKanbanCard extends StatelessWidget {
     return '$from$fromTime → $to$toTime';
   }
 
+  /// Kompaktní řádek data (bez časů) pro výrazné zobrazení v hlavičce karty.
+  static String _formatDateRangeShort(OwnerReservation r, String locale) {
+    final df = DateFormat('d.M.', locale);
+    return '${df.format(r.startDate)} – ${df.format(r.endDate)}';
+  }
+
   @override
   Widget build(BuildContext context) {
     final guestName = (reservation.guestName ?? '').trim().isEmpty
@@ -459,116 +539,143 @@ class _OwnerKanbanCard extends StatelessWidget {
     final apartmentName = (reservation.apartmentName ?? '').trim().isEmpty
         ? '–'
         : reservation.apartmentName!;
-    final statusColor = _statusColor(reservation.status);
     final canEdit = reservation.status == 'new';
+    final cs = Theme.of(context).colorScheme;
+    final locale = context.locale.toString();
+    final (pillBg, pillFg) = _statusPillColors(context, reservation.status);
+    final tt = Theme.of(context).textTheme;
 
-    Widget cardContent = Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+    final inner = Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
-                child: Text(
-                  guestName,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
-                  ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _formatDateRangeShort(reservation, locale),
+                      style: tt.labelMedium?.copyWith(
+                        color: cs.onSurfaceVariant,
+                        fontWeight: FontWeight.w500,
+                        letterSpacing: 0.15,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      guestName,
+                      style: tt.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: -0.2,
+                        height: 1.25,
+                        color: cs.onSurface,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ),
+              ),
+              IconButton(
+                icon: Icon(Icons.info_outline_rounded, size: 22, color: cs.primary),
+                tooltip: 'owner.reservation_detail_open'.tr(),
+                onPressed: onShowDetail,
+                padding: EdgeInsets.zero,
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
               ),
               if (reservation.isOwnerStay)
                 IconButton(
-                  icon: const Icon(Icons.delete_outline, size: 20),
+                  icon: Icon(Icons.delete_outline, size: 22, color: cs.onSurfaceVariant),
                   tooltip: 'owner.owner_stay_delete_tooltip'.tr(),
                   onPressed: () => onDeleteOwnerStay(reservation),
                   padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                 ),
-              if (!canEdit && !reservation.isOwnerStay) ...[
-                const SizedBox(width: 4),
-                Icon(Icons.lock_outline, size: 16, color: Colors.grey.shade600),
-              ],
+              if (!canEdit && !reservation.isOwnerStay)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2, left: 4),
+                  child: Icon(Icons.lock_outline_rounded, size: 20, color: cs.outline),
+                ),
             ],
           ),
-          if (!canEdit)
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Text(
-                'owner.managed_by_agency'.tr(),
-                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-              ),
-            ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           Text(
             reservation.totalGuests > 0
-                ? '$apartmentName • ${reservation.totalGuests} ${'owner.kanban_guests'.tr()}'
+                ? '$apartmentName · ${reservation.totalGuests} ${'owner.kanban_guests'.tr()}'
                 : apartmentName,
-            style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
-            maxLines: 1,
+            style: tt.bodySmall?.copyWith(
+              color: cs.onSurfaceVariant,
+              height: 1.35,
+            ),
+            maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 6,
-            runSpacing: 4,
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: statusColor.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  _statusLabelKey(reservation.status).tr(),
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    color: statusColor,
-                  ),
-                ),
+          const SizedBox(height: 4),
+          Text(
+            _formatDateRange(reservation),
+            style: tt.bodySmall?.copyWith(
+              color: cs.onSurfaceVariant.withValues(alpha: 0.9),
+              fontWeight: FontWeight.w400,
+              fontSize: 12,
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          if (!canEdit) ...[
+            const SizedBox(height: 6),
+            Text(
+              'owner.managed_by_agency'.tr(),
+              style: tt.labelSmall?.copyWith(
+                color: cs.outline,
+                fontStyle: FontStyle.italic,
               ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade200,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  _formatDateRange(reservation),
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    color: Colors.grey.shade800,
-                  ),
-                ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: pillBg,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              _statusLabelKey(reservation.status).tr(),
+              style: tt.labelMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: pillFg,
+                letterSpacing: 0.1,
               ),
-            ],
+            ),
           ),
         ],
       ),
     );
 
-    return Card(
-      elevation: 0,
-      color: Colors.white,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade300),
+    return DecoratedBox(
+      decoration: ownerPortalKanbanCardDecoration(context),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(kOwnerPortalKanbanCardRadius),
+        clipBehavior: Clip.antiAlias,
+        child: canEdit
+            ? InkWell(
+                borderRadius: BorderRadius.circular(kOwnerPortalKanbanCardRadius),
+                onTap: () => onEdit(reservation),
+                child: inner,
+              )
+            : InkWell(
+                borderRadius: BorderRadius.circular(kOwnerPortalKanbanCardRadius),
+                onTap: onShowDetail,
+                child: inner,
+              ),
       ),
-      margin: EdgeInsets.zero,
-      child: canEdit
-          ? InkWell(
-              onTap: () => onEdit(reservation),
-              borderRadius: BorderRadius.circular(12),
-              child: cardContent,
-            )
-          : cardContent,
     );
   }
 }
@@ -889,12 +996,32 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
             defaultPriceEur: o.defaultPriceEur,
             enabled: o.isMandatory,
             chargedPriceEur: o.defaultPriceEur,
+            transitCashToCollectEur: null,
             customNote: null,
             flightNumber: null,
             payerType: o.payerType,
           ),
       };
     });
+  }
+
+  /// Zda u aktivní služby zobrazíme pole „číslo letu“ (transfer / letiště).
+  /// Podmíněné UI šetří majiteli rozhraní u služeb, které s letem nesouvisí.
+  bool _ownerShowsFlightField(ApartmentServiceOption o) {
+    final type = o.serviceType.trim().toLowerCase();
+    if (type.contains('transfer')) return true;
+    final name = o.serviceName.toLowerCase();
+    if (name.contains('transfer')) return true;
+    if (name.contains('letiště') || name.contains('letiste')) return true;
+    if (name.contains('airport')) return true;
+    return false;
+  }
+
+  /// Parsování částky v EUR z textu (čárka i tečka jako desetinný oddělovač).
+  double? _parseEurAmountInput(String raw) {
+    final t = raw.trim();
+    if (t.isEmpty) return null;
+    return double.tryParse(t.replaceAll(',', '.'));
   }
 
   /// Načte služby pro daný byt napřímo (bez Riverpod provideru) a uloží do _loadedServiceOptions.
@@ -1008,6 +1135,8 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
                 enabled: true,
                 chargedPriceEur:
                     existing.chargedPrice?.toDouble() ?? o.defaultPriceEur,
+                transitCashToCollectEur:
+                    existing.transitCashToCollect?.toDouble(),
                 customNote: noteRest,
                 flightNumber: flight,
                 payerType:
@@ -1023,6 +1152,7 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
               defaultPriceEur: o.defaultPriceEur,
               enabled: o.isMandatory,
               chargedPriceEur: o.defaultPriceEur,
+              transitCashToCollectEur: null,
               customNote: null,
               flightNumber: null,
               payerType: o.payerType,
@@ -1113,9 +1243,12 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
               onChanged: o.isMandatory
                   ? null
                   : (v) {
+                      final on = v ?? false;
                       setState(() {
                         _servicesState[o.apartmentServiceId] = state.copyWith(
-                          enabled: v ?? false,
+                          enabled: on,
+                          clearFlightNumber: !on,
+                          clearTransitCashToCollect: !on,
                         );
                       });
                     },
@@ -1154,11 +1287,60 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
                         if (v != null) {
                           setState(() {
                             _servicesState[o.apartmentServiceId] = state
-                                .copyWith(payerType: v);
+                                .copyWith(
+                                  payerType: v,
+                                  clearTransitCashToCollect: v != 'guest',
+                                );
                           });
                         }
                       },
                     ),
+                    if (state.payerType == 'guest') ...[
+                      const SizedBox(height: 12),
+                      Tooltip(
+                        message:
+                            'owner.reservations_transit_cash_tooltip'.tr(),
+                        child: TextFormField(
+                          key: ValueKey(
+                            'transit_${o.apartmentServiceId}_${state.payerType}',
+                          ),
+                          initialValue: state.transitCashToCollectEur != null
+                              ? state.transitCashToCollectEur!
+                                    .toString()
+                              : '',
+                          decoration: InputDecoration(
+                            labelText:
+                                'owner.reservations_transit_cash_label'.tr(),
+                            isDense: true,
+                            border: const OutlineInputBorder(),
+                          ),
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                            signed: false,
+                          ),
+                          onChanged: (v) {
+                            final t = v.trim();
+                            if (t.isEmpty) {
+                              setState(() {
+                                _servicesState[o.apartmentServiceId] =
+                                    state.copyWith(
+                                      clearTransitCashToCollect: true,
+                                    );
+                              });
+                              return;
+                            }
+                            final parsed = _parseEurAmountInput(v);
+                            if (parsed == null) return;
+                            setState(() {
+                              _servicesState[o.apartmentServiceId] =
+                                  state.copyWith(
+                                    transitCashToCollectEur: parsed,
+                                  );
+                            });
+                          },
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 12),
                     TextFormField(
                       initialValue: state.customNote ?? '',
@@ -1176,6 +1358,32 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
                         });
                       },
                     ),
+                    if (_ownerShowsFlightField(o)) ...[
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        key: ValueKey('flight_${o.apartmentServiceId}'),
+                        initialValue: state.flightNumber ?? '',
+                        decoration: InputDecoration(
+                          labelText:
+                              'owner.reservations_flight_number_label'.tr(),
+                          isDense: true,
+                          border: const OutlineInputBorder(),
+                        ),
+                        maxLines: 1,
+                        textCapitalization: TextCapitalization.characters,
+                        onChanged: (v) {
+                          final trimmed = v.trim();
+                          setState(() {
+                            _servicesState[o.apartmentServiceId] =
+                                state.copyWith(
+                                  flightNumber:
+                                      trimmed.isEmpty ? null : trimmed,
+                                  clearFlightNumber: trimmed.isEmpty,
+                                );
+                          });
+                        },
+                      ),
+                    ],
                   ],
                 ),
               ),

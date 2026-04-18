@@ -5,18 +5,56 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/admin/admin_layout.dart';
 import 'package:falconest/features/admin/admin_reservations_screen.dart';
 // Sdílená komponenta pro zobrazení financí a poznámek z rezervace je v dialogu úpravy úkolu (AdminTasksScreen).
 import 'package:falconest/features/admin/admin_tasks_screen.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
+import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/models/task_category_model.dart';
 import 'package:falconest/features/calendar/providers/planning_calendar_provider.dart';
 import 'package:falconest/features/calendar/widgets/planning_grid_slot_widgets.dart';
 import 'package:falconest/features/admin/providers/task_categories_provider.dart';
 import 'package:falconest/utils/task_visuals.dart';
 import 'package:falconest/widgets/task_legend.dart';
+
+/// Načte jednu rezervaci z DB, pokud ji ještě nemáme v paměti streamu (kalendář → detail).
+///
+/// PROČ: Stream rezervací může mít limit / filtr bytů; odkaz z úkolu musí fungovat i pro řádek mimo cache.
+Future<ReservationRow?> _fetchReservationRowForPlanning(
+  WidgetRef ref,
+  String reservationId,
+) async {
+  final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return null;
+  final res = await SupabaseService.safeFrom('reservations', tenantId)
+      .select(
+          'id, apartment_id, reference_number, guest_name, guest_phone, guest_language, reservation_source, start_date, end_date, status, guest_adults, guest_children, arrival_time, departure_time, internal_note, special_requests, needs_transfer, deleted_at, last_communication_template_context, last_communication_at, last_communication_template_id, created_at, apartments(name)')
+      .eq('id', reservationId)
+      .isFilter('deleted_at', null)
+      .maybeSingle();
+  if (res == null) return null;
+  final map = Map<String, dynamic>.from(res as Map);
+  if (map['apartments'] == null) {
+    final aptId = map['apartment_id']?.toString();
+    if (aptId != null && aptId.isNotEmpty) {
+      final apts = ref.read(apartmentsFullListProvider).valueOrNull;
+      if (apts != null) {
+        for (final a in apts) {
+          if (a.id == aptId) {
+            map['apartments'] = {'name': a.name};
+            break;
+          }
+        }
+      }
+    }
+  }
+  return ReservationRow.fromJson(map);
+}
 
 /// Stav vizuálního managementu události (CASE A/B/C).
 enum _CardVisualState { critical, conflict, normal }
@@ -149,7 +187,7 @@ class _PlanningCalendarScreenState
         onReservationTap:
             fullTaskRow.reservationId != null &&
                 fullTaskRow.reservationId!.isNotEmpty
-            ? (id) => _navigateToReservation(context, ref, id)
+            ? (id) => unawaited(_navigateToReservation(context, ref, id))
             : null,
         onSaved: () {
           ref.invalidate(adminTasksProvider);
@@ -157,12 +195,13 @@ class _PlanningCalendarScreenState
           invalidatePlanningCalendarCaches(ref);
         },
       );
-    } catch (e) {
+    } catch (e, st) {
+      AppLogger.error('PlanningCalendarScreen: načtení úkolu pro editaci selhalo', e, st);
       if (!mounted) return;
       Navigator.of(context, rootNavigator: true).pop();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('common.generic_error_user_friendly'.tr()),
+          content: Text('admin.calendar_task_load_failed'.tr()),
           backgroundColor: Colors.red.shade700,
           behavior: SnackBarBehavior.floating,
         ),
@@ -171,22 +210,53 @@ class _PlanningCalendarScreenState
   }
 
   /// Zavře dialog úkolu, přepne na záložku Rezervace a otevře detail dané rezervace.
-  void _navigateToReservation(
+  ///
+  /// PROČ: Rezervace nemusí být v aktuálním snapshotu streamu – při chybě nesmí spadnout celá aplikace.
+  Future<void> _navigateToReservation(
     BuildContext context,
     WidgetRef ref,
     String reservationId,
-  ) {
+  ) async {
     Navigator.of(context).pop();
-    final reservations = ref.read(adminReservationsProvider).valueOrNull ?? [];
-    final reservation = reservations
-        .where((r) => r.id == reservationId)
-        .firstOrNull;
-    if (reservation != null) {
+    if (!context.mounted) return;
+    try {
+      final reservations = ref.read(adminReservationsProvider).valueOrNull ?? [];
+      ReservationRow? reservation;
+      for (final r in reservations) {
+        if (r.id == reservationId) {
+          reservation = r;
+          break;
+        }
+      }
+      reservation ??= await _fetchReservationRowForPlanning(ref, reservationId);
+
+      if (!context.mounted) return;
+      if (reservation == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('admin.calendar_reservation_load_failed'.tr()),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
+        return;
+      }
       AdminTabScope.of(context)?.call(adminTabIndexReservations);
+      if (!context.mounted) return;
       AdminReservationsScreen.showEditReservationDialog(
         context,
         ref,
         reservation,
+      );
+    } catch (e, st) {
+      AppLogger.error('PlanningCalendarScreen: navigace na rezervaci z kalendáře selhala', e, st);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.calendar_reservation_load_failed'.tr()),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.red.shade700,
+        ),
       );
     }
   }
@@ -350,22 +420,40 @@ class _PlanningCalendarScreenState
                           ),
                           Expanded(
                             child: dataAsync.when(
-                              data: (data) => _WeekGridScrollBody(
-                                weekStart: _weekStart,
-                                data: data,
-                                categoriesByCode:
-                                    ref
-                                        .watch(taskCategoriesProvider)
-                                        .valueOrNull ??
-                                    {},
-                                selectedFilterId: _selectedFilterId,
-                                searchQuery: _debouncedSearchQuery,
-                                onTaskTap: _openEditTask,
-                                dayColumnWidth: dayColumnWidth,
-                                totalWidth: totalWidth,
-                                verticalScrollController:
-                                    _verticalScrollController,
-                              ),
+                              data: (data) {
+                                final weekNorm = DateTime(
+                                  _weekStart.year,
+                                  _weekStart.month,
+                                  _weekStart.day,
+                                );
+                                final layoutKey = PlanningWeekGridLayoutKey(
+                                  weekMonday: weekNorm,
+                                  selectedResourceFilterId: _selectedFilterId,
+                                  searchQuery: _debouncedSearchQuery,
+                                  taskDataFingerprint:
+                                      PlanningWeekGridLayoutKey.computeTaskDataFingerprint(
+                                    data.tasks,
+                                  ),
+                                );
+                                final processed = ref.watch(
+                                  planningWeekGridProcessedProvider(layoutKey),
+                                );
+                                return _WeekGridScrollBody(
+                                  weekStart: _weekStart,
+                                  data: data,
+                                  processedTasks: processed,
+                                  categoriesByCode:
+                                      ref
+                                          .watch(taskCategoriesProvider)
+                                          .valueOrNull ??
+                                      {},
+                                  onTaskTap: _openEditTask,
+                                  dayColumnWidth: dayColumnWidth,
+                                  totalWidth: totalWidth,
+                                  verticalScrollController:
+                                      _verticalScrollController,
+                                );
+                              },
                               loading: () => const Center(
                                 child: CircularProgressIndicator(),
                               ),
@@ -555,9 +643,8 @@ class _WeekGridScrollBody extends StatefulWidget {
   const _WeekGridScrollBody({
     required this.weekStart,
     required this.data,
+    required this.processedTasks,
     required this.categoriesByCode,
-    required this.selectedFilterId,
-    required this.searchQuery,
     required this.onTaskTap,
     required this.dayColumnWidth,
     required this.totalWidth,
@@ -566,9 +653,9 @@ class _WeekGridScrollBody extends StatefulWidget {
 
   final DateTime weekStart;
   final PlanningCalendarData data;
+  /// Předpočítané pozice karet z [planningWeekGridProcessedProvider] – nepočítáme znovu v každém [build].
+  final List<WeekProcessedTask> processedTasks;
   final Map<String, TaskCategoryModel> categoriesByCode;
-  final String? selectedFilterId;
-  final String searchQuery;
   final ValueChanged<PlanningTask> onTaskTap;
   final double dayColumnWidth;
   final double totalWidth;
@@ -593,23 +680,6 @@ class _WeekGridScrollBodyState extends State<_WeekGridScrollBody> {
       widget.verticalScrollController.jumpTo(offset.clamp(0.0, maxExtent));
       if (mounted) setState(() => _initialScrollDone = true);
     });
-  }
-
-  List<PlanningTask> _filteredTasks() {
-    var list = widget.data.tasks;
-    if (widget.selectedFilterId != null) {
-      list = list
-          .where((t) => t.resourceId == widget.selectedFilterId)
-          .toList();
-    }
-    if (widget.searchQuery.isEmpty) return list;
-    final q = widget.searchQuery.toLowerCase();
-    return list.where((t) {
-      final title = (t.title).toLowerCase();
-      final apartment = (t.apartmentName ?? '').toLowerCase();
-      final assignee = (t.assignedUserName ?? '').toLowerCase();
-      return title.contains(q) || apartment.contains(q) || assignee.contains(q);
-    }).toList();
   }
 
   _CardVisualState _visualState(PlanningTask task) {
@@ -679,12 +749,7 @@ class _WeekGridScrollBodyState extends State<_WeekGridScrollBody> {
 
   @override
   Widget build(BuildContext context) {
-    final tasks = _filteredTasks();
-    final processed = getProcessedTasksForWeek(
-      tasks,
-      widget.weekStart,
-      _gridStartHour,
-    );
+    final processed = widget.processedTasks;
     final gridHeight = totalGridHeight(_slotHeight);
 
     return SingleChildScrollView(

@@ -219,6 +219,9 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
   bool _isApproving = false;
   bool _isRecalculating = false;
 
+  /// Běží hromadná změna stavu / přiřazení nebo mazání úkolu — celé tělo obrazovky je zablokované overlayem.
+  bool _isProcessingBulk = false;
+
   /// Režim výběru více úkolů v Kanbanu (checkboxy + hromadné akce). Drag & drop zůstává mimo tento režim.
   bool _kanbanSelectionMode = false;
 
@@ -281,6 +284,7 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
       ),
     );
     if (picked == null || !mounted) return;
+    setState(() => _isProcessingBulk = true);
     try {
       await ref.read(adminTasksProvider.notifier).bulkUpdateTaskStatus(
             _selectedKanbanTaskIds.toList(),
@@ -297,15 +301,18 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
           behavior: SnackBarBehavior.floating,
         ),
       );
-    } catch (e) {
+    } catch (e, st) {
+      AppLogger.error('AdminTasksScreen: hromadná změna stavu úkolů selhala', e, st);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('common.generic_error_user_friendly'.tr()),
+          content: Text('admin.bulk_action_failed'.tr()),
           backgroundColor: context.colors.error,
           behavior: SnackBarBehavior.floating,
         ),
       );
+    } finally {
+      if (mounted) setState(() => _isProcessingBulk = false);
     }
   }
 
@@ -332,6 +339,7 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
     if (!mounted) return;
     if (picked == null) return;
     final profileId = picked == _kBulkUnassignToken ? null : picked;
+    setState(() => _isProcessingBulk = true);
     try {
       await ref.read(adminTasksProvider.notifier).bulkAssignTasks(
             _selectedKanbanTaskIds.toList(),
@@ -348,15 +356,96 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
           behavior: SnackBarBehavior.floating,
         ),
       );
-    } catch (e) {
+    } catch (e, st) {
+      AppLogger.error('AdminTasksScreen: hromadné přiřazení úkolů selhalo', e, st);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('common.generic_error_user_friendly'.tr()),
+          content: Text('admin.bulk_action_failed'.tr()),
           backgroundColor: context.colors.error,
           behavior: SnackBarBehavior.floating,
         ),
       );
+    } finally {
+      if (mounted) setState(() => _isProcessingBulk = false);
+    }
+  }
+
+  /// Hromadné soft-delete vybraných úkolů (stejný zápis jako u jednotlivého mazání v Kanbanu).
+  ///
+  /// PROČ: Dispečer může vyčistit šarži záznamů najednou; auditní stopa zůstane po jednom záznamu na úkol.
+  Future<void> _runBulkDelete() async {
+    if (_selectedKanbanTaskIds.isEmpty) return;
+    final count = _selectedKanbanTaskIds.length;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('admin.tasks_bulk_delete_title'.tr()),
+        content: Text(
+          'admin.tasks_bulk_delete_message'.tr(namedArgs: {'count': '$count'}),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text('common.cancel'.tr()),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text('admin.tasks_bulk_delete_confirm'.tr()),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    setState(() => _isProcessingBulk = true);
+    try {
+      final auth = ref.read(authNotifierProvider);
+      final tenantId = auth.tenantIdForData;
+      if (tenantId == null || tenantId.isEmpty) {
+        throw StateError('tenant_missing');
+      }
+      final selectedIds = _selectedKanbanTaskIds.toList();
+      final deletedAt = DateTime.now().toUtc().toIso8601String();
+      await SupabaseService.safeFrom('tasks', tenantId).update({
+        'deleted_at': deletedAt,
+      }).inFilter('id', selectedIds);
+
+      final userId = SupabaseService.client.auth.currentUser?.id;
+      for (final id in selectedIds) {
+        await AuditLogService.log(
+          tenantId: auth.tenantIdForData,
+          userId: userId,
+          actionType: 'SOFT_DELETE',
+          tableName: 'tasks',
+          recordId: id,
+        );
+      }
+
+      if (!mounted) return;
+      ref.invalidate(adminTasksProvider);
+      ref.invalidate(adminTasksStreamProvider);
+      _exitKanbanSelection();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.bulk_delete_success'.tr()),
+          backgroundColor: context.customColors.success,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e, st) {
+      AppLogger.error('AdminTasksScreen: hromadné mazání úkolů selhalo', e, st);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.bulk_action_failed'.tr()),
+          backgroundColor: context.colors.error,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isProcessingBulk = false);
     }
   }
 
@@ -570,82 +659,116 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
     final automaticTasksActive = isModuleActive(ref, 'automatic_tasks');
 
     return Scaffold(
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+      body: Stack(
+        fit: StackFit.expand,
         children: [
-          _TopActionBar(
-            searchController: _searchController,
-            onSearchChanged: () {
-              ref.read(kanbanTasksSearchQueryProvider.notifier).state =
-                  _searchController.text.trim().toLowerCase();
-            },
-            onAdd: () => _showAddDialog(context, ref),
-            onGenerate: _runGenerateSmartTasks,
-            isGenerating: _isGenerating,
-            automaticTasksActive: automaticTasksActive,
-            onPremiumLockedTap: () => _showPremiumLockedDialog(context),
-            kanbanSelectionMode: _kanbanSelectionMode,
-            onToggleKanbanSelectionMode: _toggleKanbanSelectionModeButton,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _TopActionBar(
+                searchController: _searchController,
+                onSearchChanged: () {
+                  ref.read(kanbanTasksSearchQueryProvider.notifier).state =
+                      _searchController.text.trim().toLowerCase();
+                },
+                onAdd: () => _showAddDialog(context, ref),
+                onGenerate: _runGenerateSmartTasks,
+                isGenerating: _isGenerating,
+                automaticTasksActive: automaticTasksActive,
+                onPremiumLockedTap: () => _showPremiumLockedDialog(context),
+                kanbanSelectionMode: _kanbanSelectionMode,
+                onToggleKanbanSelectionMode: _toggleKanbanSelectionModeButton,
+              ),
+              if (_kanbanSelectionMode || _selectedKanbanTaskIds.isNotEmpty)
+                KanbanBulkSelectionBar(
+                  selectedCount: _selectedKanbanTaskIds.length,
+                  onChangeStatus: _runBulkStatusChange,
+                  onAssignWorker: _runBulkAssign,
+                  onBulkDelete: _runBulkDelete,
+                  onCancel: _exitKanbanSelection,
+                ),
+              TasksFilterBar(
+                onApproveAll: _runApproveAllPending,
+                isApproving: _isApproving,
+                onRecalculateStaff: _runRecalculateAssignees,
+                isRecalculating: _isRecalculating,
+                automaticTasksActive: automaticTasksActive,
+                onPremiumLockedTap: () => _showPremiumLockedDialog(context),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.lg,
+                  0,
+                  AppSpacing.lg,
+                  AppSpacing.sm,
+                ),
+                child: TaskLegend(),
+              ),
+              Expanded(
+                child: Consumer(
+                  builder: (context, ref, _) {
+                    final hasVisible = ref.watch(kanbanHasVisibleTasksProvider);
+                    final lockedTaskIds =
+                        ref.watch(lockedFinancialTaskIdsProvider).valueOrNull ?? {};
+                    final categoriesByCode =
+                        ref.watch(taskCategoriesProvider).valueOrNull ?? {};
+                    if (!hasVisible) {
+                      final qEmpty = ref.watch(kanbanTasksSearchQueryProvider).isEmpty;
+                      return Center(
+                        child: AppEmptyState(
+                          icon: Icons.assignment_outlined,
+                          title: qEmpty
+                              ? 'admin.tasks_empty'.tr()
+                              : 'admin.tasks_search_no_results'.tr(),
+                          subtitle: qEmpty
+                              ? null
+                              : 'admin.general.search_empty_subtitle'.tr(),
+                        ),
+                      );
+                    }
+                    return KanbanBoard(
+                      lockedFinancialTaskIds: lockedTaskIds,
+                      categoriesByCode: categoriesByCode,
+                      onEdit: (t) => _showEditDialog(context, ref, t),
+                      onDelete: (t) => _showDeleteConfirm(context, ref, t),
+                      selectionMode: _kanbanSelectionMode,
+                      selectedTaskIds: _selectedKanbanTaskIds,
+                      onToggleTaskSelection: _toggleKanbanTaskSelection,
+                      onEnterSelectionWithTask: _enterKanbanSelectionWith,
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
-          if (_kanbanSelectionMode || _selectedKanbanTaskIds.isNotEmpty)
-            KanbanBulkSelectionBar(
-              selectedCount: _selectedKanbanTaskIds.length,
-              onChangeStatus: _runBulkStatusChange,
-              onAssignWorker: _runBulkAssign,
-              onCancel: _exitKanbanSelection,
-            ),
-          TasksFilterBar(
-            onApproveAll: _runApproveAllPending,
-            isApproving: _isApproving,
-            onRecalculateStaff: _runRecalculateAssignees,
-            isRecalculating: _isRecalculating,
-            automaticTasksActive: automaticTasksActive,
-            onPremiumLockedTap: () => _showPremiumLockedDialog(context),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(
-              AppSpacing.lg,
-              0,
-              AppSpacing.lg,
-              AppSpacing.sm,
-            ),
-            child: TaskLegend(),
-          ),
-          Expanded(
-            child: Consumer(
-              builder: (context, ref, _) {
-                final hasVisible = ref.watch(kanbanHasVisibleTasksProvider);
-                final lockedTaskIds =
-                    ref.watch(lockedFinancialTaskIdsProvider).valueOrNull ?? {};
-                final categoriesByCode =
-                    ref.watch(taskCategoriesProvider).valueOrNull ?? {};
-                if (!hasVisible) {
-                  final qEmpty = ref.watch(kanbanTasksSearchQueryProvider).isEmpty;
-                  return Center(
-                    child: AppEmptyState(
-                      icon: Icons.assignment_outlined,
-                      title: qEmpty
-                          ? 'admin.tasks_empty'.tr()
-                          : 'admin.tasks_search_no_results'.tr(),
-                      subtitle: qEmpty
-                          ? null
-                          : 'admin.general.search_empty_subtitle'.tr(),
+          if (_isProcessingBulk)
+            Positioned.fill(
+              child: AbsorbPointer(
+                child: Material(
+                  color: Colors.black.withValues(alpha: 0.28),
+                  child: Center(
+                    child: Card(
+                      elevation: 8,
+                      child: Padding(
+                        padding: const EdgeInsets.all(AppSpacing.lg),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const CircularProgressIndicator(),
+                            SizedBox(height: AppSpacing.md),
+                            Text(
+                              'admin.bulk_action_processing'.tr(),
+                              textAlign: TextAlign.center,
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
-                  );
-                }
-                return KanbanBoard(
-                  lockedFinancialTaskIds: lockedTaskIds,
-                  categoriesByCode: categoriesByCode,
-                  onEdit: (t) => _showEditDialog(context, ref, t),
-                  onDelete: (t) => _showDeleteConfirm(context, ref, t),
-                  selectionMode: _kanbanSelectionMode,
-                  selectedTaskIds: _selectedKanbanTaskIds,
-                  onToggleTaskSelection: _toggleKanbanTaskSelection,
-                  onEnterSelectionWithTask: _enterKanbanSelectionWith,
-                );
-              },
+                  ),
+                ),
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -700,25 +823,28 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
   }
 
   Future<void> _doDelete(
-    BuildContext context,
+    BuildContext dialogContext,
     WidgetRef ref,
     String taskId,
   ) async {
-    try {
-      final auth = ref.read(authNotifierProvider);
-      final tenantId = auth.tenantIdForData;
-      if (tenantId == null || tenantId.isEmpty) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('common.error'.tr()),
-              backgroundColor: context.colors.error,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
-        return;
+    final auth = ref.read(authNotifierProvider);
+    final tenantId = auth.tenantIdForData;
+    if (tenantId == null || tenantId.isEmpty) {
+      if (dialogContext.mounted) {
+        ScaffoldMessenger.of(dialogContext).showSnackBar(
+          SnackBar(
+            content: Text('common.error'.tr()),
+            backgroundColor: Theme.of(dialogContext).colorScheme.error,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
+      return;
+    }
+
+    setState(() => _isProcessingBulk = true);
+    try {
+      Navigator.of(dialogContext).pop();
       final deletedAt = DateTime.now().toUtc().toIso8601String();
       await SupabaseService.safeFrom(
         'tasks',
@@ -731,8 +857,7 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
         tableName: 'tasks',
         recordId: taskId,
       );
-      if (!context.mounted) return;
-      Navigator.pop(context);
+      if (!mounted) return;
       ref.invalidate(adminTasksProvider);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -741,17 +866,18 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
           behavior: SnackBarBehavior.floating,
         ),
       );
-    } catch (e) {
-      if (!context.mounted) return;
+    } catch (e, st) {
+      AppLogger.error('AdminTasksScreen: mazání úkolu (soft delete) selhalo', e, st);
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'common.generic_error_user_friendly'.tr(),
-          ),
+          content: Text('admin.bulk_action_failed'.tr()),
           backgroundColor: context.colors.error,
           behavior: SnackBarBehavior.floating,
         ),
       );
+    } finally {
+      if (mounted) setState(() => _isProcessingBulk = false);
     }
   }
 }

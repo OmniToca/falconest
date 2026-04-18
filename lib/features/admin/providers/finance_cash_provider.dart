@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/models/cash_transaction_ui_model.dart';
 import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
-import 'package:falconest/core/repositories/cash/reservation_cash_transit_repository.dart';
+import 'package:falconest/features/owner/repositories/reservation_cash_transit_repository.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';

@@ -785,7 +785,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
     // Kompletní data včetně custom_price a payer_type pro Bulletproof Cascade (fallback u starých rezervací).
     final apartmentServicesRaw = await SupabaseService.safeFrom('apartment_services', tenantId)
         .select(
-            'id, apartment_id, service_id, trigger_type, is_mandatory, requires_photo, custom_price, payer_type, checklist_template_id');
+            'id, apartment_id, service_id, trigger_type, is_mandatory, requires_photo, custom_price, payer_type, checklist_template_id, metadata');
     final catalog = await ref.read(tenantServicesProvider.future);
     final catalogById = {for (final s in catalog) s.id: s};
 
@@ -835,11 +835,19 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
       final catalogPrice = service.defaultPrice?.toDouble();
       final pt = (map['payer_type'] as String?)?.trim();
       final payerType = (pt == 'owner' || pt == 'guest') ? pt : 'owner';
+      final meta = map['metadata'] is Map<String, dynamic>
+          ? Map<String, dynamic>.from(map['metadata'] as Map<String, dynamic>)
+          : <String, dynamic>{};
+      final rawTransit = meta['transit_price'];
+      final transitPrice = rawTransit == null
+          ? null
+          : (rawTransit is num ? rawTransit.toDouble() : double.tryParse(rawTransit.toString()));
       final catalogRequiresPhoto = service.requiresPhoto;
       apartmentFallback[apartmentServiceId] = {
         'price': customPrice ?? catalogPrice,
         'payer': payerType,
         'photo': requiresPhotoFromApartment ?? catalogRequiresPhoto,
+        'transit_price': transitPrice,
       };
       apartmentServiceIdToServiceType[apartmentServiceId] = service.serviceType.trim().toLowerCase();
       final rawTpl = map['checklist_template_id'];
@@ -1122,7 +1130,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
     // KROK 2: custom_price a payer_type pro vypálení finančních dat do metadata úkolu.
     final apartmentServicesRaw = await SupabaseService.safeFrom('apartment_services', tenantId)
         .select(
-            'apartment_id, service_id, trigger_type, schedule_interval, requires_photo, custom_price, payer_type, checklist_template_id');
+            'apartment_id, service_id, trigger_type, schedule_interval, requires_photo, custom_price, payer_type, checklist_template_id, metadata');
     final scheduledServices = <Map<String, dynamic>>[];
     for (final row in apartmentServicesRaw as List) {
       final map = row as Map<String, dynamic>;
@@ -1281,6 +1289,18 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
       final scheduledPayerType =
           (aptPayer == 'owner' || aptPayer == 'guest') ? aptPayer! : 'owner';
       scheduledMetadata['payer_type'] = scheduledPayerType;
+      final apsMetadata = row['metadata'] is Map<String, dynamic>
+          ? Map<String, dynamic>.from(row['metadata'] as Map<String, dynamic>)
+          : <String, dynamic>{};
+      final rawTransit = apsMetadata['transit_price'];
+      final transitPrice = rawTransit == null
+          ? null
+          : (rawTransit is num ? rawTransit.toDouble() : double.tryParse(rawTransit.toString()));
+      if (transitPrice != null && transitPrice > 0) {
+        scheduledMetadata['transit_amount_to_collect'] = transitPrice;
+        scheduledMetadata['long_term_rent_due'] = true;
+        scheduledMetadata['rent_cash_flow'] = 'agency_float';
+      }
       if (resolvedPrice != null && resolvedPrice > 0) {
         if (scheduledPayerType == 'guest') {
           scheduledMetadata['amount_to_collect'] = resolvedPrice;

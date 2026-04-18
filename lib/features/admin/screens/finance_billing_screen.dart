@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/widgets/billing_payment_status_chip.dart';
 import 'package:falconest/core/theme/app_spacing.dart';
 import 'package:falconest/core/theme/premium_card_decoration.dart';
 import 'package:falconest/core/theme/theme_ext.dart';
@@ -17,6 +18,7 @@ import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/features/admin/admin_tasks_screen.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/finance_billing_provider.dart';
+import 'package:falconest/features/admin/providers/finance_repository.dart';
 import 'package:falconest/features/admin/providers/reports_provider.dart';
 
 /// Dialog podkladů pro fakturaci – měsíční přehled dokončených nevyfakturovaných úkolů.
@@ -383,6 +385,233 @@ class _FinanceBillingContentState extends ConsumerState<FinanceBillingContent> {
     );
   }
 
+  /// Obnoví podklady pro zvolený měsíc (po úpravě snapshotu z dispečerského menu).
+  void _invalidateBillingReport() {
+    ref.invalidate(
+      billingReportProvider(
+        BillingMonthParam(
+          year: _selectedMonth.year,
+          month: _selectedMonth.month,
+        ),
+      ),
+    );
+  }
+
+  /// Dialog: změna `payment_status` u řádku `billing_snapshots` (viditelné i majiteli).
+  Future<void> _onEditSnapshotPaymentStatus(
+    BuildContext context,
+    BillingGroup group,
+  ) async {
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    final snapId = group.billingSnapshotId;
+    if (tenantId == null ||
+        tenantId.isEmpty ||
+        snapId == null ||
+        snapId.isEmpty) {
+      return;
+    }
+
+    const valid = {'unpaid', 'paid', 'partially_paid', 'cash_offset'};
+    final newStatus = await showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        String selected = group.paymentStatus.trim().toLowerCase();
+        if (!valid.contains(selected)) {
+          selected = 'unpaid';
+        }
+        return StatefulBuilder(
+          builder: (ctx, setSt) {
+            return AlertDialog(
+              title: Text(
+                'admin.finance.billing_snapshot_payment_dialog_title'.tr(),
+              ),
+              content: ConstrainedBox(
+                constraints: const BoxConstraints(minWidth: 280),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'admin.finance.billing_snapshot_payment_field_label'
+                          .tr(),
+                      style: Theme.of(ctx).textTheme.labelLarge,
+                    ),
+                    const SizedBox(height: 8),
+                    DropdownButton<String>(
+                      value: selected,
+                      isExpanded: true,
+                      items: [
+                        DropdownMenuItem(
+                          value: 'unpaid',
+                          child: Text(
+                            'owner.billing_payment_status_unpaid'.tr(),
+                          ),
+                        ),
+                        DropdownMenuItem(
+                          value: 'paid',
+                          child: Text('owner.billing_payment_status_paid'.tr()),
+                        ),
+                        DropdownMenuItem(
+                          value: 'partially_paid',
+                          child: Text(
+                            'owner.billing_payment_status_partially_paid'.tr(),
+                          ),
+                        ),
+                        DropdownMenuItem(
+                          value: 'cash_offset',
+                          child: Text(
+                            'owner.billing_payment_status_cash_offset'.tr(),
+                          ),
+                        ),
+                      ],
+                      onChanged: (v) {
+                        if (v != null) {
+                          setSt(() => selected = v);
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: Text('common.cancel'.tr()),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(ctx).pop(selected),
+                  child: Text('common.save'.tr()),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (newStatus == null || !context.mounted) {
+      return;
+    }
+    final normalizedNew = newStatus.trim().toLowerCase();
+    if (normalizedNew == group.paymentStatus.trim().toLowerCase()) {
+      return;
+    }
+
+    try {
+      await FinanceRepository.instance.updateSnapshotPaymentStatus(
+        tenantId,
+        snapId,
+        normalizedNew,
+      );
+      _invalidateBillingReport();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'admin.finance.billing_snapshot_update_success'.tr(),
+            ),
+          ),
+        );
+      }
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'admin.finance.billing_snapshot_update_error'.tr(),
+            ),
+          ),
+        );
+      }
+    }
+  }
+
+  /// Dialog: úprava `invoice_pdf_url` (veřejné URL k PDF faktuře).
+  Future<void> _onEditSnapshotInvoicePdf(
+    BuildContext context,
+    BillingGroup group,
+  ) async {
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+    final snapId = group.billingSnapshotId;
+    if (tenantId == null ||
+        tenantId.isEmpty ||
+        snapId == null ||
+        snapId.isEmpty) {
+      return;
+    }
+
+    final controller = TextEditingController(text: group.invoicePdfUrl ?? '');
+    try {
+      final newUrl = await showDialog<String>(
+        context: context,
+        builder: (ctx) {
+          return AlertDialog(
+            title: Text(
+              'admin.finance.billing_snapshot_invoice_dialog_title'.tr(),
+            ),
+            content: SingleChildScrollView(
+              child: TextField(
+                controller: controller,
+                decoration: InputDecoration(
+                  labelText:
+                      'admin.finance.billing_snapshot_invoice_field_label'.tr(),
+                  hintText:
+                      'admin.finance.billing_snapshot_invoice_hint'.tr(),
+                  border: const OutlineInputBorder(),
+                ),
+                maxLines: 3,
+                keyboardType: TextInputType.url,
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: Text('common.cancel'.tr()),
+              ),
+              FilledButton(
+                onPressed: () =>
+                    Navigator.of(ctx).pop(controller.text.trim()),
+                child: Text('common.save'.tr()),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (newUrl == null || !context.mounted) {
+        return;
+      }
+
+      await FinanceRepository.instance.updateSnapshotInvoicePdfUrl(
+        tenantId,
+        snapId,
+        newUrl,
+      );
+      _invalidateBillingReport();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'admin.finance.billing_snapshot_update_success'.tr(),
+            ),
+          ),
+        );
+      }
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'admin.finance.billing_snapshot_update_error'.tr(),
+            ),
+          ),
+        );
+      }
+    } finally {
+      controller.dispose();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final param = BillingMonthParam(
@@ -551,6 +780,7 @@ class _FinanceBillingContentState extends ConsumerState<FinanceBillingContent> {
                           )
                         : _BillingGroupsList(
                             groups: groups,
+                            isLocked: data.isLocked,
                             formatAmount: (v) =>
                                 formatTaskAmount(context, ref, v),
                             selectedMonth: DateTime(
@@ -574,6 +804,10 @@ class _FinanceBillingContentState extends ConsumerState<FinanceBillingContent> {
                             tenantId: ref
                                 .read(authNotifierProvider)
                                 .tenantIdForData,
+                            onEditSnapshotPaymentStatus: (group) =>
+                                _onEditSnapshotPaymentStatus(context, group),
+                            onEditSnapshotInvoicePdf: (group) =>
+                                _onEditSnapshotInvoicePdf(context, group),
                             onShortfallResolved: () {
                               ref.invalidate(
                                 billingReportProvider(
@@ -1018,6 +1252,7 @@ class _BillingAccountantMonthOverview extends StatelessWidget {
 class _BillingGroupsList extends StatelessWidget {
   const _BillingGroupsList({
     required this.groups,
+    required this.isLocked,
     required this.formatAmount,
     required this.selectedMonth,
     required this.currency,
@@ -1028,9 +1263,14 @@ class _BillingGroupsList extends StatelessWidget {
     this.tenantId,
     this.onShortfallResolved,
     this.accountantHeader,
+    required this.onEditSnapshotPaymentStatus,
+    required this.onEditSnapshotInvoicePdf,
   });
 
   final List<BillingGroup> groups;
+
+  /// Uzamčený měsíc – zobrazíme štítek úhrady a menu úprav snapshotu.
+  final bool isLocked;
   final String Function(num) formatAmount;
   final DateTime selectedMonth;
   final String currency;
@@ -1040,6 +1280,12 @@ class _BillingGroupsList extends StatelessWidget {
   final void Function(String taskId)? onTaskTap;
   final String? tenantId;
   final VoidCallback? onShortfallResolved;
+
+  /// Úprava `payment_status` u `billing_snapshots` (jen uzamčený měsíc, má [BillingGroup.billingSnapshotId]).
+  final void Function(BillingGroup group) onEditSnapshotPaymentStatus;
+
+  /// Úprava `invoice_pdf_url` u snapshotu.
+  final void Function(BillingGroup group) onEditSnapshotInvoicePdf;
 
   /// Volitelný blok „souhrn + rozpad“ pro účetní – vložen jako první sliver nad kartami klientů.
   final Widget? accountantHeader;
@@ -1109,15 +1355,30 @@ class _BillingGroupsList extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Flexible(
-                child: Text(
-                  formatAmount(group.finalToInvoice),
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.end,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        formatAmount(group.finalToInvoice),
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.end,
+                      ),
+                    ),
+                    if (isLocked &&
+                        (group.billingSnapshotId ?? '').isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      BillingPaymentStatusChip(
+                        paymentStatus: group.paymentStatus,
+                        compact: true,
+                      ),
+                    ],
+                  ],
                 ),
               ),
               PopupMenuButton<String>(
@@ -1148,6 +1409,38 @@ class _BillingGroupsList extends StatelessWidget {
                   ),
                 ],
               ),
+              if (isLocked && (group.billingSnapshotId ?? '').isNotEmpty)
+                PopupMenuButton<String>(
+                  icon: Icon(
+                    Icons.more_vert,
+                    size: AppSpacing.md + AppSpacing.xs,
+                    color: context.colors.onSurfaceVariant,
+                  ),
+                  padding: const EdgeInsets.all(AppSpacing.xs),
+                  tooltip:
+                      'admin.finance.billing_snapshot_menu_tooltip'.tr(),
+                  onSelected: (value) {
+                    if (value == 'payment') {
+                      onEditSnapshotPaymentStatus(group);
+                    } else if (value == 'invoice') {
+                      onEditSnapshotInvoicePdf(group);
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    PopupMenuItem(
+                      value: 'payment',
+                      child: Text(
+                        'admin.finance.billing_snapshot_menu_payment'.tr(),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'invoice',
+                      child: Text(
+                        'admin.finance.billing_snapshot_menu_invoice'.tr(),
+                      ),
+                    ),
+                  ],
+                ),
             ],
           ),
           // PROČ: ExpansionTile skládá děti do Column bez vlastního scrollu. Při více

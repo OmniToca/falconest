@@ -54,6 +54,10 @@ Future<void> saveForApartment({
   await safeAps.delete().eq('apartment_id', apartmentId);
   if (toInsert.isEmpty) return;
   for (final s in toInsert) {
+    final metadata = <String, dynamic>{};
+    if (s.transitPriceEur != null && s.transitPriceEur! > 0) {
+      metadata['transit_price'] = s.transitPriceEur;
+    }
     await safeAps.insert({
       'apartment_id': apartmentId,
       'service_id': s.serviceId,
@@ -64,6 +68,7 @@ Future<void> saveForApartment({
       'is_mandatory': s.isMandatory,
       'payer_type': s.payerType,
       'requires_photo': s.requiresPhoto,
+      'metadata': metadata,
       // PROČ: null se do JSON/PostgREST neposílá jako klíč jen pokud vynecháme – explicitně null je v pořádku pro „bez šablony“.
       if (s.checklistTemplateId != null && s.checklistTemplateId!.trim().isNotEmpty)
         'checklist_template_id': s.checklistTemplateId!.trim(),

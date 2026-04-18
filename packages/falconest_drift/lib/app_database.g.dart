@@ -2224,6 +2224,103 @@ class $ApartmentsTable extends Apartments
         type: DriftSqlType.string,
         requiredDuringInsert: false,
       );
+  static const VerificationMeta _investmentTrackingEnabledMeta =
+      const VerificationMeta('investmentTrackingEnabled');
+  @override
+  late final GeneratedColumn<bool> investmentTrackingEnabled =
+      GeneratedColumn<bool>(
+        'investment_tracking_enabled',
+        aliasedName,
+        false,
+        type: DriftSqlType.bool,
+        requiredDuringInsert: false,
+        defaultConstraints: GeneratedColumn.constraintIsAlways(
+          'CHECK ("investment_tracking_enabled" IN (0, 1))',
+        ),
+        defaultValue: const Constant(false),
+      );
+  static const VerificationMeta _rentalModeMeta = const VerificationMeta(
+    'rentalMode',
+  );
+  @override
+  late final GeneratedColumn<String> rentalMode = GeneratedColumn<String>(
+    'rental_mode',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('short_term'),
+  );
+  static const VerificationMeta _leaseStartDateMeta = const VerificationMeta(
+    'leaseStartDate',
+  );
+  @override
+  late final GeneratedColumn<DateTime> leaseStartDate =
+      GeneratedColumn<DateTime>(
+        'lease_start_date',
+        aliasedName,
+        true,
+        type: DriftSqlType.dateTime,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _leaseEndDateMeta = const VerificationMeta(
+    'leaseEndDate',
+  );
+  @override
+  late final GeneratedColumn<DateTime> leaseEndDate = GeneratedColumn<DateTime>(
+    'lease_end_date',
+    aliasedName,
+    true,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _rentAmountMeta = const VerificationMeta(
+    'rentAmount',
+  );
+  @override
+  late final GeneratedColumn<double> rentAmount = GeneratedColumn<double>(
+    'rent_amount',
+    aliasedName,
+    false,
+    type: DriftSqlType.double,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _rentDueDayMeta = const VerificationMeta(
+    'rentDueDay',
+  );
+  @override
+  late final GeneratedColumn<int> rentDueDay = GeneratedColumn<int>(
+    'rent_due_day',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(1),
+  );
+  static const VerificationMeta _rentCollectionModeMeta =
+      const VerificationMeta('rentCollectionMode');
+  @override
+  late final GeneratedColumn<String> rentCollectionMode =
+      GeneratedColumn<String>(
+        'rent_collection_mode',
+        aliasedName,
+        false,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+        defaultValue: const Constant('notification'),
+      );
+  static const VerificationMeta _rentTaskAssigneeIdMeta =
+      const VerificationMeta('rentTaskAssigneeId');
+  @override
+  late final GeneratedColumn<String> rentTaskAssigneeId =
+      GeneratedColumn<String>(
+        'rent_task_assignee_id',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
   static const VerificationMeta _syncStatusMeta = const VerificationMeta(
     'syncStatus',
   );
@@ -2284,6 +2381,14 @@ class $ApartmentsTable extends Apartments
     checkOutTime,
     zoneId,
     parkingInstructions,
+    investmentTrackingEnabled,
+    rentalMode,
+    leaseStartDate,
+    leaseEndDate,
+    rentAmount,
+    rentDueDay,
+    rentCollectionMode,
+    rentTaskAssigneeId,
     syncStatus,
     localUpdatedAt,
     lastSyncedAt,
@@ -2381,6 +2486,72 @@ class $ApartmentsTable extends Apartments
         ),
       );
     }
+    if (data.containsKey('investment_tracking_enabled')) {
+      context.handle(
+        _investmentTrackingEnabledMeta,
+        investmentTrackingEnabled.isAcceptableOrUnknown(
+          data['investment_tracking_enabled']!,
+          _investmentTrackingEnabledMeta,
+        ),
+      );
+    }
+    if (data.containsKey('rental_mode')) {
+      context.handle(
+        _rentalModeMeta,
+        rentalMode.isAcceptableOrUnknown(data['rental_mode']!, _rentalModeMeta),
+      );
+    }
+    if (data.containsKey('lease_start_date')) {
+      context.handle(
+        _leaseStartDateMeta,
+        leaseStartDate.isAcceptableOrUnknown(
+          data['lease_start_date']!,
+          _leaseStartDateMeta,
+        ),
+      );
+    }
+    if (data.containsKey('lease_end_date')) {
+      context.handle(
+        _leaseEndDateMeta,
+        leaseEndDate.isAcceptableOrUnknown(
+          data['lease_end_date']!,
+          _leaseEndDateMeta,
+        ),
+      );
+    }
+    if (data.containsKey('rent_amount')) {
+      context.handle(
+        _rentAmountMeta,
+        rentAmount.isAcceptableOrUnknown(data['rent_amount']!, _rentAmountMeta),
+      );
+    }
+    if (data.containsKey('rent_due_day')) {
+      context.handle(
+        _rentDueDayMeta,
+        rentDueDay.isAcceptableOrUnknown(
+          data['rent_due_day']!,
+          _rentDueDayMeta,
+        ),
+      );
+    }
+    if (data.containsKey('rent_collection_mode')) {
+      context.handle(
+        _rentCollectionModeMeta,
+        rentCollectionMode.isAcceptableOrUnknown(
+          data['rent_collection_mode']!,
+          _rentCollectionModeMeta,
+        ),
+      );
+    }
+    if (data.containsKey('rent_task_assignee_id')) {
+      context.handle(
+        _rentTaskAssigneeIdMeta,
+        rentTaskAssigneeId.isAcceptableOrUnknown(
+          data['rent_task_assignee_id']!,
+          _rentTaskAssigneeIdMeta,
+        ),
+      );
+    }
     if (data.containsKey('sync_status')) {
       context.handle(
         _syncStatusMeta,
@@ -2475,6 +2646,38 @@ class $ApartmentsTable extends Apartments
         DriftSqlType.string,
         data['${effectivePrefix}parking_instructions'],
       ),
+      investmentTrackingEnabled: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}investment_tracking_enabled'],
+      )!,
+      rentalMode: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}rental_mode'],
+      )!,
+      leaseStartDate: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}lease_start_date'],
+      ),
+      leaseEndDate: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}lease_end_date'],
+      ),
+      rentAmount: attachedDatabase.typeMapping.read(
+        DriftSqlType.double,
+        data['${effectivePrefix}rent_amount'],
+      )!,
+      rentDueDay: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}rent_due_day'],
+      )!,
+      rentCollectionMode: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}rent_collection_mode'],
+      )!,
+      rentTaskAssigneeId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}rent_task_assignee_id'],
+      ),
       syncStatus: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}sync_status'],
@@ -2521,6 +2724,30 @@ class Apartment extends DataClass implements Insertable<Apartment> {
 
   /// Instrukce k parkování pro offline zobrazení – z `apartments.parking_instructions`.
   final String? parkingInstructions;
+
+  /// Příznak investičního modulu – z `apartments.investment_tracking_enabled`.
+  final bool investmentTrackingEnabled;
+
+  /// `short_term` | `long_term` – z `apartments.rental_mode`.
+  final String rentalMode;
+
+  /// Platnost smlouvy od (nullable) – z `apartments.lease_start_date`.
+  final DateTime? leaseStartDate;
+
+  /// Platnost smlouvy do – z `apartments.lease_end_date`.
+  final DateTime? leaseEndDate;
+
+  /// Měsíční nájem (dlouhodobý) – z `apartments.rent_amount`.
+  final double rentAmount;
+
+  /// Den splatnosti 1–31 – z `apartments.rent_due_day`.
+  final int rentDueDay;
+
+  /// `notification` | `task` – z `apartments.rent_collection_mode`.
+  final String rentCollectionMode;
+
+  /// Odpovědný pracovník (profiles.id) – z `apartments.rent_task_assignee_id`.
+  final String? rentTaskAssigneeId;
   final int syncStatus;
   final DateTime localUpdatedAt;
   final DateTime? lastSyncedAt;
@@ -2538,6 +2765,14 @@ class Apartment extends DataClass implements Insertable<Apartment> {
     this.checkOutTime,
     this.zoneId,
     this.parkingInstructions,
+    required this.investmentTrackingEnabled,
+    required this.rentalMode,
+    this.leaseStartDate,
+    this.leaseEndDate,
+    required this.rentAmount,
+    required this.rentDueDay,
+    required this.rentCollectionMode,
+    this.rentTaskAssigneeId,
     required this.syncStatus,
     required this.localUpdatedAt,
     this.lastSyncedAt,
@@ -2575,6 +2810,22 @@ class Apartment extends DataClass implements Insertable<Apartment> {
     }
     if (!nullToAbsent || parkingInstructions != null) {
       map['parking_instructions'] = Variable<String>(parkingInstructions);
+    }
+    map['investment_tracking_enabled'] = Variable<bool>(
+      investmentTrackingEnabled,
+    );
+    map['rental_mode'] = Variable<String>(rentalMode);
+    if (!nullToAbsent || leaseStartDate != null) {
+      map['lease_start_date'] = Variable<DateTime>(leaseStartDate);
+    }
+    if (!nullToAbsent || leaseEndDate != null) {
+      map['lease_end_date'] = Variable<DateTime>(leaseEndDate);
+    }
+    map['rent_amount'] = Variable<double>(rentAmount);
+    map['rent_due_day'] = Variable<int>(rentDueDay);
+    map['rent_collection_mode'] = Variable<String>(rentCollectionMode);
+    if (!nullToAbsent || rentTaskAssigneeId != null) {
+      map['rent_task_assignee_id'] = Variable<String>(rentTaskAssigneeId);
     }
     map['sync_status'] = Variable<int>(syncStatus);
     map['local_updated_at'] = Variable<DateTime>(localUpdatedAt);
@@ -2615,6 +2866,20 @@ class Apartment extends DataClass implements Insertable<Apartment> {
       parkingInstructions: parkingInstructions == null && nullToAbsent
           ? const Value.absent()
           : Value(parkingInstructions),
+      investmentTrackingEnabled: Value(investmentTrackingEnabled),
+      rentalMode: Value(rentalMode),
+      leaseStartDate: leaseStartDate == null && nullToAbsent
+          ? const Value.absent()
+          : Value(leaseStartDate),
+      leaseEndDate: leaseEndDate == null && nullToAbsent
+          ? const Value.absent()
+          : Value(leaseEndDate),
+      rentAmount: Value(rentAmount),
+      rentDueDay: Value(rentDueDay),
+      rentCollectionMode: Value(rentCollectionMode),
+      rentTaskAssigneeId: rentTaskAssigneeId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(rentTaskAssigneeId),
       syncStatus: Value(syncStatus),
       localUpdatedAt: Value(localUpdatedAt),
       lastSyncedAt: lastSyncedAt == null && nullToAbsent
@@ -2644,6 +2909,20 @@ class Apartment extends DataClass implements Insertable<Apartment> {
       parkingInstructions: serializer.fromJson<String?>(
         json['parkingInstructions'],
       ),
+      investmentTrackingEnabled: serializer.fromJson<bool>(
+        json['investmentTrackingEnabled'],
+      ),
+      rentalMode: serializer.fromJson<String>(json['rentalMode']),
+      leaseStartDate: serializer.fromJson<DateTime?>(json['leaseStartDate']),
+      leaseEndDate: serializer.fromJson<DateTime?>(json['leaseEndDate']),
+      rentAmount: serializer.fromJson<double>(json['rentAmount']),
+      rentDueDay: serializer.fromJson<int>(json['rentDueDay']),
+      rentCollectionMode: serializer.fromJson<String>(
+        json['rentCollectionMode'],
+      ),
+      rentTaskAssigneeId: serializer.fromJson<String?>(
+        json['rentTaskAssigneeId'],
+      ),
       syncStatus: serializer.fromJson<int>(json['syncStatus']),
       localUpdatedAt: serializer.fromJson<DateTime>(json['localUpdatedAt']),
       lastSyncedAt: serializer.fromJson<DateTime?>(json['lastSyncedAt']),
@@ -2666,6 +2945,16 @@ class Apartment extends DataClass implements Insertable<Apartment> {
       'checkOutTime': serializer.toJson<String?>(checkOutTime),
       'zoneId': serializer.toJson<String?>(zoneId),
       'parkingInstructions': serializer.toJson<String?>(parkingInstructions),
+      'investmentTrackingEnabled': serializer.toJson<bool>(
+        investmentTrackingEnabled,
+      ),
+      'rentalMode': serializer.toJson<String>(rentalMode),
+      'leaseStartDate': serializer.toJson<DateTime?>(leaseStartDate),
+      'leaseEndDate': serializer.toJson<DateTime?>(leaseEndDate),
+      'rentAmount': serializer.toJson<double>(rentAmount),
+      'rentDueDay': serializer.toJson<int>(rentDueDay),
+      'rentCollectionMode': serializer.toJson<String>(rentCollectionMode),
+      'rentTaskAssigneeId': serializer.toJson<String?>(rentTaskAssigneeId),
       'syncStatus': serializer.toJson<int>(syncStatus),
       'localUpdatedAt': serializer.toJson<DateTime>(localUpdatedAt),
       'lastSyncedAt': serializer.toJson<DateTime?>(lastSyncedAt),
@@ -2686,6 +2975,14 @@ class Apartment extends DataClass implements Insertable<Apartment> {
     Value<String?> checkOutTime = const Value.absent(),
     Value<String?> zoneId = const Value.absent(),
     Value<String?> parkingInstructions = const Value.absent(),
+    bool? investmentTrackingEnabled,
+    String? rentalMode,
+    Value<DateTime?> leaseStartDate = const Value.absent(),
+    Value<DateTime?> leaseEndDate = const Value.absent(),
+    double? rentAmount,
+    int? rentDueDay,
+    String? rentCollectionMode,
+    Value<String?> rentTaskAssigneeId = const Value.absent(),
     int? syncStatus,
     DateTime? localUpdatedAt,
     Value<DateTime?> lastSyncedAt = const Value.absent(),
@@ -2705,6 +3002,19 @@ class Apartment extends DataClass implements Insertable<Apartment> {
     parkingInstructions: parkingInstructions.present
         ? parkingInstructions.value
         : this.parkingInstructions,
+    investmentTrackingEnabled:
+        investmentTrackingEnabled ?? this.investmentTrackingEnabled,
+    rentalMode: rentalMode ?? this.rentalMode,
+    leaseStartDate: leaseStartDate.present
+        ? leaseStartDate.value
+        : this.leaseStartDate,
+    leaseEndDate: leaseEndDate.present ? leaseEndDate.value : this.leaseEndDate,
+    rentAmount: rentAmount ?? this.rentAmount,
+    rentDueDay: rentDueDay ?? this.rentDueDay,
+    rentCollectionMode: rentCollectionMode ?? this.rentCollectionMode,
+    rentTaskAssigneeId: rentTaskAssigneeId.present
+        ? rentTaskAssigneeId.value
+        : this.rentTaskAssigneeId,
     syncStatus: syncStatus ?? this.syncStatus,
     localUpdatedAt: localUpdatedAt ?? this.localUpdatedAt,
     lastSyncedAt: lastSyncedAt.present ? lastSyncedAt.value : this.lastSyncedAt,
@@ -2734,6 +3044,30 @@ class Apartment extends DataClass implements Insertable<Apartment> {
       parkingInstructions: data.parkingInstructions.present
           ? data.parkingInstructions.value
           : this.parkingInstructions,
+      investmentTrackingEnabled: data.investmentTrackingEnabled.present
+          ? data.investmentTrackingEnabled.value
+          : this.investmentTrackingEnabled,
+      rentalMode: data.rentalMode.present
+          ? data.rentalMode.value
+          : this.rentalMode,
+      leaseStartDate: data.leaseStartDate.present
+          ? data.leaseStartDate.value
+          : this.leaseStartDate,
+      leaseEndDate: data.leaseEndDate.present
+          ? data.leaseEndDate.value
+          : this.leaseEndDate,
+      rentAmount: data.rentAmount.present
+          ? data.rentAmount.value
+          : this.rentAmount,
+      rentDueDay: data.rentDueDay.present
+          ? data.rentDueDay.value
+          : this.rentDueDay,
+      rentCollectionMode: data.rentCollectionMode.present
+          ? data.rentCollectionMode.value
+          : this.rentCollectionMode,
+      rentTaskAssigneeId: data.rentTaskAssigneeId.present
+          ? data.rentTaskAssigneeId.value
+          : this.rentTaskAssigneeId,
       syncStatus: data.syncStatus.present
           ? data.syncStatus.value
           : this.syncStatus,
@@ -2764,6 +3098,14 @@ class Apartment extends DataClass implements Insertable<Apartment> {
           ..write('checkOutTime: $checkOutTime, ')
           ..write('zoneId: $zoneId, ')
           ..write('parkingInstructions: $parkingInstructions, ')
+          ..write('investmentTrackingEnabled: $investmentTrackingEnabled, ')
+          ..write('rentalMode: $rentalMode, ')
+          ..write('leaseStartDate: $leaseStartDate, ')
+          ..write('leaseEndDate: $leaseEndDate, ')
+          ..write('rentAmount: $rentAmount, ')
+          ..write('rentDueDay: $rentDueDay, ')
+          ..write('rentCollectionMode: $rentCollectionMode, ')
+          ..write('rentTaskAssigneeId: $rentTaskAssigneeId, ')
           ..write('syncStatus: $syncStatus, ')
           ..write('localUpdatedAt: $localUpdatedAt, ')
           ..write('lastSyncedAt: $lastSyncedAt, ')
@@ -2773,7 +3115,7 @@ class Apartment extends DataClass implements Insertable<Apartment> {
   }
 
   @override
-  int get hashCode => Object.hash(
+  int get hashCode => Object.hashAll([
     id,
     supabaseId,
     tenantId,
@@ -2786,11 +3128,19 @@ class Apartment extends DataClass implements Insertable<Apartment> {
     checkOutTime,
     zoneId,
     parkingInstructions,
+    investmentTrackingEnabled,
+    rentalMode,
+    leaseStartDate,
+    leaseEndDate,
+    rentAmount,
+    rentDueDay,
+    rentCollectionMode,
+    rentTaskAssigneeId,
     syncStatus,
     localUpdatedAt,
     lastSyncedAt,
     lastUpdated,
-  );
+  ]);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -2807,6 +3157,14 @@ class Apartment extends DataClass implements Insertable<Apartment> {
           other.checkOutTime == this.checkOutTime &&
           other.zoneId == this.zoneId &&
           other.parkingInstructions == this.parkingInstructions &&
+          other.investmentTrackingEnabled == this.investmentTrackingEnabled &&
+          other.rentalMode == this.rentalMode &&
+          other.leaseStartDate == this.leaseStartDate &&
+          other.leaseEndDate == this.leaseEndDate &&
+          other.rentAmount == this.rentAmount &&
+          other.rentDueDay == this.rentDueDay &&
+          other.rentCollectionMode == this.rentCollectionMode &&
+          other.rentTaskAssigneeId == this.rentTaskAssigneeId &&
           other.syncStatus == this.syncStatus &&
           other.localUpdatedAt == this.localUpdatedAt &&
           other.lastSyncedAt == this.lastSyncedAt &&
@@ -2826,6 +3184,14 @@ class ApartmentsCompanion extends UpdateCompanion<Apartment> {
   final Value<String?> checkOutTime;
   final Value<String?> zoneId;
   final Value<String?> parkingInstructions;
+  final Value<bool> investmentTrackingEnabled;
+  final Value<String> rentalMode;
+  final Value<DateTime?> leaseStartDate;
+  final Value<DateTime?> leaseEndDate;
+  final Value<double> rentAmount;
+  final Value<int> rentDueDay;
+  final Value<String> rentCollectionMode;
+  final Value<String?> rentTaskAssigneeId;
   final Value<int> syncStatus;
   final Value<DateTime> localUpdatedAt;
   final Value<DateTime?> lastSyncedAt;
@@ -2843,6 +3209,14 @@ class ApartmentsCompanion extends UpdateCompanion<Apartment> {
     this.checkOutTime = const Value.absent(),
     this.zoneId = const Value.absent(),
     this.parkingInstructions = const Value.absent(),
+    this.investmentTrackingEnabled = const Value.absent(),
+    this.rentalMode = const Value.absent(),
+    this.leaseStartDate = const Value.absent(),
+    this.leaseEndDate = const Value.absent(),
+    this.rentAmount = const Value.absent(),
+    this.rentDueDay = const Value.absent(),
+    this.rentCollectionMode = const Value.absent(),
+    this.rentTaskAssigneeId = const Value.absent(),
     this.syncStatus = const Value.absent(),
     this.localUpdatedAt = const Value.absent(),
     this.lastSyncedAt = const Value.absent(),
@@ -2861,6 +3235,14 @@ class ApartmentsCompanion extends UpdateCompanion<Apartment> {
     this.checkOutTime = const Value.absent(),
     this.zoneId = const Value.absent(),
     this.parkingInstructions = const Value.absent(),
+    this.investmentTrackingEnabled = const Value.absent(),
+    this.rentalMode = const Value.absent(),
+    this.leaseStartDate = const Value.absent(),
+    this.leaseEndDate = const Value.absent(),
+    this.rentAmount = const Value.absent(),
+    this.rentDueDay = const Value.absent(),
+    this.rentCollectionMode = const Value.absent(),
+    this.rentTaskAssigneeId = const Value.absent(),
     this.syncStatus = const Value.absent(),
     required DateTime localUpdatedAt,
     this.lastSyncedAt = const Value.absent(),
@@ -2881,6 +3263,14 @@ class ApartmentsCompanion extends UpdateCompanion<Apartment> {
     Expression<String>? checkOutTime,
     Expression<String>? zoneId,
     Expression<String>? parkingInstructions,
+    Expression<bool>? investmentTrackingEnabled,
+    Expression<String>? rentalMode,
+    Expression<DateTime>? leaseStartDate,
+    Expression<DateTime>? leaseEndDate,
+    Expression<double>? rentAmount,
+    Expression<int>? rentDueDay,
+    Expression<String>? rentCollectionMode,
+    Expression<String>? rentTaskAssigneeId,
     Expression<int>? syncStatus,
     Expression<DateTime>? localUpdatedAt,
     Expression<DateTime>? lastSyncedAt,
@@ -2900,6 +3290,17 @@ class ApartmentsCompanion extends UpdateCompanion<Apartment> {
       if (zoneId != null) 'zone_id': zoneId,
       if (parkingInstructions != null)
         'parking_instructions': parkingInstructions,
+      if (investmentTrackingEnabled != null)
+        'investment_tracking_enabled': investmentTrackingEnabled,
+      if (rentalMode != null) 'rental_mode': rentalMode,
+      if (leaseStartDate != null) 'lease_start_date': leaseStartDate,
+      if (leaseEndDate != null) 'lease_end_date': leaseEndDate,
+      if (rentAmount != null) 'rent_amount': rentAmount,
+      if (rentDueDay != null) 'rent_due_day': rentDueDay,
+      if (rentCollectionMode != null)
+        'rent_collection_mode': rentCollectionMode,
+      if (rentTaskAssigneeId != null)
+        'rent_task_assignee_id': rentTaskAssigneeId,
       if (syncStatus != null) 'sync_status': syncStatus,
       if (localUpdatedAt != null) 'local_updated_at': localUpdatedAt,
       if (lastSyncedAt != null) 'last_synced_at': lastSyncedAt,
@@ -2920,6 +3321,14 @@ class ApartmentsCompanion extends UpdateCompanion<Apartment> {
     Value<String?>? checkOutTime,
     Value<String?>? zoneId,
     Value<String?>? parkingInstructions,
+    Value<bool>? investmentTrackingEnabled,
+    Value<String>? rentalMode,
+    Value<DateTime?>? leaseStartDate,
+    Value<DateTime?>? leaseEndDate,
+    Value<double>? rentAmount,
+    Value<int>? rentDueDay,
+    Value<String>? rentCollectionMode,
+    Value<String?>? rentTaskAssigneeId,
     Value<int>? syncStatus,
     Value<DateTime>? localUpdatedAt,
     Value<DateTime?>? lastSyncedAt,
@@ -2938,6 +3347,15 @@ class ApartmentsCompanion extends UpdateCompanion<Apartment> {
       checkOutTime: checkOutTime ?? this.checkOutTime,
       zoneId: zoneId ?? this.zoneId,
       parkingInstructions: parkingInstructions ?? this.parkingInstructions,
+      investmentTrackingEnabled:
+          investmentTrackingEnabled ?? this.investmentTrackingEnabled,
+      rentalMode: rentalMode ?? this.rentalMode,
+      leaseStartDate: leaseStartDate ?? this.leaseStartDate,
+      leaseEndDate: leaseEndDate ?? this.leaseEndDate,
+      rentAmount: rentAmount ?? this.rentAmount,
+      rentDueDay: rentDueDay ?? this.rentDueDay,
+      rentCollectionMode: rentCollectionMode ?? this.rentCollectionMode,
+      rentTaskAssigneeId: rentTaskAssigneeId ?? this.rentTaskAssigneeId,
       syncStatus: syncStatus ?? this.syncStatus,
       localUpdatedAt: localUpdatedAt ?? this.localUpdatedAt,
       lastSyncedAt: lastSyncedAt ?? this.lastSyncedAt,
@@ -2984,6 +3402,32 @@ class ApartmentsCompanion extends UpdateCompanion<Apartment> {
     if (parkingInstructions.present) {
       map['parking_instructions'] = Variable<String>(parkingInstructions.value);
     }
+    if (investmentTrackingEnabled.present) {
+      map['investment_tracking_enabled'] = Variable<bool>(
+        investmentTrackingEnabled.value,
+      );
+    }
+    if (rentalMode.present) {
+      map['rental_mode'] = Variable<String>(rentalMode.value);
+    }
+    if (leaseStartDate.present) {
+      map['lease_start_date'] = Variable<DateTime>(leaseStartDate.value);
+    }
+    if (leaseEndDate.present) {
+      map['lease_end_date'] = Variable<DateTime>(leaseEndDate.value);
+    }
+    if (rentAmount.present) {
+      map['rent_amount'] = Variable<double>(rentAmount.value);
+    }
+    if (rentDueDay.present) {
+      map['rent_due_day'] = Variable<int>(rentDueDay.value);
+    }
+    if (rentCollectionMode.present) {
+      map['rent_collection_mode'] = Variable<String>(rentCollectionMode.value);
+    }
+    if (rentTaskAssigneeId.present) {
+      map['rent_task_assignee_id'] = Variable<String>(rentTaskAssigneeId.value);
+    }
     if (syncStatus.present) {
       map['sync_status'] = Variable<int>(syncStatus.value);
     }
@@ -3014,6 +3458,14 @@ class ApartmentsCompanion extends UpdateCompanion<Apartment> {
           ..write('checkOutTime: $checkOutTime, ')
           ..write('zoneId: $zoneId, ')
           ..write('parkingInstructions: $parkingInstructions, ')
+          ..write('investmentTrackingEnabled: $investmentTrackingEnabled, ')
+          ..write('rentalMode: $rentalMode, ')
+          ..write('leaseStartDate: $leaseStartDate, ')
+          ..write('leaseEndDate: $leaseEndDate, ')
+          ..write('rentAmount: $rentAmount, ')
+          ..write('rentDueDay: $rentDueDay, ')
+          ..write('rentCollectionMode: $rentCollectionMode, ')
+          ..write('rentTaskAssigneeId: $rentTaskAssigneeId, ')
           ..write('syncStatus: $syncStatus, ')
           ..write('localUpdatedAt: $localUpdatedAt, ')
           ..write('lastSyncedAt: $lastSyncedAt, ')
@@ -12249,6 +12701,14 @@ typedef $$ApartmentsTableCreateCompanionBuilder =
       Value<String?> checkOutTime,
       Value<String?> zoneId,
       Value<String?> parkingInstructions,
+      Value<bool> investmentTrackingEnabled,
+      Value<String> rentalMode,
+      Value<DateTime?> leaseStartDate,
+      Value<DateTime?> leaseEndDate,
+      Value<double> rentAmount,
+      Value<int> rentDueDay,
+      Value<String> rentCollectionMode,
+      Value<String?> rentTaskAssigneeId,
       Value<int> syncStatus,
       required DateTime localUpdatedAt,
       Value<DateTime?> lastSyncedAt,
@@ -12268,6 +12728,14 @@ typedef $$ApartmentsTableUpdateCompanionBuilder =
       Value<String?> checkOutTime,
       Value<String?> zoneId,
       Value<String?> parkingInstructions,
+      Value<bool> investmentTrackingEnabled,
+      Value<String> rentalMode,
+      Value<DateTime?> leaseStartDate,
+      Value<DateTime?> leaseEndDate,
+      Value<double> rentAmount,
+      Value<int> rentDueDay,
+      Value<String> rentCollectionMode,
+      Value<String?> rentTaskAssigneeId,
       Value<int> syncStatus,
       Value<DateTime> localUpdatedAt,
       Value<DateTime?> lastSyncedAt,
@@ -12340,6 +12808,46 @@ class $$ApartmentsTableFilterComposer
 
   ColumnFilters<String> get parkingInstructions => $composableBuilder(
     column: $table.parkingInstructions,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get investmentTrackingEnabled => $composableBuilder(
+    column: $table.investmentTrackingEnabled,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get rentalMode => $composableBuilder(
+    column: $table.rentalMode,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get leaseStartDate => $composableBuilder(
+    column: $table.leaseStartDate,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get leaseEndDate => $composableBuilder(
+    column: $table.leaseEndDate,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<double> get rentAmount => $composableBuilder(
+    column: $table.rentAmount,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get rentDueDay => $composableBuilder(
+    column: $table.rentDueDay,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get rentCollectionMode => $composableBuilder(
+    column: $table.rentCollectionMode,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get rentTaskAssigneeId => $composableBuilder(
+    column: $table.rentTaskAssigneeId,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -12433,6 +12941,46 @@ class $$ApartmentsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<bool> get investmentTrackingEnabled => $composableBuilder(
+    column: $table.investmentTrackingEnabled,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get rentalMode => $composableBuilder(
+    column: $table.rentalMode,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get leaseStartDate => $composableBuilder(
+    column: $table.leaseStartDate,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get leaseEndDate => $composableBuilder(
+    column: $table.leaseEndDate,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<double> get rentAmount => $composableBuilder(
+    column: $table.rentAmount,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get rentDueDay => $composableBuilder(
+    column: $table.rentDueDay,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get rentCollectionMode => $composableBuilder(
+    column: $table.rentCollectionMode,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get rentTaskAssigneeId => $composableBuilder(
+    column: $table.rentTaskAssigneeId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<int> get syncStatus => $composableBuilder(
     column: $table.syncStatus,
     builder: (column) => ColumnOrderings(column),
@@ -12509,6 +13057,46 @@ class $$ApartmentsTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<bool> get investmentTrackingEnabled => $composableBuilder(
+    column: $table.investmentTrackingEnabled,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get rentalMode => $composableBuilder(
+    column: $table.rentalMode,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<DateTime> get leaseStartDate => $composableBuilder(
+    column: $table.leaseStartDate,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<DateTime> get leaseEndDate => $composableBuilder(
+    column: $table.leaseEndDate,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<double> get rentAmount => $composableBuilder(
+    column: $table.rentAmount,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get rentDueDay => $composableBuilder(
+    column: $table.rentDueDay,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get rentCollectionMode => $composableBuilder(
+    column: $table.rentCollectionMode,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get rentTaskAssigneeId => $composableBuilder(
+    column: $table.rentTaskAssigneeId,
+    builder: (column) => column,
+  );
+
   GeneratedColumn<int> get syncStatus => $composableBuilder(
     column: $table.syncStatus,
     builder: (column) => column,
@@ -12573,6 +13161,14 @@ class $$ApartmentsTableTableManager
                 Value<String?> checkOutTime = const Value.absent(),
                 Value<String?> zoneId = const Value.absent(),
                 Value<String?> parkingInstructions = const Value.absent(),
+                Value<bool> investmentTrackingEnabled = const Value.absent(),
+                Value<String> rentalMode = const Value.absent(),
+                Value<DateTime?> leaseStartDate = const Value.absent(),
+                Value<DateTime?> leaseEndDate = const Value.absent(),
+                Value<double> rentAmount = const Value.absent(),
+                Value<int> rentDueDay = const Value.absent(),
+                Value<String> rentCollectionMode = const Value.absent(),
+                Value<String?> rentTaskAssigneeId = const Value.absent(),
                 Value<int> syncStatus = const Value.absent(),
                 Value<DateTime> localUpdatedAt = const Value.absent(),
                 Value<DateTime?> lastSyncedAt = const Value.absent(),
@@ -12590,6 +13186,14 @@ class $$ApartmentsTableTableManager
                 checkOutTime: checkOutTime,
                 zoneId: zoneId,
                 parkingInstructions: parkingInstructions,
+                investmentTrackingEnabled: investmentTrackingEnabled,
+                rentalMode: rentalMode,
+                leaseStartDate: leaseStartDate,
+                leaseEndDate: leaseEndDate,
+                rentAmount: rentAmount,
+                rentDueDay: rentDueDay,
+                rentCollectionMode: rentCollectionMode,
+                rentTaskAssigneeId: rentTaskAssigneeId,
                 syncStatus: syncStatus,
                 localUpdatedAt: localUpdatedAt,
                 lastSyncedAt: lastSyncedAt,
@@ -12609,6 +13213,14 @@ class $$ApartmentsTableTableManager
                 Value<String?> checkOutTime = const Value.absent(),
                 Value<String?> zoneId = const Value.absent(),
                 Value<String?> parkingInstructions = const Value.absent(),
+                Value<bool> investmentTrackingEnabled = const Value.absent(),
+                Value<String> rentalMode = const Value.absent(),
+                Value<DateTime?> leaseStartDate = const Value.absent(),
+                Value<DateTime?> leaseEndDate = const Value.absent(),
+                Value<double> rentAmount = const Value.absent(),
+                Value<int> rentDueDay = const Value.absent(),
+                Value<String> rentCollectionMode = const Value.absent(),
+                Value<String?> rentTaskAssigneeId = const Value.absent(),
                 Value<int> syncStatus = const Value.absent(),
                 required DateTime localUpdatedAt,
                 Value<DateTime?> lastSyncedAt = const Value.absent(),
@@ -12626,6 +13238,14 @@ class $$ApartmentsTableTableManager
                 checkOutTime: checkOutTime,
                 zoneId: zoneId,
                 parkingInstructions: parkingInstructions,
+                investmentTrackingEnabled: investmentTrackingEnabled,
+                rentalMode: rentalMode,
+                leaseStartDate: leaseStartDate,
+                leaseEndDate: leaseEndDate,
+                rentAmount: rentAmount,
+                rentDueDay: rentDueDay,
+                rentCollectionMode: rentCollectionMode,
+                rentTaskAssigneeId: rentTaskAssigneeId,
                 syncStatus: syncStatus,
                 localUpdatedAt: localUpdatedAt,
                 lastSyncedAt: lastSyncedAt,

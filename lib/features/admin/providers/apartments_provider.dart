@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/constants/apartment_rental_constants.dart';
 import 'package:falconest/core/repositories/apartment/apartment_repository.dart';
 import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/core/utils/geo_json_point.dart';
@@ -30,6 +31,14 @@ class ApartmentRow {
     this.deletedAt,
     this.latitude,
     this.longitude,
+    this.investmentTrackingEnabled = false,
+    this.rentalMode = kApartmentRentalModeShortTerm,
+    this.leaseStartDate,
+    this.leaseEndDate,
+    this.rentAmount = 0.0,
+    this.rentDueDay = 1,
+    this.rentCollectionMode = kApartmentRentCollectionModeNotification,
+    this.rentTaskAssigneeId,
   });
 
   final String id;
@@ -65,6 +74,22 @@ class ApartmentRow {
   final double? latitude;
   /// Zeměpisná délka z `geo_location`.
   final double? longitude;
+  /// Zapnuté sledování investičních metrik (`apartments.investment_tracking_enabled`).
+  final bool investmentTrackingEnabled;
+  /// Režim pronájmu: krátkodobý (STR) nebo dlouhodobý (`apartments.rental_mode`).
+  final String rentalMode;
+  /// Začátek platnosti nájemní smlouvy u dlouhodobého režimu (nullable).
+  final DateTime? leaseStartDate;
+  /// Konec platnosti nájemní smlouvy u dlouhodobého režimu (nullable).
+  final DateTime? leaseEndDate;
+  /// Měsíční nájem (dlouhodobý režim); u STR typicky 0.
+  final double rentAmount;
+  /// Den v měsíci splatnosti nájmu (1–31).
+  final int rentDueDay;
+  /// `notification` = připomínka v aplikaci; `task` = úkol [rent_collection] pro [rentTaskAssigneeId].
+  final String rentCollectionMode;
+  /// UUID profilu pracovníka pro režim úkolu (nullable).
+  final String? rentTaskAssigneeId;
 
   /// Bezpečné parsování z JSON/Supabase. Fallbacky pro null hodnoty zajišťují,
   /// že model vždy má platná výchozí data (status, časy, doba úklidu).
@@ -98,6 +123,40 @@ class ApartmentRow {
       }
     }
     final geo = GeoJsonPoint.parseFromPostgrest(json['geo_location']);
+    final invRaw = json['investment_tracking_enabled'];
+    final investmentTrackingEnabled = invRaw is bool
+        ? invRaw
+        : (invRaw?.toString().toLowerCase() == 'true');
+    final modeRaw = (json['rental_mode']?.toString() ?? '').trim().toLowerCase();
+    final rentalMode = modeRaw == kApartmentRentalModeLongTerm
+        ? kApartmentRentalModeLongTerm
+        : kApartmentRentalModeShortTerm;
+    final rentAmtRaw = json['rent_amount'];
+    double rentAmount = 0.0;
+    if (rentAmtRaw != null) {
+      if (rentAmtRaw is num) {
+        rentAmount = rentAmtRaw.toDouble();
+      } else {
+        rentAmount = double.tryParse(rentAmtRaw.toString()) ?? 0.0;
+      }
+    }
+    final rddRaw = json['rent_due_day'];
+    int rentDueDay = 1;
+    if (rddRaw is int) {
+      rentDueDay = rddRaw.clamp(1, 31);
+    } else if (rddRaw is num) {
+      rentDueDay = rddRaw.toInt().clamp(1, 31);
+    } else if (rddRaw != null) {
+      rentDueDay = int.tryParse(rddRaw.toString())?.clamp(1, 31) ?? 1;
+    }
+    final rcmRaw = (json['rent_collection_mode']?.toString() ?? '').trim().toLowerCase();
+    final rentCollectionMode = rcmRaw == kApartmentRentCollectionModeTask
+        ? kApartmentRentCollectionModeTask
+        : kApartmentRentCollectionModeNotification;
+    final rta = json['rent_task_assignee_id'];
+    final rentTaskAssigneeId = (rta != null && rta.toString().trim().isNotEmpty)
+        ? rta.toString().trim()
+        : null;
     return ApartmentRow(
       id: json['id'] as String,
       name: (json['name'] as String?)?.trim() ?? '',
@@ -120,7 +179,26 @@ class ApartmentRow {
       deletedAt: _parseOptionalDateTime(json['deleted_at']),
       latitude: geo?.latitude,
       longitude: geo?.longitude,
+      investmentTrackingEnabled: investmentTrackingEnabled,
+      rentalMode: rentalMode,
+      leaseStartDate: _parseLeaseDate(json['lease_start_date']),
+      leaseEndDate: _parseLeaseDate(json['lease_end_date']),
+      rentAmount: rentAmount,
+      rentDueDay: rentDueDay,
+      rentCollectionMode: rentCollectionMode,
+      rentTaskAssigneeId: rentTaskAssigneeId,
     );
+  }
+
+  /// Parsování `date` z PostgREST na kalendářní den v UTC (parita s `NullableIsoDateOnlyConverter`).
+  static DateTime? _parseLeaseDate(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is DateTime) return DateTime.utc(raw.year, raw.month, raw.day);
+    if (raw is String) {
+      final d = DateTime.tryParse(raw);
+      if (d != null) return DateTime.utc(d.year, d.month, d.day);
+    }
+    return null;
   }
 
   static DateTime? _parseOptionalDateTime(dynamic raw) {
@@ -159,6 +237,14 @@ class ApartmentRow {
           ? '${managedFrom!.year}-${managedFrom!.month.toString().padLeft(2, '0')}-01'
           : null,
       'geo_location': GeoJsonPoint.toPostgrestJson(latitude, longitude),
+      'investment_tracking_enabled': investmentTrackingEnabled,
+      'rental_mode': rentalMode,
+      'lease_start_date': _leaseDateToPg(leaseStartDate),
+      'lease_end_date': _leaseDateToPg(leaseEndDate),
+      'rent_amount': rentAmount,
+      'rent_due_day': rentDueDay,
+      'rent_collection_mode': rentCollectionMode,
+      'rent_task_assignee_id': rentTaskAssigneeId,
     };
     if (forInsert) {
       map['tenant_id'] = tenantId;
@@ -169,6 +255,14 @@ class ApartmentRow {
   /// Alias pro konzistentní pojmenování serializace napříč modely.
   Map<String, dynamic> toJson({bool forInsert = false}) =>
       toMap(forInsert: forInsert);
+
+  static String? _leaseDateToPg(DateTime? d) {
+    if (d == null) return null;
+    final u = DateTime.utc(d.year, d.month, d.day);
+    return '${u.year.toString().padLeft(4, '0')}-'
+        '${u.month.toString().padLeft(2, '0')}-'
+        '${u.day.toString().padLeft(2, '0')}';
+  }
 
   ApartmentRow copyWith({
     String? id,
@@ -190,6 +284,14 @@ class ApartmentRow {
     DateTime? deletedAt,
     double? latitude,
     double? longitude,
+    bool? investmentTrackingEnabled,
+    String? rentalMode,
+    DateTime? leaseStartDate,
+    DateTime? leaseEndDate,
+    double? rentAmount,
+    int? rentDueDay,
+    String? rentCollectionMode,
+    String? rentTaskAssigneeId,
   }) =>
       ApartmentRow(
         id: id ?? this.id,
@@ -211,6 +313,14 @@ class ApartmentRow {
         deletedAt: deletedAt ?? this.deletedAt,
         latitude: latitude ?? this.latitude,
         longitude: longitude ?? this.longitude,
+        investmentTrackingEnabled: investmentTrackingEnabled ?? this.investmentTrackingEnabled,
+        rentalMode: rentalMode ?? this.rentalMode,
+        leaseStartDate: leaseStartDate ?? this.leaseStartDate,
+        leaseEndDate: leaseEndDate ?? this.leaseEndDate,
+        rentAmount: rentAmount ?? this.rentAmount,
+        rentDueDay: rentDueDay ?? this.rentDueDay,
+        rentCollectionMode: rentCollectionMode ?? this.rentCollectionMode,
+        rentTaskAssigneeId: rentTaskAssigneeId ?? this.rentTaskAssigneeId,
       );
 }
 

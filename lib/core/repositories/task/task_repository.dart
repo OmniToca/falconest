@@ -65,3 +65,34 @@ class WorkerWeekTaskStats {
 
   double get totalHours => totalEstimatedMinutes / 60.0;
 }
+
+/// Měsíční motivační metriky workera (dokončené úkoly v aktuálním kalendářním měsíci, lokální čas).
+///
+/// PROČ: Dashboard skrývá hotové úkoly – tento DTO čte `completed_at` / `started_at` z Driftu nebo Supabase
+/// pro povzbudivý přehled „plodů práce“ bez rozšiřování modelu [WorkerTask].
+class WorkerMonthMotivationStats {
+  const WorkerMonthMotivationStats({
+    required this.completedCount,
+    required this.workedHours,
+    required this.onTimeCount,
+    required this.onTimeEligibleCount,
+  });
+
+  /// Počet úkolů se statusem dokončeno a `completed_at` v aktuálním měsíci.
+  final int completedCount;
+
+  /// Součet (completed_at − started_at) v hodinách u záznamů s oběma časovými razítky (0–16 h na úkol).
+  final double workedHours;
+
+  /// Dokončení ve **stejný kalendářní den** jako plánovaný začátek (lokální čas) – jednoduchá „včasnost“.
+  final int onTimeCount;
+
+  /// Počet dokončených v měsíci s platným `scheduled_start` (měřitelná včasnost).
+  final int onTimeEligibleCount;
+
+  double? get onTimePercent =>
+      onTimeEligibleCount > 0 ? (onTimeCount * 100.0 / onTimeEligibleCount) : null;
+}
+
+/// Výchozí měsíční cíl úklidů pro progress bar (UI může později číst z konfigurace tenanta).
+const int kWorkerMonthlyGoalCompletedTasks = 30;

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -5,11 +7,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:falconest/features/owner/providers/owner_apartment_detail_provider.dart';
+import 'package:falconest/features/owner/widgets/owner_investment_dashboard.dart';
 
 /// UI: Read-only detail apartmánu pro majitele se základními informacemi.
 ///
 /// Zobrazuje data z tabulky apartments v logických sekcích (základní info,
-/// přístup, časy, poznámky). Majitel může pouze prohlížet a kopírovat hodnoty.
+/// přístup, časy, poznámky). Při zapnutém investičním modulu jsou záložky
+/// [DefaultTabController]: přehled provozu vs. [OwnerInvestmentDashboard].
+/// Majitel může pouze prohlížet a kopírovat hodnoty.
 class OwnerApartmentDetailScreen extends ConsumerWidget {
   const OwnerApartmentDetailScreen({super.key, required this.apartmentId});
 
@@ -72,48 +77,30 @@ class OwnerApartmentDetailScreen extends ConsumerWidget {
   }
 }
 
-/// Obsah s hlavičkou (název bytu + křížek pro zavření).
-class _DetailContentWithHeader extends StatelessWidget {
-  const _DetailContentWithHeader({required this.detail});
+/// Hlavička modalu – název bytu a zavření (zachovává stávající vzhled dialogu).
+class _ApartmentDetailHeader extends StatelessWidget {
+  const _ApartmentDetailHeader({required this.title});
 
-  final OwnerApartmentDetail detail;
+  final String title;
 
   @override
   Widget build(BuildContext context) {
-    return ConstrainedBox(
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.85,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 20, 8, 16),
+      child: Row(
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 20, 8, 16),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    detail.name,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
+          Expanded(
+            child: Text(
+              title,
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
                   ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.of(context).pop(),
-                  tooltip: 'common.cancel'.tr(),
-                ),
-              ],
             ),
           ),
-          const Divider(height: 1),
-          Flexible(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: _DetailContent(detail: detail),
-            ),
+          IconButton(
+            icon: const Icon(Icons.close),
+            onPressed: () => Navigator.of(context).pop(),
+            tooltip: 'common.cancel'.tr(),
           ),
         ],
       ),
@@ -121,9 +108,101 @@ class _DetailContentWithHeader extends StatelessWidget {
   }
 }
 
-/// Scrollovatelný obsah – karty v logických sekcích.
-class _DetailContent extends StatelessWidget {
-  const _DetailContent({required this.detail});
+/// Obsah s hlavičkou: jedna záložka (jen přehled) nebo dvě (přehled + investice).
+///
+/// PROČ: [Expanded] + [TabBarView] vyžadují omezenou výšku – [ConstrainedBox] s maxHeight
+/// z dialogu/routeru; uvnitř každé záložky zvlášť [SingleChildScrollView] pro přirozené scrollování.
+class _DetailContentWithHeader extends StatelessWidget {
+  const _DetailContentWithHeader({required this.detail});
+
+  final OwnerApartmentDetail detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final showInvestTab = detail.investmentTrackingEnabled;
+    final scheme = Theme.of(context).colorScheme;
+    final screenH = MediaQuery.sizeOf(context).height;
+    final screenW = MediaQuery.sizeOf(context).width;
+
+    /// PROČ: [Expanded] / [TabBarView] potřebují konečnou výšku. Dialog s `maxWidth` často
+    /// předává neomezenou výšku → použijeme 85 % obrazovky; na celostránkové routě vezmeme
+    /// celé [constraints.maxHeight].
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final bodyHeight = constraints.maxHeight.isFinite
+            ? constraints.maxHeight
+            : screenH * 0.85;
+        final bodyWidth = constraints.maxWidth.isFinite
+            ? math.min(620.0, constraints.maxWidth)
+            : math.min(620.0, screenW);
+
+        return SizedBox(
+          width: bodyWidth,
+          height: bodyHeight,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _ApartmentDetailHeader(title: detail.name),
+              const Divider(height: 1),
+              Expanded(
+                child: showInvestTab
+                    ? DefaultTabController(
+                        length: 2,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Material(
+                              color: scheme.surface,
+                              child: TabBar(
+                                labelColor: scheme.primary,
+                                unselectedLabelColor: scheme.onSurfaceVariant,
+                                indicatorColor: scheme.primary,
+                                tabAlignment: TabAlignment.fill,
+                                tabs: [
+                                  Tab(
+                                    icon: const Icon(Icons.info_outline),
+                                    text: 'owner.tab_overview'.tr(),
+                                  ),
+                                  Tab(
+                                    icon: const Icon(Icons.show_chart_rounded),
+                                    text: 'owner.tab_investments'.tr(),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Expanded(
+                              child: TabBarView(
+                                children: [
+                                  SingleChildScrollView(
+                                    padding: const EdgeInsets.all(24),
+                                    child: _OwnerApartmentOverviewBody(detail: detail),
+                                  ),
+                                  SingleChildScrollView(
+                                    padding: const EdgeInsets.all(24),
+                                    child: OwnerInvestmentDashboard(apartmentId: detail.id),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : SingleChildScrollView(
+                        padding: const EdgeInsets.all(24),
+                        child: _OwnerApartmentOverviewBody(detail: detail),
+                      ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Přehled a provoz – vše kromě investičního dashboardu (ten je v samostatné záložce).
+class _OwnerApartmentOverviewBody extends StatelessWidget {
+  const _OwnerApartmentOverviewBody({required this.detail});
 
   final OwnerApartmentDetail detail;
 
@@ -196,6 +275,40 @@ class _DetailContent extends StatelessWidget {
             ),
           ],
         ),
+        if ((detail.parkingInstructions ?? '').trim().isNotEmpty ||
+            (detail.unitCode ?? '').trim().isNotEmpty ||
+            detail.monthlyManagementFee != null ||
+            detail.managedFrom != null) ...[
+          const SizedBox(height: 16),
+          _SectionCard(
+            title: 'owner.detail_section_operations'.tr(),
+            children: [
+              if (detail.parkingInstructions != null &&
+                  detail.parkingInstructions!.trim().isNotEmpty)
+                _DetailTile(
+                  label: 'owner.apartment_parking_instructions'.tr(),
+                  value: detail.parkingInstructions!.trim(),
+                  expanded: true,
+                ),
+              if (detail.unitCode != null && detail.unitCode!.trim().isNotEmpty)
+                _DetailTile(
+                  label: 'owner.apartment_unit_code'.tr(),
+                  value: detail.unitCode!.trim(),
+                ),
+              if (detail.monthlyManagementFee != null)
+                _DetailTile(
+                  label: 'owner.apartment_monthly_management_fee'.tr(),
+                  value: detail.monthlyManagementFee!.toStringAsFixed(2),
+                ),
+              if (detail.managedFrom != null)
+                _DetailTile(
+                  label: 'owner.apartment_managed_from'.tr(),
+                  value: DateFormat('d.M.yyyy', context.locale.toString())
+                      .format(detail.managedFrom!),
+                ),
+            ],
+          ),
+        ],
         const SizedBox(height: 16),
 
         // Úklid

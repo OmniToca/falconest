@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/worker/models/worker_task_checklist_line.dart';
 import 'package:falconest/features/worker/providers/worker_task_checklist_ops_provider.dart';
 import 'package:falconest/features/worker/providers/worker_task_checklist_provider.dart';
@@ -99,12 +100,25 @@ class _WorkerChecklistRowState extends ConsumerState<_WorkerChecklistRow> {
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     if (tenantId == null || tenantId.isEmpty) return;
     final profileId = ref.read(authNotifierProvider).profileId;
-    await ref.read(workerTaskChecklistOpsControllerProvider).toggleItemCompletedQueued(
-          driftRowId: widget.line.driftRowId,
-          completed: value,
-          tenantId: tenantId,
-          completedByProfileId: profileId,
+    try {
+      await ref.read(workerTaskChecklistOpsControllerProvider).toggleItemCompletedQueued(
+            driftRowId: widget.line.driftRowId,
+            completed: value,
+            tenantId: tenantId,
+            completedByProfileId: profileId,
+          );
+    } catch (e, st) {
+      // PROČ: Zápis do Driftu může selhat (disk plný, poškozená DB) — bez zpětné vazby by worker nevěděl, že stav neplatí.
+      AppLogger.error('WorkerTaskChecklist: toggleItemCompletedQueued selhalo', e, st);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('worker.checklist_update_failed'.tr()),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: Colors.red.shade700,
+          ),
         );
+    }
   }
 
   @override

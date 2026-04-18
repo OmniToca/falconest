@@ -20,6 +20,7 @@ class ApartmentServiceRow {
     this.payerType = 'guest',
     this.requiresPhoto,
     this.checklistTemplateId,
+    this.metadata,
   });
 
   final String id;
@@ -38,6 +39,8 @@ class ApartmentServiceRow {
   final bool? requiresPhoto;
   /// Šablona checklistu pro tuto službu v tomto apartmánu; null = nepřiřazeno.
   final String? checklistTemplateId;
+  /// Volitelná JSON konfigurace služby na úrovni bytu (např. transit_price pro průtokovou hotovost).
+  final Map<String, dynamic>? metadata;
 
   factory ApartmentServiceRow.fromJson(Map<String, dynamic> json) {
     final rawPrice = json['custom_price'];
@@ -87,6 +90,9 @@ class ApartmentServiceRow {
         final s = v.toString().trim();
         return s.isEmpty ? null : s;
       }(),
+      metadata: json['metadata'] is Map<String, dynamic>
+          ? Map<String, dynamic>.from(json['metadata'] as Map<String, dynamic>)
+          : null,
     );
   }
 
@@ -119,6 +125,7 @@ class ApartmentServiceEditState {
     this.payerType = 'guest',
     this.requiresPhoto,
     this.checklistTemplateId,
+    this.transitPriceEur,
   });
 
   final String serviceId;
@@ -137,6 +144,8 @@ class ApartmentServiceEditState {
   final bool? requiresPhoto;
   /// Šablona checklistu pro tuto službu u bytu (uloží se do apartment_services.checklist_template_id).
   final String? checklistTemplateId;
+  /// Volitelná průtoková hotovost (nájem/apod.), která se přenáší do tasks.metadata.transit_amount_to_collect.
+  final double? transitPriceEur;
 
   ApartmentServiceEditState copyWith({
     bool? enabled,
@@ -150,6 +159,8 @@ class ApartmentServiceEditState {
     bool clearRequiresPhoto = false,
     String? checklistTemplateId,
     bool clearChecklistTemplateId = false,
+    double? transitPriceEur,
+    bool clearTransitPriceEur = false,
   }) {
     return ApartmentServiceEditState(
       serviceId: serviceId,
@@ -165,6 +176,7 @@ class ApartmentServiceEditState {
       requiresPhoto: clearRequiresPhoto ? null : (requiresPhoto ?? this.requiresPhoto),
       checklistTemplateId:
           clearChecklistTemplateId ? null : (checklistTemplateId ?? this.checklistTemplateId),
+      transitPriceEur: clearTransitPriceEur ? null : (transitPriceEur ?? this.transitPriceEur),
     );
   }
 }

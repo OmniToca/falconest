@@ -10,6 +10,32 @@ import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/widgets/kanban/kanban_shared.dart';
 import 'package:falconest/utils/task_visuals.dart';
 
+String? _guestSignatureUrlFromMetadata(Map<String, dynamic>? metadata) {
+  final url = metadata?['guest_signature_url']?.toString().trim();
+  if (url == null || url.isEmpty) return null;
+  return url;
+}
+
+Future<void> _showGuestSignaturePreview(BuildContext context, String url) async {
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('admin.task_signature_preview'.tr()),
+      content: InteractiveViewer(
+        maxScale: 4,
+        child: Image.network(
+          url,
+          fit: BoxFit.contain,
+          errorBuilder: (context, error, stackTrace) => Text(
+            'common.generic_error_user_friendly'.tr(),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 /// Pilulka „hodiny + časové okno“ na Kanban kartě úkolu.
 ///
 /// PROČ: [Wrap] v úzkém sloupci dává dítěti konečnou max šířku; [LayoutBuilder] ji předá do [Row] a
@@ -110,6 +136,7 @@ class KanbanTaskCardContent extends StatelessWidget {
       normalizeToSystemStatus(task.status),
     );
     final customTags = TaskCustomTag.listFromMetadata(task.metadata);
+    final signatureUrl = _guestSignatureUrlFromMetadata(task.metadata);
     // Stejná hierarchie jako TaskCard (bez ikony koše – drag feedback)
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -275,6 +302,19 @@ class KanbanTaskCardContent extends StatelessWidget {
                 ],
               ),
             ],
+            if (signatureUrl != null)
+              InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () => _showGuestSignaturePreview(context, signatureUrl),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  child: Icon(
+                    Icons.draw_outlined,
+                    size: 16,
+                    color: context.customColors.info,
+                  ),
+                ),
+              ),
           ],
         ),
       ],
@@ -343,6 +383,7 @@ class TaskCard extends StatelessWidget {
     final cardDecoration = premiumCardDecoration(context).copyWith(color: cardColor);
 
     final customTags = TaskCustomTag.listFromMetadata(task.metadata);
+    final signatureUrl = _guestSignatureUrlFromMetadata(task.metadata);
 
     return ClipRRect(
       borderRadius: radius,
@@ -538,6 +579,25 @@ class TaskCard extends StatelessWidget {
                               ),
                             ),
                             KanbanTaskTimePill(timeWindowText: timeWindowText),
+                            if (signatureUrl != null)
+                              InkWell(
+                                borderRadius: BorderRadius.circular(8),
+                                onTap: () => _showGuestSignaturePreview(
+                                  context,
+                                  signatureUrl,
+                                ),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 4,
+                                    vertical: 2,
+                                  ),
+                                  child: Icon(
+                                    Icons.draw_outlined,
+                                    size: 16,
+                                    color: context.customColors.info,
+                                  ),
+                                ),
+                              ),
                           ],
                         ),
                       ],

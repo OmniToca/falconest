@@ -1341,9 +1341,13 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
       debugPrint('Toggle Error: $e');
       if (kDebugMode) debugPrint('[TenantDetailScreen] stack: $st');
       if (!mounted) return;
+      setState(() {
+        _pending.remove(module.id);
+        _togglingModuleId = null;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('super_admin.module_toggle_generic_error'.tr()),
+          content: Text('${'super_admin.module_toggle_generic_error'.tr()} ($e)'),
           duration: const Duration(seconds: 4),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,

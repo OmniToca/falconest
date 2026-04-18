@@ -28,19 +28,23 @@ class InviteRepository {
   InviteRepository._();
   static final InviteRepository instance = InviteRepository._();
 
-  /// Načte pozvánku podle tokenu z URL. Token může být buď [invitations.id], nebo [invitations.profile_id]
-  /// (zvací odkaz z Personálu kopíruje profile_id). Vrací null, pokud pozvánka neexistuje nebo je smazaná.
+  /// Načte pozvánku podle tokenu z URL. Kanonicky je token **`invitations.id`** (admin i Personál).
+  /// Zůstává párování i podle **`profile_id`** kvůli starším odkazům v terénu.
+  ///
+  /// PROČ RPC místo `.from('invitations').select()`: RLS na `invitations` nepovoluje SELECT
+  /// pro roli **anon** ani pro uživatele mimo tenant pozvánky – přímý dotaz vrací 0 řádků.
+  /// Funkce **`get_invitation_for_accept`** (SECURITY DEFINER) vrátí nejvýše jeden řádek
+  /// jen při známém UUID; bez tokenu nelze tabulku vypsat.
   Future<InvitationData?> fetchInvitationByToken(String token) async {
     if (token.trim().isEmpty) return null;
 
-    final res = await SupabaseService.client
-        .from('invitations')
-        .select()
-        .or('id.eq.$token,profile_id.eq.$token')
-        .maybeSingle();
+    final dynamic raw = await SupabaseService.client.rpc(
+      'get_invitation_for_accept',
+      params: <String, dynamic>{'p_token': token.trim()},
+    );
 
-    if (res == null) return null;
-    final map = Map<String, dynamic>.from(res as Map);
+    if (raw == null) return null;
+    final map = Map<String, dynamic>.from(raw as Map);
 
     final id = map['id']?.toString();
     final profileId = map['profile_id']?.toString();

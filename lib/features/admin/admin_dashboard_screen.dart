@@ -30,6 +30,7 @@ import 'package:falconest/features/admin/providers/settlements_provider.dart';
 import 'package:falconest/features/settings/providers/profile_provider.dart';
 import 'package:falconest/utils/task_visuals.dart';
 import 'package:falconest/features/admin/providers/upcoming_absences_provider.dart';
+import 'package:falconest/features/admin/widgets/statistics/admin_efficiency_chart.dart';
 
 /// Mezera mezi hlavními bloky nástěnky (Phase 1 – jednotný rhythm).
 const double _kDashboardBlockGap = AppSpacing.sm;
@@ -397,6 +398,11 @@ class AdminDashboardScreen extends ConsumerWidget {
                   tasks: tasks,
                   apartments: apartments,
                 ),
+                const SizedBox(height: _kDashboardBlockGap),
+                _DashboardSectionTitle(
+                  titleKey: 'admin.stats.efficiency_section_title',
+                ),
+                AdminTaskEfficiencyInsightsCard(tasks: tasks),
                 const SizedBox(height: _kDashboardBlockGap),
                 _DashboardSectionTitle(
                   titleKey: 'admin.dashboard_manager_overview',

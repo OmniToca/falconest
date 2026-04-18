@@ -16,7 +16,9 @@ import 'package:falconest/features/admin/providers/finance_cash_worker_wallet.da
 import 'package:falconest/features/worker/providers/worker_dashboard_provider.dart';
 import 'package:falconest/features/worker/providers/worker_sync_state_provider.dart';
 import 'package:falconest/features/worker/utils/worker_google_maps_uri.dart';
-import 'package:falconest/features/worker/widgets/worker_dashboard_sync_banners.dart';
+import 'package:falconest/features/worker/providers/worker_motivation_stats_provider.dart';
+import 'package:falconest/features/worker/widgets/statistics/worker_motivation_card.dart';
+import 'package:falconest/features/worker/widgets/sync_status_banner.dart';
 
 const _primaryBlue = Color(0xFF1565C0);
 
@@ -57,6 +59,7 @@ class _WorkerDashboardScreenState extends ConsumerState<WorkerDashboardScreen> {
     await ref.read(workerSyncStateProvider.notifier).runSync();
     await ref.read(mutationQueueServiceProvider).processQueue();
     ref.invalidate(workerTasksProvider);
+    ref.invalidate(workerMotivationStatsProvider);
     await ref.read(workerTasksProvider.future);
     if (mounted && ref.read(workerSyncStateProvider) == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -98,7 +101,7 @@ class _WorkerDashboardScreenState extends ConsumerState<WorkerDashboardScreen> {
       drawer: _WorkerDrawer(hasPin: _hasPin ?? false),
       body: Column(
         children: [
-          const WorkerDashboardSyncBanners(),
+          const SyncStatusBanner(),
           const _HighCashWalletWarningBanner(),
           Expanded(
             child: RefreshIndicator(
@@ -497,13 +500,13 @@ _DateGroup _getDateGroup(DateTime taskDate) {
   return _DateGroup.later;
 }
 
-class _TaskList extends StatelessWidget {
+class _TaskList extends ConsumerWidget {
   const _TaskList({required this.tasks});
 
   final List<WorkerTask> tasks;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final grouped = <_DateGroup, List<WorkerTask>>{
       _DateGroup.today: [],
       _DateGroup.tomorrow: [],
@@ -517,6 +520,7 @@ class _TaskList extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        const WorkerMotivationDashboardCard(),
         for (final g in [_DateGroup.today, _DateGroup.tomorrow, _DateGroup.later])
           if (grouped[g]!.isNotEmpty) ...[
             Padding(
@@ -674,6 +678,7 @@ String _taskTypeLabel(String taskType) {
   if (t.contains('check_out')) return 'admin.task_type_check_out'.tr();
   if (t.contains('issue') || t.contains('závada')) return 'admin.task_type_issue'.tr();
   if (t.contains('material')) return 'admin.task_type_material'.tr();
+  if (t.contains('rent_collection')) return 'admin.task_type_rent_collection'.tr();
   return 'admin.task_type_other'.tr();
 }
 

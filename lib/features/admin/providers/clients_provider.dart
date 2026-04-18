@@ -198,8 +198,8 @@ final updateClientProvider = Provider<Future<void> Function(ClientModel client)>
 /// Provider: stav Klientského portálu pro majitele (profile_id).
 ///
 /// Načte status a last_sign_in_at z profiles. Pokud status == 'pending',
-/// sestaví zvací odkaz stejným formátem jako assignClientToApartment
-/// ($origin/#/invite?token=$profileId).
+/// sestaví zvací odkaz s tokenem **`invitations.id`** (dotaz podle `profile_id`), stejně jako
+/// po úspěšném `ApartmentOwnersRepository.assignClientToApartment`.
 ///
 /// Vrací mapu: status (String), last_login (DateTime?), invite_link (String?).
 final clientPortalStatusProvider =
@@ -231,9 +231,18 @@ final clientPortalStatusProvider =
   String? inviteLink;
   if (status == 'pending') {
     final origin = Uri.base.origin;
-    inviteLink = origin.trim().isNotEmpty
-        ? '$origin/#/invite?token=$profileId'
-        : null;
+    if (origin.trim().isNotEmpty) {
+      final inv = await SupabaseService.safeFrom('invitations', tenantId)
+          .select('id')
+          .eq('profile_id', profileId)
+          .maybeSingle();
+      final invitationId = inv != null
+          ? Map<String, dynamic>.from(inv as Map)['id']?.toString()
+          : null;
+      if (invitationId != null && invitationId.isNotEmpty) {
+        inviteLink = '$origin/#/invite?token=$invitationId';
+      }
+    }
   }
 
   return {

@@ -187,6 +187,8 @@ String taskTypeLabelKey(String taskType) {
       return 'admin.task_type_issue';
     case 'material':
       return 'admin.task_type_material';
+    case 'rent_collection':
+      return 'admin.task_type_rent_collection';
     case 'Úklid':
       return 'admin.task_type_cleaning';
     case 'Transfer':

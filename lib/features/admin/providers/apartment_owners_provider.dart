@@ -268,7 +268,8 @@ class ApartmentOwnersRepository {
   ///    (majitel už má přístup nebo byl dříve pozván).
   /// b) client.profileId == null → vytvoř ghost profil (profiles) s role=property_owner,
   ///    vytvoř záznam v invitations, ulož profile_id do clients, vrať pozvánkový odkaz
-  ///    pro WhatsApp/sdílení.
+  ///    pro WhatsApp/sdílení. Token v URL musí být **`invitations.id`** (ne profile_id), aby
+  ///    `InviteRepository.fetchInvitationByToken` našel řádek podle primárního klíče.
   /// c) INSERT do apartment_owners (apartment_id, owner_id=targetProfileId).
   ///
   /// [baseOrigin] – základ URL aplikace pro pozvánkový odkaz (např. Uri.base.origin na webu).
@@ -325,7 +326,14 @@ class ApartmentOwnersRepository {
       'role': 'property_owner',
       'roles': [],
     };
-    await SupabaseService.safeFrom('invitations', tenantId).insert(invPayload);
+    final invRes = await SupabaseService.safeFrom('invitations', tenantId)
+        .insert(invPayload)
+        .select('id')
+        .single();
+    final newInvitationId = (invRes as Map)['id']?.toString();
+    if (newInvitationId == null || newInvitationId.isEmpty) {
+      throw StateError('admin.owners_error_invitation_not_created');
+    }
 
     await SupabaseService.safeFrom('clients', tenantId)
         .update({'profile_id': newProfileId})
@@ -333,7 +341,7 @@ class ApartmentOwnersRepository {
 
     targetProfileId = newProfileId;
     inviteLink = origin.trim().isNotEmpty
-        ? '$origin/#/invite?token=$newProfileId'
+        ? '$origin/#/invite?token=$newInvitationId'
         : null;
   }
 

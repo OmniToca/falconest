@@ -8,6 +8,7 @@ import 'package:falconest/features/owner/providers/owner_apartments_provider.dar
 import 'package:falconest/features/owner/providers/owner_planning_calendar_apartment_filter_provider.dart';
 import 'package:falconest/features/owner/providers/owner_planning_calendar_events_provider.dart';
 import 'package:falconest/features/owner/providers/owner_reservations_provider.dart';
+import 'package:falconest/features/owner/widgets/owner_portal_ui.dart';
 import 'package:falconest/features/owner/widgets/owner_task_detail_dialog.dart';
 import 'package:falconest/features/admin/providers/task_categories_provider.dart';
 import 'package:falconest/features/admin/models/task_category_model.dart';
@@ -154,6 +155,7 @@ class _OwnerPlanningCalendarScreenState
     OwnerTaskDetailDialog.show(
       context,
       OwnerTaskDetailData(
+        taskId: task.id,
         title: task.title,
         taskType: task.taskType,
         apartmentName: task.apartmentName,
@@ -177,7 +179,7 @@ class _OwnerPlanningCalendarScreenState
 
     return Scaffold(
       appBar: AppBar(title: Text('owner.calendar_title'.tr())),
-      backgroundColor: const Color(0xFFF5F5F5),
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerLowest,
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -244,13 +246,16 @@ class _OwnerPlanningCalendarScreenState
                   final totalWidth = _timeColumnWidth + 7 * dayColumnWidth;
                   return Container(
                     decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(12),
+                      color: Theme.of(context).colorScheme.surface,
+                      borderRadius: BorderRadius.circular(kOwnerPortalCardRadius),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.45),
+                      ),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.06),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
+                          color: Colors.black.withValues(alpha: 0.04),
+                          blurRadius: 12,
+                          offset: const Offset(0, 4),
                         ),
                       ],
                     ),
@@ -692,17 +697,15 @@ class _OwnerWeekGridBodyState extends State<_OwnerWeekGridBody> {
                 ],
               ),
               ...processed.map((p) {
-                final backgroundColor = TaskVisuals.getBackgroundColor(
-                  p.task.taskType,
-                  categoriesByCode: widget.categoriesByCode.isNotEmpty
-                      ? widget.categoriesByCode
-                      : null,
-                );
                 final borderColor = TaskVisuals.getBorderColor(
                   p.task.taskType,
                   categoriesByCode: widget.categoriesByCode.isNotEmpty
                       ? widget.categoriesByCode
                       : null,
+                );
+                final backgroundColor = ownerPortalMutedTaskFill(
+                  context,
+                  borderColor,
                 );
                 final startMinutes =
                     p.task.scheduledStart.hour * 60 +
@@ -733,7 +736,7 @@ class _OwnerWeekGridBodyState extends State<_OwnerWeekGridBody> {
                     width: width,
                     height: height,
                     child: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(10),
                       child: _OwnerTaskCard(
                         task: p.task,
                         categoriesByCode: widget.categoriesByCode,
@@ -770,9 +773,6 @@ class _OwnerTaskCard extends StatelessWidget {
   final Color borderColor;
   final VoidCallback onTap;
 
-  static const Color _textPrimary = Color(0xFF1A1A1A);
-  static const Color _textSecondary = Color(0xFF6B6B6B);
-
   @override
   Widget build(BuildContext context) {
     final rawCode = task.taskType.trim().isEmpty
@@ -781,6 +781,7 @@ class _OwnerTaskCard extends StatelessWidget {
     final code = rawCode.replaceAll('-', '_');
     final categoryLabel = 'admin.task_type_$code'.tr();
     final apartmentLabel = task.apartmentName ?? task.title;
+    final calIcon = ownerPortalCalendarTaskIcon(task.taskType);
 
     return Padding(
       padding: const EdgeInsets.all(1),
@@ -788,21 +789,16 @@ class _OwnerTaskCard extends StatelessWidget {
         color: Colors.transparent,
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(10),
           child: Container(
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(10),
               color: backgroundColor,
-              border: Border(left: BorderSide(color: borderColor, width: 4)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.08),
-                  blurRadius: 4,
-                  offset: const Offset(0, 1),
-                ),
-              ],
+              border: Border(
+                left: BorderSide(color: borderColor, width: 3),
+              ),
             ),
-            padding: const EdgeInsets.all(6),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -811,25 +807,21 @@ class _OwnerTaskCard extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(
-                      TaskVisuals.getIcon(
-                        task.taskType,
-                        categoriesByCode: categoriesByCode.isNotEmpty
-                            ? categoriesByCode
-                            : null,
-                      ),
-                      size: 12,
-                      color: _textPrimary,
+                      calIcon,
+                      size: 14,
+                      color: borderColor,
                     ),
                     const SizedBox(width: 4),
                     Expanded(
                       child: Text(
                         categoryLabel,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                          color: _textPrimary,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          color: Theme.of(context).colorScheme.onSurface,
+                          height: 1.15,
                         ),
-                        maxLines: 1,
+                        maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
@@ -838,16 +830,20 @@ class _OwnerTaskCard extends StatelessWidget {
                 const SizedBox(height: 2),
                 Text(
                   apartmentLabel,
-                  style: const TextStyle(fontSize: 11, color: _textSecondary),
-                  maxLines: 1,
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w500,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                  maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
                 Text(
                   'owner.tasks_staff_label'.tr(),
-                  style: const TextStyle(
-                    fontSize: 10,
+                  style: TextStyle(
+                    fontSize: 9,
                     fontStyle: FontStyle.italic,
-                    color: _textSecondary,
+                    color: Theme.of(context).colorScheme.outline,
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,

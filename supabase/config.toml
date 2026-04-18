@@ -36,3 +36,7 @@ verify_jwt = false
 # PROČ: pg_cron volá GET s anon key (stejně jako template-reminders); bez JWT na bráně.
 [functions.upcoming-task-reminder]
 verify_jwt = false
+
+# PROČ: pg_cron volá POST s service role JWT (stejný token jako automation); autorizace uvnitř funkce.
+[functions.rent-monitor]
+verify_jwt = false

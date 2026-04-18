@@ -13,12 +13,15 @@ class KanbanBulkSelectionBar extends StatelessWidget {
     required this.selectedCount,
     required this.onChangeStatus,
     required this.onAssignWorker,
+    required this.onBulkDelete,
     required this.onCancel,
   });
 
   final int selectedCount;
   final VoidCallback onChangeStatus;
   final VoidCallback onAssignWorker;
+  /// Hromadné soft-delete vybraných úkolů (Kanban výběr).
+  final VoidCallback onBulkDelete;
   final VoidCallback onCancel;
 
   @override
@@ -55,6 +58,18 @@ class KanbanBulkSelectionBar extends StatelessWidget {
               onPressed: selectedCount == 0 ? null : onAssignWorker,
               icon: const Icon(Icons.person_add_outlined, size: 18),
               label: Text('admin.tasks_bulk_assign_worker'.tr()),
+            ),
+            SizedBox(width: AppSpacing.xs),
+            TextButton.icon(
+              onPressed: selectedCount == 0 ? null : onBulkDelete,
+              icon: Icon(Icons.delete_outline, size: 18, color: Colors.red.shade700),
+              label: Text(
+                'admin.tasks_bulk_delete'.tr(),
+                style: TextStyle(color: Colors.red.shade700, fontWeight: FontWeight.w600),
+              ),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.red.shade700,
+              ),
             ),
             SizedBox(width: AppSpacing.xs),
             IconButton(

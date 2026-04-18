@@ -51,6 +51,7 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
   /// Null = ještě neznáme, true = trial vypršel → zobrazit „Koupit plnou verzi“, false = zobrazit „Aktivovat trial“.
   bool? _trialExpired;
   bool _trialCheckStarted = false;
+  bool _activeModuleHandled = false;
 
   ModuleModel? _moduleByKey(List<ModuleModel> modules) {
     try {
@@ -69,6 +70,9 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
       final existing = await SupabaseService.safeFrom('tenant_modules', tenantId)
           .select('trial_ends_at')
           .eq('module_id', moduleId)
+          .isFilter('deleted_at', null)
+          .order('created_at', ascending: false)
+          .limit(1)
           .maybeSingle();
       if (!mounted) return;
       final raw = existing?['trial_ends_at'];
@@ -178,6 +182,9 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
   }
 
   Future<void> _activateTrial() async {
+    if (kDebugMode) {
+      debugPrint('[PremiumUpsellDialog] _activateTrial click module=${widget.moduleKey}');
+    }
     if (_isActivating) return;
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     final user = ref.read(authNotifierProvider).state.user;
@@ -185,6 +192,9 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
     final module = _moduleByKey(modules);
 
     if (tenantId == null || tenantId.isEmpty) {
+      if (kDebugMode) {
+        debugPrint('[PremiumUpsellDialog] _activateTrial aborted: missing tenantId');
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -196,6 +206,9 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
       return;
     }
     if (module == null || module.id.isEmpty) {
+      if (kDebugMode) {
+        debugPrint('[PremiumUpsellDialog] _activateTrial aborted: module not found for key=${widget.moduleKey}');
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -211,8 +224,10 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
     try {
       // 1. Dotaz na existenci záznamu (Check-then-Act – ochrana proti nekonečnému trialu).
       final existing = await SupabaseService.safeFrom('tenant_modules', tenantId)
-          .select('trial_ends_at')
+          .select('trial_ends_at, deleted_at, valid_until, is_trial')
           .eq('module_id', module.id)
+          .order('created_at', ascending: false)
+          .limit(1)
           .maybeSingle();
 
       final now = DateTime.now().toUtc();
@@ -250,6 +265,9 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
         }
 
         if (trialEndsAt != null && trialEndsAt.isBefore(now)) {
+          if (kDebugMode) {
+            debugPrint('[PremiumUpsellDialog] trial expired -> purchase flow module=${widget.moduleKey}');
+          }
           // Trial vypršel – místo chybové hlášky nabídneme nákup (potvrzovací dialog + _purchaseModule).
           if (!mounted) return;
           await _showPurchaseConfirmAndRun(module, tenantId);
@@ -258,7 +276,11 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
 
         // Trial stále běží nebo bez data – pouze obnovíme zapnutí (update, neměníme trial_ends_at).
         await SupabaseService.safeFrom('tenant_modules', tenantId)
-            .update({'status': 'active', 'deleted_at': null})
+            .update({
+              'status': 'active',
+              'deleted_at': null,
+              'cancel_at_period_end': false,
+            })
             .eq('module_id', module.id);
 
         await AuditLogService.log(
@@ -308,11 +330,17 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
 
   /// Spustí nákup (potvrzovací dialog + UPDATE). Volá se po kliknutí na „Koupit plnou verzi“.
   Future<void> _onBuyFullVersion() async {
+    if (kDebugMode) {
+      debugPrint('[PremiumUpsellDialog] _onBuyFullVersion click module=${widget.moduleKey}');
+    }
     if (_isActivating) return;
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     final modules = ref.read(allModulesProvider).valueOrNull ?? [];
     final module = _moduleByKey(modules);
     if (tenantId == null || tenantId.isEmpty) {
+      if (kDebugMode) {
+        debugPrint('[PremiumUpsellDialog] _onBuyFullVersion aborted: missing tenantId');
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -324,6 +352,9 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
       return;
     }
     if (module == null) {
+      if (kDebugMode) {
+        debugPrint('[PremiumUpsellDialog] _onBuyFullVersion aborted: module not found for key=${widget.moduleKey}');
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -346,9 +377,35 @@ class _PremiumUpsellDialogState extends ConsumerState<PremiumUpsellDialog> {
         ? _moduleByKey(modulesAsync.valueOrNull!)
         : null;
     final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+    final moduleAlreadyActive = isModuleActive(ref, widget.moduleKey);
+
+    // Pokud je modul aktivní (např. ručně zapnutý Super-Adminem), upsell se nemá zobrazovat.
+    // Dialog se zavře a uživatel dostane potvrzení, že modul je dostupný.
+    if (moduleAlreadyActive && !_activeModuleHandled) {
+      _activeModuleHandled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (kDebugMode) {
+          debugPrint('[PremiumUpsellDialog] bypass: module already active key=${widget.moduleKey}');
+        }
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('admin.premium_activation_success'.tr()),
+            backgroundColor: Colors.green.shade700,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      });
+      return const SizedBox.shrink();
+    }
 
     // Jednorázově načteme stav trialu (vypršený → zobrazit „Koupit plnou verzi“).
-    if (module != null && tenantId != null && tenantId.isNotEmpty && !_trialCheckStarted) {
+    if (!moduleAlreadyActive &&
+        module != null &&
+        tenantId != null &&
+        tenantId.isNotEmpty &&
+        !_trialCheckStarted) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _loadTrialState(tenantId, module.id);
       });

@@ -1,5 +1,6 @@
 import 'package:falconest/core/audit/enterprise_audit_payload.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:flutter/foundation.dart';
 
 /// Služba pro zápis záznamů do [audit_logs] – audit akcí uživatelů (aktivace modulů, změny).
 class AuditLogService {
@@ -25,13 +26,8 @@ class AuditLogService {
         'details': details,
       });
     } catch (e, st) {
-      assert(() {
-        // ignore: avoid_print
-        print('[AuditLogService] log failed: $e');
-        // ignore: avoid_print
-        print(st);
-        return true;
-      }());
+      debugPrint('ERROR: [AuditLogService] log failed: $e');
+      debugPrint('ERROR: $st');
       rethrow;
     }
   }

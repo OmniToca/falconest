@@ -26,7 +26,8 @@ class NotificationPreferencesNotifier
   Future<NotificationPreferencesModel?> build() async {
     final auth = ref.watch(authNotifierProvider);
     final pid = auth.state.profileId;
-    final tid = auth.state.tenantId;
+    // PROČ: property_owner i staff používají tenantIdForData (super_admin / impersonace).
+    final tid = auth.tenantIdForData ?? auth.state.tenantId;
     if (pid == null || pid.isEmpty || tid == null || tid.isEmpty) {
       return null;
     }

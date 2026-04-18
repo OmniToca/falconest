@@ -154,12 +154,24 @@ class BillingGroup {
     this.expenses = const [],
     this.shortfallTransfers = const [],
     this.monthlyManagementFee = 0.0,
+    this.billingSnapshotId,
+    this.paymentStatus = 'unpaid',
+    this.invoicePdfUrl,
   });
 
   final String groupKey;
   final String groupName;
   final List<BillingTaskItem> tasks;
   final double totalToInvoice;
+
+  /// UUID řádku `billing_snapshots` – vyplněno jen u uzamčeného měsíce (živá data = null).
+  final String? billingSnapshotId;
+
+  /// Stav úhrady ze sloupce `payment_status` (unpaid / paid / partially_paid / cash_offset).
+  final String paymentStatus;
+
+  /// Veřejná URL nahrané faktury PDF (`invoice_pdf_url`).
+  final String? invoicePdfUrl;
 
   /// Firemní výdaje (paragony na materiál) – PŘIČÍTÁME, majitel proplácí agentuře.
   final double totalExpenses;
@@ -217,6 +229,9 @@ class BillingGroup {
     Map<String, dynamic> snapshotData,
     String clientId, {
     String? currentClientName,
+    String? billingSnapshotId,
+    String? paymentStatus,
+    String? invoicePdfUrl,
   }) {
     final snapshotName = (snapshotData['client_name'] as String?)?.trim() ?? '';
     final clientName =
@@ -310,6 +325,13 @@ class BillingGroup {
 
     final monthlyFee = _toDouble(snapshotData['monthly_management_fee']) ?? 0.0;
 
+    final snapId = billingSnapshotId?.trim();
+    final payRaw = paymentStatus?.trim().toLowerCase() ?? 'unpaid';
+    const validPay = {'unpaid', 'paid', 'partially_paid', 'cash_offset'};
+    final pay = validPay.contains(payRaw) ? payRaw : 'unpaid';
+    final pdfRaw = invoicePdfUrl?.trim();
+    final pdf = (pdfRaw != null && pdfRaw.isNotEmpty) ? pdfRaw : null;
+
     return BillingGroup(
       groupKey: clientId,
       groupName: clientName,
@@ -319,6 +341,9 @@ class BillingGroup {
       expenses: expenses,
       shortfallTransfers: const [],
       monthlyManagementFee: monthlyFee >= 0 ? monthlyFee : 0.0,
+      billingSnapshotId: (snapId != null && snapId.isNotEmpty) ? snapId : null,
+      paymentStatus: pay,
+      invoicePdfUrl: pdf,
     );
   }
 }
@@ -477,7 +502,9 @@ final billingReportProvider = FutureProvider.autoDispose.family<BillingMonthStat
     final snapshotsRes = await SupabaseService.safeFrom(
       'billing_snapshots',
       tenantId,
-    ).select('client_id, snapshot_data').eq('billing_period', billingPeriodStr);
+    ).select(
+      'id, client_id, snapshot_data, payment_status, invoice_pdf_url',
+    ).eq('billing_period', billingPeriodStr);
 
     final snapshotsList = (snapshotsRes as List).cast<Map<String, dynamic>>();
     if (snapshotsList.isNotEmpty) {
@@ -509,11 +536,17 @@ final billingReportProvider = FutureProvider.autoDispose.family<BillingMonthStat
         final snapshotData = row['snapshot_data'];
         if (clientId.isEmpty || snapshotData is! Map<String, dynamic>) continue;
         final currentName = clientIdToName[clientId];
+        final snapId = (row['id'] as String?)?.trim();
+        final payStatus = (row['payment_status'] as String?)?.trim();
+        final invPdf = (row['invoice_pdf_url'] as String?)?.trim();
         reconstructedGroups.add(
           BillingGroup.fromSnapshot(
             snapshotData,
             clientId,
             currentClientName: currentName,
+            billingSnapshotId: snapId,
+            paymentStatus: payStatus,
+            invoicePdfUrl: invPdf,
           ),
         );
       }

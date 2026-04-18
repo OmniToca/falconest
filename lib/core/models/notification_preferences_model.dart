@@ -54,6 +54,9 @@ class NotificationPreferencesModel {
     this.upcomingTask = const NotificationChannels(),
     this.newTaskAssigned = const NotificationChannels(),
     this.templateReminders = const NotificationChannels(),
+    this.ownerTaskStarted = const NotificationChannels(),
+    this.ownerTaskCompleted = const NotificationChannels(),
+    this.ownerCashCollected = const NotificationChannels(),
   });
 
   final String profileId;
@@ -63,6 +66,15 @@ class NotificationPreferencesModel {
   final NotificationChannels upcomingTask;
   final NotificationChannels newTaskAssigned;
   final NotificationChannels templateReminders;
+
+  /// Klientský portál (majitel): zahájení práce u jeho bytu.
+  final NotificationChannels ownerTaskStarted;
+
+  /// Klientský portál (majitel): dokončení práce.
+  final NotificationChannels ownerTaskCompleted;
+
+  /// Klientský portál (majitel): vybrání hotovosti od klienta.
+  final NotificationChannels ownerCashCollected;
 
   factory NotificationPreferencesModel.fromJson(Map<String, dynamic> json) {
     return NotificationPreferencesModel(
@@ -74,6 +86,12 @@ class NotificationPreferencesModel {
           NotificationChannels.fromJsonPrefix(json, 'new_task_assigned'),
       templateReminders:
           NotificationChannels.fromJsonPrefix(json, 'template_reminders'),
+      ownerTaskStarted:
+          NotificationChannels.fromJsonPrefix(json, 'owner_task_started'),
+      ownerTaskCompleted:
+          NotificationChannels.fromJsonPrefix(json, 'owner_task_completed'),
+      ownerCashCollected:
+          NotificationChannels.fromJsonPrefix(json, 'owner_cash_collected'),
     );
   }
 
@@ -86,6 +104,9 @@ class NotificationPreferencesModel {
     upcomingTask.addToMap(map, 'upcoming_task');
     newTaskAssigned.addToMap(map, 'new_task_assigned');
     templateReminders.addToMap(map, 'template_reminders');
+    ownerTaskStarted.addToMap(map, 'owner_task_started');
+    ownerTaskCompleted.addToMap(map, 'owner_task_completed');
+    ownerCashCollected.addToMap(map, 'owner_cash_collected');
     return map;
   }
 
@@ -94,6 +115,9 @@ class NotificationPreferencesModel {
     NotificationChannels? upcomingTask,
     NotificationChannels? newTaskAssigned,
     NotificationChannels? templateReminders,
+    NotificationChannels? ownerTaskStarted,
+    NotificationChannels? ownerTaskCompleted,
+    NotificationChannels? ownerCashCollected,
   }) {
     return NotificationPreferencesModel(
       profileId: profileId,
@@ -102,6 +126,9 @@ class NotificationPreferencesModel {
       upcomingTask: upcomingTask ?? this.upcomingTask,
       newTaskAssigned: newTaskAssigned ?? this.newTaskAssigned,
       templateReminders: templateReminders ?? this.templateReminders,
+      ownerTaskStarted: ownerTaskStarted ?? this.ownerTaskStarted,
+      ownerTaskCompleted: ownerTaskCompleted ?? this.ownerTaskCompleted,
+      ownerCashCollected: ownerCashCollected ?? this.ownerCashCollected,
     );
   }
 }
@@ -112,6 +139,9 @@ enum NotificationEventKind {
   upcomingTask,
   newTaskAssigned,
   templateReminders,
+  ownerTaskStarted,
+  ownerTaskCompleted,
+  ownerCashCollected,
 }
 
 enum NotificationDeliveryChannel {
@@ -146,6 +176,12 @@ extension NotificationPreferencesModelChannelPatch on NotificationPreferencesMod
         return copyWith(newTaskAssigned: patch(newTaskAssigned));
       case NotificationEventKind.templateReminders:
         return copyWith(templateReminders: patch(templateReminders));
+      case NotificationEventKind.ownerTaskStarted:
+        return copyWith(ownerTaskStarted: patch(ownerTaskStarted));
+      case NotificationEventKind.ownerTaskCompleted:
+        return copyWith(ownerTaskCompleted: patch(ownerTaskCompleted));
+      case NotificationEventKind.ownerCashCollected:
+        return copyWith(ownerCashCollected: patch(ownerCashCollected));
     }
   }
 
@@ -159,6 +195,12 @@ extension NotificationPreferencesModelChannelPatch on NotificationPreferencesMod
         return newTaskAssigned;
       case NotificationEventKind.templateReminders:
         return templateReminders;
+      case NotificationEventKind.ownerTaskStarted:
+        return ownerTaskStarted;
+      case NotificationEventKind.ownerTaskCompleted:
+        return ownerTaskCompleted;
+      case NotificationEventKind.ownerCashCollected:
+        return ownerCashCollected;
     }
   }
 }

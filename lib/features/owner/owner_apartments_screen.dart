@@ -5,7 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/features/owner/owner_apartment_detail_screen.dart';
 import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
+import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/features/owner/providers/owner_reservations_provider.dart';
+import 'package:falconest/features/owner/widgets/owner_portal_ui.dart';
 import 'package:falconest/features/owner/widgets/owner_report_issue_dialog.dart';
 
 /// Jemné barvy pro prémiový design – konzistentní s owner_layout.
@@ -29,6 +31,7 @@ class OwnerApartmentsScreen extends ConsumerWidget {
     final profileId = ref.read(authNotifierProvider).state.profileId ?? '';
 
     return Scaffold(
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerLowest,
       body: apartmentsAsync.when(
         data: (apartments) => _buildContent(context, apartments),
         loading: () => const Center(child: CircularProgressIndicator()),
@@ -60,7 +63,7 @@ class OwnerApartmentsScreen extends ConsumerWidget {
       builder: (context, constraints) {
         final crossAxisCount = (constraints.maxWidth / 380).floor().clamp(1, 4);
         return GridView.builder(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 88),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: crossAxisCount,
             mainAxisSpacing: 20,
@@ -210,35 +213,56 @@ class _PropertyCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final cs = Theme.of(context).colorScheme;
     return Card(
-      elevation: 2,
-      shadowColor: Colors.black.withValues(alpha: 0.08),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      elevation: 0,
+      color: cs.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(kOwnerPortalCardRadius),
+        side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.45)),
+      ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Hlavička – barevný placeholder simulující fotku apartmánu (zkrácená)
+            // Placeholder „fotky“ – připraveno na budoucí URL z DB; zatím přívětivý vizuál bez generické budovy.
             Container(
-              height: 80,
+              height: 96,
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                   colors: [
-                    Colors.blue.shade50,
-                    Colors.blue.shade100,
+                    cs.surfaceContainerHighest,
+                    Color.alphaBlend(cs.primaryContainer.withValues(alpha: 0.35), cs.surface),
                   ],
                 ),
               ),
-              child: Center(
-                child: Icon(
-                  Icons.apartment,
-                  size: 40,
-                  color: Colors.blue.shade300,
-                ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.add_photo_alternate_outlined,
+                    size: 36,
+                    color: cs.primary.withValues(alpha: 0.65),
+                  ),
+                  const SizedBox(height: 6),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Text(
+                      'owner.apartment_photo_placeholder_hint'.tr(),
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: cs.onSurfaceVariant,
+                            height: 1.25,
+                          ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
               ),
             ),
             // Tělo karty – SingleChildScrollView zabraňuje přetečení při více datech
@@ -251,7 +275,8 @@ class _PropertyCard extends ConsumerWidget {
                     Text(
                       apartment.name,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: -0.2,
                           ),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
@@ -302,16 +327,16 @@ class _PropertyCard extends ConsumerWidget {
                   Text(
                     'owner.show_apartment_detail'.tr(),
                     style: TextStyle(
-                      color: Theme.of(context).colorScheme.primary,
-                      fontWeight: FontWeight.w500,
+                      color: context.colors.primary,
+                      fontWeight: FontWeight.w600,
                       fontSize: 14,
                     ),
                   ),
                   const SizedBox(width: 6),
                   Icon(
-                    Icons.arrow_forward,
+                    Icons.arrow_forward_rounded,
                     size: 18,
-                    color: Theme.of(context).colorScheme.primary,
+                    color: context.colors.primary,
                   ),
                 ],
               ),

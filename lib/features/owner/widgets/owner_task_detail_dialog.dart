@@ -1,12 +1,16 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:falconest/features/owner/providers/owner_task_checklist_photos_provider.dart';
 
 /// DTO pro read-only detail úkolu – nezávislý na [PlanningTask] i [TaskRow].
 ///
 /// Kalendář předává data z PlanningTask, seznam úkolů z TaskRow.
-/// Umožňuje jeden sdílený dialog bez závislosti na konkrétním modelu.
+/// [taskId]: pokud je vyplněno, načtou se fotky z checklistu (Klientský portál).
 class OwnerTaskDetailData {
   const OwnerTaskDetailData({
+    this.taskId,
     required this.title,
     required this.taskType,
     this.apartmentName,
@@ -16,6 +20,8 @@ class OwnerTaskDetailData {
     this.mediaUrls = const [],
   });
 
+  /// ID úkolu v Supabase – pro načtení [task_checklist_items.photo_url].
+  final String? taskId;
   final String title;
   final String taskType;
   final String? apartmentName;
@@ -25,16 +31,22 @@ class OwnerTaskDetailData {
   final List<String> mediaUrls;
 }
 
+/// Jedna položka ve fotodokumentaci (URL + popisek pod fotkou).
+class _PhotoDocEntry {
+  const _PhotoDocEntry({required this.url, required this.caption});
+
+  final String url;
+  final String caption;
+}
+
 /// Read-only dialog s detailem úkolu pro majitele.
 ///
-/// Zobrazuje: hlavičku (název, typ), stav (barevně), popis a galerii fotek.
-/// Používá se z kalendáře i ze seznamu úkolů; data se předávají přes [OwnerTaskDetailData].
-class OwnerTaskDetailDialog extends StatelessWidget {
+/// Zobrazuje stav, popis a sjednocenou galerii [tasks.media_urls] + fotky z checklistu.
+class OwnerTaskDetailDialog extends ConsumerStatefulWidget {
   const OwnerTaskDetailDialog({super.key, required this.data});
 
   final OwnerTaskDetailData data;
 
-  /// Zobrazí dialog s detailem úkolu.
   static Future<void> show(BuildContext context, OwnerTaskDetailData data) {
     return showDialog<void>(
       context: context,
@@ -42,8 +54,61 @@ class OwnerTaskDetailDialog extends StatelessWidget {
     );
   }
 
+  @override
+  ConsumerState<OwnerTaskDetailDialog> createState() => _OwnerTaskDetailDialogState();
+}
+
+class _OwnerTaskDetailDialogState extends ConsumerState<OwnerTaskDetailDialog> {
+  /// Galerie: přílohy úkolu + (pokud je [taskId]) fotky z checklistu.
+  Widget _buildPhotoDocumentation(BuildContext context, String? taskId) {
+    if (taskId != null && taskId.isNotEmpty) {
+      final checklistAsync = ref.watch(ownerTaskChecklistPhotosProvider(taskId));
+      return checklistAsync.when(
+        data: (checklistPhotos) => _photoDocColumn(context, _mergePhotoEntries(checklistPhotos)),
+        loading: () => const Padding(
+          padding: EdgeInsets.only(top: 16),
+          child: Center(
+            child: SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          ),
+        ),
+        error: (_, _) => _photoDocColumn(context, _mergePhotoEntries(const [])),
+      );
+    }
+    return _photoDocColumn(context, _mergePhotoEntries(const []));
+  }
+
+  Widget _photoDocColumn(BuildContext context, List<_PhotoDocEntry> entries) {
+    if (entries.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 16),
+        Text(
+          'owner.task_detail_photo_documentation'.tr(),
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w700,
+            color: Colors.grey.shade800,
+          ),
+        ),
+        const SizedBox(height: 10),
+        ...entries.map(
+          (e) => Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: _LabeledPhotoTile(entry: e),
+          ),
+        ),
+      ],
+    );
+  }
+
   static String _taskTypeLabelKey(String taskType) {
-    final code = (taskType.trim().isEmpty ? 'other' : taskType.toLowerCase()).replaceAll('-', '_');
+    final code =
+        (taskType.trim().isEmpty ? 'other' : taskType.toLowerCase()).replaceAll('-', '_');
     return 'admin.task_type_$code';
   }
 
@@ -65,14 +130,31 @@ class OwnerTaskDetailDialog extends StatelessWidget {
     return const Color(0xFF757575);
   }
 
+  List<_PhotoDocEntry> _mergePhotoEntries(List<OwnerTaskChecklistPhoto> checklistPhotos) {
+    final entries = <_PhotoDocEntry>[];
+    final taskCaption = 'owner.task_detail_photo_task_attachment'.tr();
+    for (final url in widget.data.mediaUrls) {
+      final u = url.trim();
+      if (u.isEmpty) continue;
+      entries.add(_PhotoDocEntry(url: u, caption: taskCaption));
+    }
+    for (final p in checklistPhotos) {
+      entries.add(_PhotoDocEntry(url: p.photoUrl, caption: p.title));
+    }
+    return entries;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final data = widget.data;
     final theme = Theme.of(context);
     final statusColor = _statusColor(data.status);
     final dateTimeStr = data.scheduledStart != null
         ? '${DateFormat('d.M.yyyy', context.locale.toString()).format(data.scheduledStart!)} '
-          '${data.scheduledStart!.hour.toString().padLeft(2, '0')}:${data.scheduledStart!.minute.toString().padLeft(2, '0')}'
+            '${data.scheduledStart!.hour.toString().padLeft(2, '0')}:${data.scheduledStart!.minute.toString().padLeft(2, '0')}'
         : null;
+
+    final taskId = data.taskId?.trim();
 
     return AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -122,7 +204,6 @@ class OwnerTaskDetailDialog extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Stav úkolu – barevný rámeček
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               decoration: BoxDecoration(
@@ -191,19 +272,7 @@ class OwnerTaskDetailDialog extends StatelessWidget {
                 ),
               ),
             ],
-            if (data.mediaUrls.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Text(
-                'owner.task_detail_photos'.tr(),
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.grey.shade700,
-                ),
-              ),
-              const SizedBox(height: 8),
-              _PhotoGallery(mediaUrls: data.mediaUrls),
-            ],
+            _buildPhotoDocumentation(context, taskId),
           ],
         ),
       ),
@@ -217,7 +286,89 @@ class OwnerTaskDetailDialog extends StatelessWidget {
   }
 }
 
-/// Jedna řádka label + hodnota.
+class _LabeledPhotoTile extends StatelessWidget {
+  const _LabeledPhotoTile({required this.entry});
+
+  final _PhotoDocEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: GestureDetector(
+            onTap: () => _showFullScreenPhoto(context, entry.url),
+            child: AspectRatio(
+              aspectRatio: 16 / 10,
+              child: Image.network(
+                entry.url,
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => Container(
+                  color: Colors.grey.shade200,
+                  child: Icon(Icons.broken_image_outlined, color: Colors.grey.shade600, size: 40),
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          entry.caption,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
+            color: Colors.grey.shade800,
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _showFullScreenPhoto(BuildContext context, String url) {
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(16),
+        child: Stack(
+          alignment: Alignment.topRight,
+          children: [
+            InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 4,
+              child: Center(
+                child: Image.network(
+                  url,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, _, _) => Container(
+                    padding: const EdgeInsets.all(24),
+                    color: Colors.grey.shade800,
+                    child: Icon(Icons.broken_image_outlined, size: 64, color: Colors.grey.shade400),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: IconButton.filled(
+                onPressed: () => Navigator.of(ctx).pop(),
+                icon: const Icon(Icons.close),
+                style: IconButton.styleFrom(
+                  backgroundColor: Colors.black54,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _DetailRow extends StatelessWidget {
   const _DetailRow({required this.label, required this.value});
 
@@ -246,86 +397,3 @@ class _DetailRow extends StatelessWidget {
   }
 }
 
-/// Galerie fotek – horizontální scroll, zaoblené miniatury; tap otevře fullscreen.
-class _PhotoGallery extends StatelessWidget {
-  const _PhotoGallery({required this.mediaUrls});
-
-  final List<String> mediaUrls;
-
-  static const double _thumbSize = 100;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: _thumbSize + 8,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: mediaUrls.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 10),
-        itemBuilder: (context, index) {
-          final url = mediaUrls[index];
-          return GestureDetector(
-            onTap: () => _showFullScreenPhoto(context, url),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Image.network(
-                url,
-                width: _thumbSize,
-                height: _thumbSize,
-                fit: BoxFit.cover,
-                errorBuilder: (_, Object e, StackTrace? st) => Container(
-                  width: _thumbSize,
-                  height: _thumbSize,
-                  color: Colors.grey.shade200,
-                  child: Icon(Icons.broken_image_outlined, color: Colors.grey.shade600),
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  void _showFullScreenPhoto(BuildContext context, String url) {
-    showDialog<void>(
-      context: context,
-      barrierColor: Colors.black87,
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.transparent,
-        insetPadding: const EdgeInsets.all(16),
-        child: Stack(
-          alignment: Alignment.topRight,
-          children: [
-            InteractiveViewer(
-              minScale: 0.5,
-              maxScale: 4,
-              child: Center(
-                child: Image.network(
-                  url,
-                  fit: BoxFit.contain,
-                  errorBuilder: (_, Object e, StackTrace? st) => Container(
-                    padding: const EdgeInsets.all(24),
-                    color: Colors.grey.shade800,
-                    child: Icon(Icons.broken_image_outlined, size: 64, color: Colors.grey.shade400),
-                  ),
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: IconButton.filled(
-                onPressed: () => Navigator.of(ctx).pop(),
-                icon: const Icon(Icons.close),
-                style: IconButton.styleFrom(
-                  backgroundColor: Colors.black54,
-                  foregroundColor: Colors.white,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}

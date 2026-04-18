@@ -11,10 +11,12 @@ import 'package:falconest/core/theme/premium_card_decoration.dart';
 import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/core/widgets/app_empty_state.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/constants/apartment_rental_constants.dart';
 import 'package:falconest/core/utils/geo_json_point.dart';
 import 'package:falconest/core/presentation/widgets/modern_admin_panel.dart';
 import 'package:falconest/core/services/geocoding_service.dart';
 import 'package:falconest/core/services/currency_service.dart';
+import 'package:falconest/core/repositories/apartment/apartment_repository.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/admin/models/apartment_service_model.dart';
@@ -33,6 +35,8 @@ import 'package:falconest/features/admin/providers/admin_cross_nav_provider.dart
 import 'package:falconest/features/admin/repositories/calendar_feed_tokens_repository.dart';
 import 'package:falconest/features/admin/models/calendar_feed_token_row.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
+import 'package:falconest/features/admin/providers/admin_team_provider.dart';
+import 'package:falconest/features/owner/repositories/owner_apartment_pnl_repository.dart';
 import 'package:falconest/features/admin/providers/apartment_live_context_provider.dart';
 import 'package:falconest/features/admin/providers/apartment_status_provider.dart';
 import 'package:falconest/features/admin/providers/zones_provider.dart';
@@ -92,6 +96,36 @@ double _parseMonthlyFee(String v) {
   final parsed = double.tryParse(trimmed);
   if (parsed == null || parsed < 0) return 0.0;
   return parsed;
+}
+
+/// Datum platnosti smlouvy do payloadu pro Supabase (`date` YYYY-MM-DD).
+String? _apartmentLeaseDateToPayload(DateTime? d) {
+  if (d == null) return null;
+  final u = DateTime.utc(d.year, d.month, d.day);
+  return '${u.year.toString().padLeft(4, '0')}-'
+      '${u.month.toString().padLeft(2, '0')}-'
+      '${u.day.toString().padLeft(2, '0')}';
+}
+
+/// Zobrazení kalendářního dne bez posunu časové zóny (hodnoty držíme jako UTC půlnoc dne).
+String _formatApartmentLeaseDay(BuildContext context, DateTime d) {
+  final cal = DateTime(d.year, d.month, d.day);
+  return DateFormat.yMMMd(context.locale.toString()).format(cal);
+}
+
+/// Formát inputu transit price v měně UI; interně držíme EUR pro konzistentní ukládání.
+String _formatServiceTransitPriceForInput(
+  double? transitPriceEur, {
+  required String preferredCurrency,
+  required List<CurrencyRow> currencies,
+}) {
+  if (transitPriceEur == null || transitPriceEur <= 0) return '';
+  final value = CurrencyService.convert(
+    transitPriceEur,
+    preferredCurrency,
+    currencies,
+  );
+  return value.toStringAsFixed(2);
 }
 
 /// Mapování manuálních stavů z DB (edit dialog) na i18n klíče.
@@ -676,11 +710,32 @@ class _ApartmentCard extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  apartment.name,
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w600,
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        apartment.name,
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
                       ),
+                    ),
+                    if (apartment.investmentTrackingEnabled) ...[
+                      const SizedBox(width: 6),
+                      Tooltip(
+                        message: 'admin.apartments_investment_tracking_badge_tooltip'.tr(),
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Icon(
+                            Icons.show_chart_rounded,
+                            size: 22,
+                            color: context.colors.primary,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
                 SizedBox(height: AppSpacing.xs),
                 _InfoRow(
@@ -835,6 +890,199 @@ class _ApartmentCard extends ConsumerWidget {
   }
 }
 
+/// Sekce „Prémiové funkce“ na konci záložky základních údajů v dialozích bytu.
+///
+/// PROČ: Příznak investičního modulu je volitelná nadstavba; na konci formuláře neruší
+/// povinná pole (název, adresa) a dispečink vidí jasně oddělený prémiový blok.
+Widget _apartmentPremiumFeaturesBlock(
+  BuildContext context, {
+  required bool investmentTrackingEnabled,
+  required ValueChanged<bool> onInvestmentTrackingChanged,
+}) {
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      const SizedBox(height: 20),
+      const Divider(),
+      const SizedBox(height: 8),
+      Text(
+        'admin.apartments_section_premium'.tr(),
+        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+              color: context.colors.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
+      ),
+      const SizedBox(height: 4),
+      SwitchListTile(
+        value: investmentTrackingEnabled,
+        onChanged: onInvestmentTrackingChanged,
+        title: Text('admin.apartments_investment_tracking_switch'.tr()),
+        secondary: Icon(
+          Icons.show_chart_rounded,
+          color: context.colors.primary,
+        ),
+        contentPadding: EdgeInsets.zero,
+      ),
+    ],
+  );
+}
+
+/// Odpovědný za úkol výběru nájmu: jen řádky s `profiles.id` (FK na bytě), bez majitelů.
+///
+/// PROČ: Dříve se filtrovalo `role == worker`, takže účty admin/manager (běžné u malé agentury)
+/// zmizely z dropdownu → prázdná nabídka. Stejná logika jako u úkolů: personál ≠ property_owner.
+List<TeamMember> _rentTaskAssigneeCandidates(List<TeamMember> members) {
+  return members
+      .where(
+        (m) =>
+            !m.isFromInvitation &&
+            (m.profileId?.trim().isNotEmpty ?? false) &&
+            m.role != 'property_owner',
+      )
+      .toList();
+}
+
+/// Režim pronájmu (STR vs. dlouhodobý), smlouva od–do a nastavení automatizace nájmu.
+///
+/// PROČ: Společný widget pro dialog Přidat i Upravit byt; při přepnutí na krátkodobý režim
+/// rodič vymaže datumy a sjednotí pole nájmu na výchozí hodnoty pro Supabase.
+class _ApartmentRentalLeaseFormSection extends StatelessWidget {
+  const _ApartmentRentalLeaseFormSection({
+    required this.rentalMode,
+    required this.leaseStart,
+    required this.leaseEnd,
+    required this.onRentalModeChanged,
+    required this.onPickLeaseStart,
+    required this.onPickLeaseEnd,
+    required this.onClearLeaseDates,
+    required this.rentAmountController,
+    required this.rentDueDay,
+    required this.onRentDueDayChanged,
+    required this.rentCollectionMode,
+    required this.onRentCollectionModeChanged,
+    required this.rentTaskAssigneeId,
+    required this.onRentTaskAssigneeChanged,
+    required this.workerAssigneeOptions,
+    this.teamListLoading = false,
+    this.teamListLoadFailed = false,
+  });
+
+  final String rentalMode;
+  final DateTime? leaseStart;
+  final DateTime? leaseEnd;
+  final ValueChanged<String> onRentalModeChanged;
+  final VoidCallback onPickLeaseStart;
+  final VoidCallback onPickLeaseEnd;
+  final VoidCallback onClearLeaseDates;
+  /// Měsíční nájem – ukládá se jen u dlouhodobého režimu (jinak rodič pošle 0).
+  final TextEditingController rentAmountController;
+  final int rentDueDay;
+  final ValueChanged<int> onRentDueDayChanged;
+  final String rentCollectionMode;
+  final ValueChanged<String> onRentCollectionModeChanged;
+  final String? rentTaskAssigneeId;
+  final ValueChanged<String?> onRentTaskAssigneeChanged;
+  /// Aktivní členové týmu s `profiles.id` pro dropdown při režimu úkolu (vč. admin/manager).
+  final List<TeamMember> workerAssigneeOptions;
+  /// Načítá se [teamFullListProvider] – zobrazíme indikátor místo prázdné roletky.
+  final bool teamListLoading;
+  /// Chyba načtení týmu – text místo slepého prázdného dropdownu.
+  final bool teamListLoadFailed;
+
+  @override
+  Widget build(BuildContext context) {
+    final onVar = Theme.of(context).colorScheme.onSurfaceVariant;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 20),
+        const Divider(),
+        const SizedBox(height: 8),
+        Text(
+          'admin.apartments_section_rental'.tr(),
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                color: onVar,
+                fontWeight: FontWeight.w600,
+              ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'admin.apartments_rental_mode_hint'.tr(),
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: onVar),
+        ),
+        const SizedBox(height: 12),
+        SegmentedButton<String>(
+          segments: [
+            ButtonSegment<String>(
+              value: kApartmentRentalModeShortTerm,
+              label: Text('admin.apartments_rental_short'.tr()),
+              icon: const Icon(Icons.luggage_outlined),
+            ),
+            ButtonSegment<String>(
+              value: kApartmentRentalModeLongTerm,
+              label: Text('admin.apartments_rental_long'.tr()),
+              icon: const Icon(Icons.home_work_outlined),
+            ),
+          ],
+          selected: {rentalMode},
+          onSelectionChanged: (Set<String> next) => onRentalModeChanged(next.first),
+        ),
+        if (rentalMode == kApartmentRentalModeLongTerm) ...[
+          const SizedBox(height: 16),
+          Text(
+            'admin.apartments_lease_section'.tr(),
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'admin.apartments_lease_hint'.tr(),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: onVar),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: onPickLeaseStart,
+                  icon: const Icon(Icons.event_available_outlined, size: 20),
+                  label: Text(
+                    leaseStart != null
+                        ? _formatApartmentLeaseDay(context, leaseStart!)
+                        : 'admin.apartments_lease_start'.tr(),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: onPickLeaseEnd,
+                  icon: const Icon(Icons.event_busy_outlined, size: 20),
+                  label: Text(
+                    leaseEnd != null
+                        ? _formatApartmentLeaseDay(context, leaseEnd!)
+                        : 'admin.apartments_lease_end'.tr(),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (leaseStart != null || leaseEnd != null)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: onClearLeaseDates,
+                child: Text('admin.apartments_lease_clear'.tr()),
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+}
+
 /// Apple Vibe styl pro formulářové inputy – zaoblené rohy, jemný border, focus primary.
 InputDecoration _appleVibeInputDecoration(
   BuildContext context, {
@@ -892,6 +1140,153 @@ class _InfoRow extends StatelessWidget {
   }
 }
 
+/// Potvrzení příjmu nájmu (P&L) v editaci bytu – jen long_term + notification + investiční modul.
+///
+/// PROČ: Admin má nově RLS INSERT/UPDATE na income řádek u tohoto režimu; UI zrcadlí majitelský portál.
+class _AdminEditApartmentLongTermRentPnlSection extends ConsumerStatefulWidget {
+  const _AdminEditApartmentLongTermRentPnlSection({
+    required this.apartmentId,
+    required this.rentAmount,
+    required this.currencyCode,
+  });
+
+  final String apartmentId;
+  final double rentAmount;
+  final String currencyCode;
+
+  @override
+  ConsumerState<_AdminEditApartmentLongTermRentPnlSection> createState() =>
+      _AdminEditApartmentLongTermRentPnlSectionState();
+}
+
+class _AdminEditApartmentLongTermRentPnlSectionState extends ConsumerState<_AdminEditApartmentLongTermRentPnlSection> {
+  bool _checking = true;
+  bool _hasIncomeRow = false;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshIncomeFlag();
+  }
+
+  Future<void> _refreshIncomeFlag() async {
+    setState(() => _checking = true);
+    try {
+      final month = OwnerApartmentPnlRepository.firstDayOfMonthUtc(DateTime.now());
+      final res = await SupabaseService.client
+          .from('apartment_investment_pnl_entries')
+          .select('id')
+          .eq('apartment_id', widget.apartmentId)
+          .eq('entry_month', OwnerApartmentPnlRepository.monthFirstDayToApiDate(month))
+          .eq('entry_type', 'income')
+          .maybeSingle();
+      if (!mounted) return;
+      setState(() {
+        _hasIncomeRow = res != null;
+        _checking = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _hasIncomeRow = false;
+        _checking = false;
+      });
+    }
+  }
+
+  Future<void> _confirm() async {
+    setState(() => _busy = true);
+    try {
+      final month = OwnerApartmentPnlRepository.firstDayOfMonthUtc(DateTime.now());
+      await OwnerApartmentPnlRepository.upsertIncomeEntry(
+        apartmentId: widget.apartmentId,
+        entryMonthFirstDayUtc: month,
+        amount: widget.rentAmount,
+        description: OwnerApartmentPnlRepository.kDbDescriptionRentTransferConfirmed,
+      );
+      if (!mounted) return;
+      await _refreshIncomeFlag();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.apartments_long_term_rent_pnl_confirmed'.tr()),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('common.generic_error_user_friendly'.tr()),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final amt = widget.rentAmount.toStringAsFixed(2);
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: c.surfaceContainerHighest.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: c.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'admin.apartments_long_term_rent_pnl_section_title'.tr(),
+            style: context.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'admin.apartments_long_term_rent_expected'.tr(namedArgs: {'amount': '$amt ${widget.currencyCode}'}),
+            style: context.textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 12),
+          if (_checking)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            )
+          else if (_hasIncomeRow)
+            Text(
+              'admin.apartments_long_term_rent_pnl_paid'.tr(),
+              style: context.textTheme.bodyMedium?.copyWith(
+                color: Colors.green.shade700,
+                fontWeight: FontWeight.w700,
+              ),
+            )
+          else
+            FilledButton(
+              onPressed: _busy ? null : _confirm,
+              child: _busy
+                  ? const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Text('admin.apartments_confirm_long_term_rent_pnl'.tr()),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Dialog pro přidání nového apartmánu.
 /// [prefilledClient] – pokud owner s profileId, po vytvoření bytu se automaticky
 /// přiřadí jako majitel (apartment_owners). Volitelné – z hlavního menu se volá bez.
@@ -938,6 +1333,18 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
   int? _managedFromYear;
   /// Služby a ceník (Tab 2): serviceId -> stav. Naplní se z tenantServicesProvider, uživatel zapíná a vyplňuje.
   Map<String, ApartmentServiceEditState> _servicesState = {};
+  /// Prémiový modul investiční kalkulačky / P&L majitele (`apartments.investment_tracking_enabled`).
+  bool _investmentTrackingEnabled = false;
+  /// Krátkodobý / dlouhodobý pronájem (`apartments.rental_mode`).
+  String _rentalMode = kApartmentRentalModeShortTerm;
+  /// Platnost smlouvy – pouze u [kApartmentRentalModeLongTerm], nullable.
+  DateTime? _leaseStart;
+  DateTime? _leaseEnd;
+  /// Měsíční nájem a splatnost – jen smysl u dlouhodobého režimu (denní rent-monitor).
+  final _rentAmountController = TextEditingController(text: '0');
+  int _rentDueDay = 1;
+  String _rentCollectionMode = kApartmentRentCollectionModeNotification;
+  String? _rentTaskAssigneeId;
 
   @override
   void dispose() {
@@ -953,6 +1360,7 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
     _cleaningDurationController.dispose();
     _ownerNotesController.dispose();
     _monthlyManagementFeeController.dispose();
+    _rentAmountController.dispose();
     super.dispose();
   }
 
@@ -1032,6 +1440,23 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
       return;
     }
 
+    if (_rentalMode == kApartmentRentalModeLongTerm &&
+        _leaseStart != null &&
+        _leaseEnd != null &&
+        _leaseEnd!.isBefore(_leaseStart!)) {
+      if (mounted) {
+        setState(() => _isSaving = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('admin.apartments_lease_invalid_range'.tr()),
+            backgroundColor: context.colors.error,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
     final duration = int.tryParse(_cleaningDurationController.text) ?? 120;
     try {
       // Dvoukrokové ukládání (Override Pattern Tier 2): nejdřív záznam v apartments,
@@ -1065,15 +1490,16 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
             ? '$_managedFromYear-${_managedFromMonth!.toString().padLeft(2, '0')}-01'
             : null,
         'geo_location': geoJson,
+        'investment_tracking_enabled': _investmentTrackingEnabled,
+        'rental_mode': _rentalMode,
+        'lease_start_date': _rentalMode == kApartmentRentalModeLongTerm
+            ? _apartmentLeaseDateToPayload(_leaseStart)
+            : null,
+        'lease_end_date': _rentalMode == kApartmentRentalModeLongTerm
+            ? _apartmentLeaseDateToPayload(_leaseEnd)
+            : null,
       };
-      final res = await SupabaseService.safeFrom('apartments', tenantId)
-          .insert(insertPayload)
-          .select('id')
-          .single();
-      final newId = res['id'] as String?;
-      if (newId == null || newId.isEmpty) {
-        throw StateError('admin.apartments_error_insert_no_id');
-      }
+      final newId = await ApartmentRepository.insertApartment(tenantId, insertPayload);
 
       // KROK 1b: Pokud byl předán prefilledClient (owner), přiřaď ho jako majitele bytu.
       final prefilled = widget.prefilledClient;
@@ -1148,6 +1574,11 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
 
   /// Tab 1: základní informace (název, adresa, kód, check-in/out, doba úklidu, instrukce).
   Widget _buildTab1Basic(BuildContext context) {
+    final teamAsync = ref.watch(teamFullListProvider);
+    final workerAssignees = teamAsync.maybeWhen(
+      data: _rentTaskAssigneeCandidates,
+      orElse: () => <TeamMember>[],
+    );
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
       child: Column(
@@ -1374,6 +1805,41 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
           'admin.apartments_managed_from_hint'.tr(),
           style: Theme.of(context).textTheme.bodySmall?.copyWith(color: context.colors.onSurfaceVariant),
         ),
+        _ApartmentRentalLeaseFormSection(
+          rentalMode: _rentalMode,
+          leaseStart: _leaseStart,
+          leaseEnd: _leaseEnd,
+          onRentalModeChanged: (m) {
+            setState(() {
+              _rentalMode = m;
+              if (m == kApartmentRentalModeShortTerm) {
+                _leaseStart = null;
+                _leaseEnd = null;
+              }
+            });
+          },
+          onPickLeaseStart: _pickLeaseStart,
+          onPickLeaseEnd: _pickLeaseEnd,
+          onClearLeaseDates: () => setState(() {
+            _leaseStart = null;
+            _leaseEnd = null;
+          }),
+          rentAmountController: _rentAmountController,
+          rentDueDay: _rentDueDay,
+          onRentDueDayChanged: (d) => setState(() => _rentDueDay = d),
+          rentCollectionMode: _rentCollectionMode,
+          onRentCollectionModeChanged: (mode) => setState(() {
+            _rentCollectionMode = mode;
+            if (mode == kApartmentRentCollectionModeNotification) {
+              _rentTaskAssigneeId = null;
+            }
+          }),
+          rentTaskAssigneeId: _rentTaskAssigneeId,
+          onRentTaskAssigneeChanged: (id) => setState(() => _rentTaskAssigneeId = id),
+          workerAssigneeOptions: workerAssignees,
+          teamListLoading: teamAsync.isLoading,
+          teamListLoadFailed: teamAsync.hasError,
+        ),
         const SizedBox(height: 20),
         const Divider(),
         const SizedBox(height: 8),
@@ -1447,9 +1913,44 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
           ),
           maxLines: 4,
         ),
+        _apartmentPremiumFeaturesBlock(
+          context,
+          investmentTrackingEnabled: _investmentTrackingEnabled,
+          onInvestmentTrackingChanged: (v) => setState(() => _investmentTrackingEnabled = v),
+        ),
         ],
       ),
     );
+  }
+
+  Future<void> _pickLeaseStart() async {
+    final initial = _leaseStart != null
+        ? DateTime(_leaseStart!.year, _leaseStart!.month, _leaseStart!.day)
+        : DateTime.now();
+    final d = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (d == null || !mounted) return;
+    setState(() => _leaseStart = DateTime.utc(d.year, d.month, d.day));
+  }
+
+  Future<void> _pickLeaseEnd() async {
+    final initial = _leaseEnd != null
+        ? DateTime(_leaseEnd!.year, _leaseEnd!.month, _leaseEnd!.day)
+        : (_leaseStart != null
+            ? DateTime(_leaseStart!.year, _leaseStart!.month, _leaseStart!.day)
+            : DateTime.now());
+    final d = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (d == null || !mounted) return;
+    setState(() => _leaseEnd = DateTime.utc(d.year, d.month, d.day));
   }
 
   /// Tab 2: služby a ceník – katalog tenant_services, přepínač + vlastní cena/popis/spouštěč/interval. Ceny zobrazujeme v preferované měně, ukládáme v EUR.
@@ -1470,6 +1971,7 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
                 defaultPriceEur: s.defaultPrice?.toDouble(),
                 enabled: false,
                 customPriceEur: s.defaultPrice?.toDouble(),
+                transitPriceEur: null,
                 customDescription: null,
                 triggerType: 'on_demand',
                 scheduleInterval: null,
@@ -1537,6 +2039,7 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
           defaultPriceEur: s.defaultPrice?.toDouble(),
           enabled: false,
           customPriceEur: s.defaultPrice?.toDouble(),
+          transitPriceEur: null,
           customDescription: null,
           triggerType: 'on_demand',
           scheduleInterval: null,
@@ -1593,6 +2096,35 @@ class _AddApartmentDialogState extends ConsumerState<_AddApartmentDialog> {
                               final eur = CurrencyService.toEur(parsed, preferredCurrency, currencies);
                               setState(() {
                                 _servicesState[s.id] = state.copyWith(customPriceEur: eur);
+                              });
+                            },
+                          ),
+                        ),
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 24.0),
+                          child: TextFormField(
+                            initialValue: _formatServiceTransitPriceForInput(
+                              state.transitPriceEur,
+                              preferredCurrency: preferredCurrency,
+                              currencies: currencies,
+                            ),
+                            decoration: _appleVibeInputDecoration(
+                              context,
+                              prefixIcon: const Icon(Icons.currency_exchange_outlined),
+                              labelText: 'admin.field_transit_price_apartment'
+                                  .tr(namedArgs: {'code': preferredCurrency}),
+                            ),
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            onChanged: (v) {
+                              final parsed = double.tryParse(v.replaceAll(',', '.'));
+                              final eur = parsed == null
+                                  ? null
+                                  : CurrencyService.toEur(parsed, preferredCurrency, currencies);
+                              setState(() {
+                                _servicesState[s.id] = state.copyWith(
+                                  transitPriceEur: eur,
+                                  clearTransitPriceEur: eur == null,
+                                );
                               });
                             },
                           ),
@@ -1861,11 +2393,26 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
   bool _servicesLoaded = false;
   /// Vybraná oblast (zone_id). null = Žádná oblast.
   String? _selectedZoneId;
+  /// Prémiový modul investiční kalkulačky / P&L majitele.
+  late bool _investmentTrackingEnabled;
+  /// Krátkodobý / dlouhodobý pronájem (`apartments.rental_mode`).
+  late String _rentalMode;
+  DateTime? _leaseStart;
+  DateTime? _leaseEnd;
+  /// Dlouhodobý nájem – částka, splatnost, režim připomínky vs. úkol (rent-monitor).
+  late final TextEditingController _rentAmountController;
+  late int _rentDueDay;
+  late String _rentCollectionMode;
+  String? _rentTaskAssigneeId;
 
   @override
   void initState() {
     super.initState();
     final a = widget.apartment;
+    _investmentTrackingEnabled = a.investmentTrackingEnabled;
+    _rentalMode = a.rentalMode;
+    _leaseStart = a.leaseStartDate;
+    _leaseEnd = a.leaseEndDate;
     _selectedZoneId = a.zoneId;
     _nameController = TextEditingController(text: a.name);
     _addressController = TextEditingController(text: a.address ?? '');
@@ -1885,6 +2432,12 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
     _monthlyManagementFeeController = TextEditingController(
       text: a.monthlyManagementFee == 0 ? '0' : a.monthlyManagementFee.toString(),
     );
+    _rentAmountController = TextEditingController(
+      text: a.rentAmount == 0 ? '0' : a.rentAmount.toString(),
+    );
+    _rentDueDay = a.rentDueDay.clamp(1, 31);
+    _rentCollectionMode = a.rentCollectionMode;
+    _rentTaskAssigneeId = a.rentTaskAssigneeId;
     if (a.managedFrom != null) {
       _managedFromMonth = a.managedFrom!.month;
       _managedFromYear = a.managedFrom!.year;
@@ -1905,6 +2458,7 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
     _cleaningDurationController.dispose();
     _ownerNotesController.dispose();
     _monthlyManagementFeeController.dispose();
+    _rentAmountController.dispose();
     super.dispose();
   }
 
@@ -1984,11 +2538,28 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
       return;
     }
 
+    if (_rentalMode == kApartmentRentalModeLongTerm &&
+        _leaseStart != null &&
+        _leaseEnd != null &&
+        _leaseEnd!.isBefore(_leaseStart!)) {
+      if (mounted) {
+        setState(() => _isSaving = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('admin.apartments_lease_invalid_range'.tr()),
+            backgroundColor: context.colors.error,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
     final duration = int.tryParse(_cleaningDurationController.text) ?? 120;
     try {
       // Dvoukrokové ukládání (Override Pattern Tier 2): nejdřív úprava bytu, potom přepsání apartment_services.
-      // KROK 1: Aktualizace záznamu bytu.
-      await SupabaseService.safeFrom('apartments', tenantId).update({
+      // KROK 1: Aktualizace záznamu bytu přes repozitář (jednotné místo pro PATCH).
+      await ApartmentRepository.updateApartment(tenantId, widget.apartment.id, {
         'name': _nameController.text.trim(),
         'zone_id': _selectedZoneId,
         'address': _addressController.text.trim().isEmpty
@@ -2021,7 +2592,15 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
             ? '$_managedFromYear-${_managedFromMonth!.toString().padLeft(2, '0')}-01'
             : null,
         'geo_location': geoJson,
-      }).eq('id', widget.apartment.id);
+        'investment_tracking_enabled': _investmentTrackingEnabled,
+        'rental_mode': _rentalMode,
+        'lease_start_date': _rentalMode == kApartmentRentalModeLongTerm
+            ? _apartmentLeaseDateToPayload(_leaseStart)
+            : null,
+        'lease_end_date': _rentalMode == kApartmentRentalModeLongTerm
+            ? _apartmentLeaseDateToPayload(_leaseEnd)
+            : null,
+      });
 
       // KROK 2: Uložení služeb a ceníku (apartment_services) – replace všech záznamů pro tento byt (delete + insert dle stavu Tabu 2).
       await saveForApartment(
@@ -2099,6 +2678,7 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
                 defaultPriceEur: s.defaultPrice?.toDouble(),
                 enabled: false,
                 customPriceEur: s.defaultPrice?.toDouble(),
+                transitPriceEur: null,
                 customDescription: null,
                 triggerType: 'on_demand',
                 scheduleInterval: null,
@@ -2107,12 +2687,19 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
                 requiresPhoto: null,
               );
             }
+            final rowTransitRaw = row.metadata?['transit_price'];
+            final rowTransit = rowTransitRaw == null
+                ? null
+                : (rowTransitRaw is num
+                    ? rowTransitRaw.toDouble()
+                    : double.tryParse(rowTransitRaw.toString()));
             return ApartmentServiceEditState(
               serviceId: s.id,
               serviceName: s.name,
               defaultPriceEur: s.defaultPrice?.toDouble(),
               enabled: true,
               customPriceEur: row.customPrice?.toDouble(),
+              transitPriceEur: rowTransit,
               customDescription: row.customDescription,
               triggerType: row.triggerType,
               scheduleInterval: row.scheduleInterval,
@@ -2128,6 +2715,11 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
   }
 
   Widget _buildTab1Basic(BuildContext context) {
+    final teamAsync = ref.watch(teamFullListProvider);
+    final workerAssignees = teamAsync.maybeWhen(
+      data: _rentTaskAssigneeCandidates,
+      orElse: () => <TeamMember>[],
+    );
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
       child: Column(
@@ -2354,6 +2946,41 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
           'admin.apartments_managed_from_hint'.tr(),
           style: Theme.of(context).textTheme.bodySmall?.copyWith(color: context.colors.onSurfaceVariant),
         ),
+        _ApartmentRentalLeaseFormSection(
+          rentalMode: _rentalMode,
+          leaseStart: _leaseStart,
+          leaseEnd: _leaseEnd,
+          onRentalModeChanged: (m) {
+            setState(() {
+              _rentalMode = m;
+              if (m == kApartmentRentalModeShortTerm) {
+                _leaseStart = null;
+                _leaseEnd = null;
+              }
+            });
+          },
+          onPickLeaseStart: _pickLeaseStart,
+          onPickLeaseEnd: _pickLeaseEnd,
+          onClearLeaseDates: () => setState(() {
+            _leaseStart = null;
+            _leaseEnd = null;
+          }),
+          rentAmountController: _rentAmountController,
+          rentDueDay: _rentDueDay,
+          onRentDueDayChanged: (d) => setState(() => _rentDueDay = d),
+          rentCollectionMode: _rentCollectionMode,
+          onRentCollectionModeChanged: (mode) => setState(() {
+            _rentCollectionMode = mode;
+            if (mode == kApartmentRentCollectionModeNotification) {
+              _rentTaskAssigneeId = null;
+            }
+          }),
+          rentTaskAssigneeId: _rentTaskAssigneeId,
+          onRentTaskAssigneeChanged: (id) => setState(() => _rentTaskAssigneeId = id),
+          workerAssigneeOptions: workerAssignees,
+          teamListLoading: teamAsync.isLoading,
+          teamListLoadFailed: teamAsync.hasError,
+        ),
         const SizedBox(height: 20),
         const Divider(),
         const SizedBox(height: 8),
@@ -2427,9 +3054,44 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
           ),
           maxLines: 4,
         ),
+        _apartmentPremiumFeaturesBlock(
+          context,
+          investmentTrackingEnabled: _investmentTrackingEnabled,
+          onInvestmentTrackingChanged: (v) => setState(() => _investmentTrackingEnabled = v),
+        ),
         ],
       ),
     );
+  }
+
+  Future<void> _pickLeaseStart() async {
+    final initial = _leaseStart != null
+        ? DateTime(_leaseStart!.year, _leaseStart!.month, _leaseStart!.day)
+        : DateTime.now();
+    final d = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (d == null || !mounted) return;
+    setState(() => _leaseStart = DateTime.utc(d.year, d.month, d.day));
+  }
+
+  Future<void> _pickLeaseEnd() async {
+    final initial = _leaseEnd != null
+        ? DateTime(_leaseEnd!.year, _leaseEnd!.month, _leaseEnd!.day)
+        : (_leaseStart != null
+            ? DateTime(_leaseStart!.year, _leaseStart!.month, _leaseStart!.day)
+            : DateTime.now());
+    final d = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (d == null || !mounted) return;
+    setState(() => _leaseEnd = DateTime.utc(d.year, d.month, d.day));
   }
 
   Widget _buildTab2Services(BuildContext context) {
@@ -2520,6 +3182,7 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
           defaultPriceEur: s.defaultPrice?.toDouble(),
           enabled: false,
           customPriceEur: s.defaultPrice?.toDouble(),
+          transitPriceEur: null,
           customDescription: null,
           triggerType: 'on_demand',
           scheduleInterval: null,
@@ -2576,6 +3239,35 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
                               final eur = CurrencyService.toEur(parsed, preferredCurrency, currencies);
                               setState(() {
                                 _servicesState[s.id] = state.copyWith(customPriceEur: eur);
+                              });
+                            },
+                          ),
+                        ),
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 24.0),
+                          child: TextFormField(
+                            initialValue: _formatServiceTransitPriceForInput(
+                              state.transitPriceEur,
+                              preferredCurrency: preferredCurrency,
+                              currencies: currencies,
+                            ),
+                            decoration: _appleVibeInputDecoration(
+                              context,
+                              prefixIcon: const Icon(Icons.currency_exchange_outlined),
+                              labelText: 'admin.field_transit_price_apartment'
+                                  .tr(namedArgs: {'code': preferredCurrency}),
+                            ),
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            onChanged: (v) {
+                              final parsed = double.tryParse(v.replaceAll(',', '.'));
+                              final eur = parsed == null
+                                  ? null
+                                  : CurrencyService.toEur(parsed, preferredCurrency, currencies);
+                              setState(() {
+                                _servicesState[s.id] = state.copyWith(
+                                  transitPriceEur: eur,
+                                  clearTransitPriceEur: eur == null,
+                                );
                               });
                             },
                           ),
@@ -2779,6 +3471,21 @@ class _EditApartmentDialogState extends ConsumerState<_EditApartmentDialog> {
   String _requiresPhotoToKey(bool? v) {
     if (v == null) return 'inherit';
     return v ? 'require' : 'forbid';
+  }
+
+  /// Formát inputu transit price v měně UI; interně držíme EUR pro konzistentní ukládání.
+  String _formatServiceTransitPriceForInput(
+    double? transitPriceEur, {
+    required String preferredCurrency,
+    required List<CurrencyRow> currencies,
+  }) {
+    if (transitPriceEur == null || transitPriceEur <= 0) return '';
+    final value = CurrencyService.convert(
+      transitPriceEur,
+      preferredCurrency,
+      currencies,
+    );
+    return value.toStringAsFixed(2);
   }
 
   /// Tab 3: Sekce Majitelé – výpis přiřazených majitelů, přidání existujícího nebo pozvání nového.
@@ -4163,7 +4870,9 @@ class _AssignOwnerFromClientsDialogState extends ConsumerState<_AssignOwnerFromC
       setState(() => _isSaving = false);
       final displayError = (e is StateError && e.message == 'admin.owners_error_profile_not_created')
           ? 'admin.owners_error_profile_not_created'.tr()
-          : 'common.generic_error_user_friendly'.tr();
+          : (e is StateError && e.message == 'admin.owners_error_invitation_not_created')
+              ? 'admin.owners_error_invitation_not_created'.tr()
+              : 'common.generic_error_user_friendly'.tr();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(displayError),

@@ -48,6 +48,7 @@ class TaskCompleteWithPhotoSection extends ConsumerStatefulWidget {
 
   final String taskId;
   final WorkerTaskDetail detail;
+  /// Text tlačítka Dokončit – očekává se již lokalizovaný řetězec (`.tr()` volá rodič).
   final String finishKey;
   /// Volitelně: dialog před dokončením (např. CashCollectionDialog). Při true = hotovo v rámci callbacku.
   final BeforeCompleteCallback? beforeComplete;
@@ -57,9 +58,47 @@ class TaskCompleteWithPhotoSection extends ConsumerStatefulWidget {
       _TaskCompleteWithPhotoSectionState();
 }
 
+/// Výsledek fáze nahrání / offline zálohy fotek před [beforeComplete] a zápisem do DB.
+///
+/// PROČ: Orchestrátor [_onCompletePressed] potřebuje vědět, zda už offline větev skončila (pop),
+/// nebo zda má pokračovat online s URL médii.
+class _MediaAfterUpload {
+  const _MediaAfterUpload._({
+    required this.shouldStop,
+    required this.offlineFlowFinished,
+    required this.mediaUrls,
+  });
+
+  /// SnackBar nebo zrušení – žádný další krok.
+  factory _MediaAfterUpload.stopped() => const _MediaAfterUpload._(
+        shouldStop: true,
+        offlineFlowFinished: false,
+        mediaUrls: [],
+      );
+
+  /// Offline dokončení včetně zápisu a [context.pop] už proběhly uvnitř upload catch.
+  factory _MediaAfterUpload.offlineDone() => const _MediaAfterUpload._(
+        shouldStop: false,
+        offlineFlowFinished: true,
+        mediaUrls: [],
+      );
+
+  /// Standardní online dokončení s aktuálními URL (existující + nově nahrané).
+  factory _MediaAfterUpload.online(List<String> urls) => _MediaAfterUpload._(
+        shouldStop: false,
+        offlineFlowFinished: false,
+        mediaUrls: urls,
+      );
+
+  final bool shouldStop;
+  final bool offlineFlowFinished;
+  final List<String> mediaUrls;
+}
+
 class _TaskCompleteWithPhotoSectionState
     extends ConsumerState<TaskCompleteWithPhotoSection> {
   List<File> _photoFiles = [];
+  bool _isProcessing = false;
 
   void _onFilesChanged(List<File> files) {
     setState(() => _photoFiles = files);
@@ -83,7 +122,7 @@ class _TaskCompleteWithPhotoSectionState
     );
     final canComplete = checklistOk && (!requiresPhoto || hasPhotos);
 
-    return Column(
+    final column = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -114,15 +153,17 @@ class _TaskCompleteWithPhotoSectionState
           SizedBox(
             width: double.infinity,
             child: FilledButton(
-              onPressed: canComplete
-                  ? () => _onCompletePressed(context)
-                  : () => _onBlockedCompletePressed(context, checklistOk: checklistOk),
+              onPressed: _isProcessing
+                  ? null
+                  : (canComplete
+                      ? () => _onCompletePressed(context)
+                      : () => _onBlockedCompletePressed(context, checklistOk: checklistOk)),
               style: FilledButton.styleFrom(
                 backgroundColor: canComplete ? _primaryBlue : Colors.grey.shade400,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 16),
               ),
-              child: Text(widget.finishKey.tr()),
+              child: Text(widget.finishKey),
             ),
           ),
         ] else ...[
@@ -130,7 +171,7 @@ class _TaskCompleteWithPhotoSectionState
           SizedBox(
             width: double.infinity,
             child: FilledButton(
-              onPressed: () => _onStartPressed(context),
+              onPressed: _isProcessing ? null : () => _onStartPressed(context),
               style: FilledButton.styleFrom(
                 backgroundColor: _primaryBlue,
                 foregroundColor: Colors.white,
@@ -140,6 +181,42 @@ class _TaskCompleteWithPhotoSectionState
             ),
           ),
         ],
+      ],
+    );
+
+    if (isCompleted) {
+      return column;
+    }
+
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        AbsorbPointer(
+          absorbing: _isProcessing,
+          child: column,
+        ),
+        if (_isProcessing)
+          Positioned.fill(
+            child: ColoredBox(
+              color: Colors.black.withValues(alpha: 0.12),
+              child: Center(
+                child: Card(
+                  elevation: 4,
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const CircularProgressIndicator(),
+                        const SizedBox(height: 12),
+                        Text('worker.task_detail_status_updating'.tr()),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -197,150 +274,29 @@ class _TaskCompleteWithPhotoSectionState
     _showRequiresPhotoSnackBar(context);
   }
 
-  Future<void> _onStartPressed(BuildContext context) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('worker.confirm_start_title'.tr()),
-        content: Text('worker.confirm_start_message'.tr()),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: Text('common.cancel'.tr()),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: Text('common.ok'.tr()),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
-          widget.taskId,
-          'in_progress',
-          startedAt: DateTime.now().toUtc(),
-        );
+  /// [WorkerTaskStatusNotifier] při chybě nastaví [AsyncValue.error], ale výjimku nevyhodí — po [updateStatus] kontrolujeme stav.
+  void _throwIfWorkerStatusUpdateFailed() {
+    final s = ref.read(workerTaskStatusNotifierProvider);
+    if (s.hasError && s.error != null) {
+      throw s.error!;
+    }
   }
 
-  Future<void> _onCompletePressed(BuildContext context) async {
-    // PROČ: Obrana proti race – tlačítko musí být šedé, ale dvojitá kontrola z Drift stavu checklistu.
-    final checklistSnap = ref.read(workerTaskChecklistProvider(widget.taskId));
-    final lines = checklistSnap.valueOrNull ?? [];
-    if (!workerTaskChecklistAllowsCompletion(lines)) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('tasks.checklist_not_completed_error'.tr()),
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: Colors.red.shade700,
-        ),
-      );
-      return;
-    }
+  void _showFlowErrorSnack(BuildContext context, Object e, {required bool isStart}) {
+    final isNet = MutationQueueService.isNetworkError(e);
+    final text = isNet
+        ? 'worker.task_action_network_error'.tr()
+        : (isStart ? 'worker.task_start_failed'.tr() : 'worker.task_complete_failed'.tr());
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(text),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: Colors.red.shade700,
+      ),
+    );
+  }
 
-    List<String> mediaUrls = List.from(widget.detail.mediaUrls);
-    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
-
-    if (_photoFiles.isNotEmpty && tenantId != null && tenantId.isNotEmpty) {
-      try {
-        for (final file in _photoFiles) {
-          final url = await MediaService.instance.uploadMedia(
-            file,
-            tenantId: tenantId,
-            moduleName: _storageModuleTasks,
-          );
-          if (url != null && url.isNotEmpty) mediaUrls.add(url);
-        }
-      } catch (e) {
-        // Offline fallback: zkopíruj fotky do persistent storage a ulož do fronty.
-        if (!kIsWeb && MutationQueueService.isNetworkError(e)) {
-          final copiedPaths = await _copyPhotosToPersistentStorage(
-            taskId: widget.taskId,
-            files: _photoFiles,
-          );
-          if (copiedPaths.isEmpty) {
-            if (!context.mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('worker.issue_reporter_photo_upload_error'.tr()),
-                backgroundColor: Colors.red.shade700,
-              ),
-            );
-            return;
-          }
-          if (widget.beforeComplete != null) {
-            if (!context.mounted) return;
-            final done = await widget.beforeComplete!(
-              context,
-              ref,
-              widget.detail.mediaUrls,
-              localPhotoPaths: copiedPaths,
-            );
-            if (done == true && context.mounted) context.pop();
-            if (done != null) return;
-          }
-          if (!context.mounted) return;
-          final ok = await showDialog<bool>(
-            context: context,
-            builder: (ctx) => AlertDialog(
-              title: Text('worker.confirm_finish_title'.tr()),
-              content: Text('worker.confirm_finish_message'.tr()),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  child: Text('common.cancel'.tr()),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  child: Text('common.ok'.tr()),
-                ),
-              ],
-            ),
-          );
-          if (ok != true || !context.mounted) return;
-          await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
-                widget.taskId,
-                'completed',
-                completedAt: DateTime.now().toUtc(),
-                localPhotoPaths: copiedPaths,
-                existingMediaUrls: widget.detail.mediaUrls,
-              );
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('worker.task_complete_queued_offline'.tr()),
-                behavior: SnackBarBehavior.floating,
-                backgroundColor: Colors.orange.shade700,
-              ),
-            );
-            context.pop();
-          }
-          return;
-        }
-        if (!context.mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(isNetworkError(e)
-                ? 'worker.issue_reporter_photo_required_online'.tr()
-                : 'worker.issue_reporter_photo_upload_error'.tr()),
-            backgroundColor: Colors.red.shade700,
-          ),
-        );
-        return;
-      }
-    }
-
-    if (!context.mounted) return;
-
-    if (widget.beforeComplete != null) {
-      if (!context.mounted) return;
-      final done = await widget.beforeComplete!(context, ref, mediaUrls);
-      if (done == true && context.mounted) context.pop();
-      if (done != null) return;
-    }
-
-    if (!context.mounted) return;
+  Future<bool> _showConfirmFinishDialog(BuildContext context) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -358,15 +314,212 @@ class _TaskCompleteWithPhotoSectionState
         ],
       ),
     );
-    if (ok != true || !context.mounted) return;
+    return ok == true;
+  }
+
+  /// Potvrzení dialogem + zápis [completed] + případná fronta offline fotek; při úspěchu [context.pop].
+  ///
+  /// PROČ: Jeden bod zápisu do Drift/Supabase drží chování konzistentní mezi online a offline větví.
+  /// Vrací true, pokud proběhl zápis a navigace zpět; false při zrušení potvrzovacího dialogu.
+  Future<bool> _finalizeTaskCompletion(
+    BuildContext context, {
+    List<String>? mediaUrls,
+    List<String>? localPhotoPaths,
+  }) async {
+    final confirm = await _showConfirmFinishDialog(context);
+    if (!confirm || !context.mounted) return false;
 
     await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
           widget.taskId,
           'completed',
           completedAt: DateTime.now().toUtc(),
-          mediaUrls: mediaUrls.isEmpty ? null : mediaUrls,
+          mediaUrls: localPhotoPaths != null
+              ? null
+              : (mediaUrls == null || mediaUrls.isEmpty ? null : mediaUrls),
+          localPhotoPaths: localPhotoPaths,
+          existingMediaUrls: localPhotoPaths != null ? widget.detail.mediaUrls : null,
         );
+    if (!context.mounted) return false;
+    _throwIfWorkerStatusUpdateFailed();
+
+    if (localPhotoPaths != null && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('worker.task_complete_queued_offline'.tr()),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.orange.shade700,
+        ),
+      );
+    }
     if (context.mounted) context.pop();
+    return true;
+  }
+
+  /// Nahraje nové fotky na Storage, případně aktivuje offline kopii a dokončení ve frontě.
+  ///
+  /// PROČ: Oddělená metoda drží složitou větev „síť spadla při uploadu“ na jednom místě bez rozbití mutační fronty.
+  Future<_MediaAfterUpload> _processAndUploadPhotos(BuildContext context) async {
+    var mediaUrls = List<String>.from(widget.detail.mediaUrls);
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
+
+    if (_photoFiles.isEmpty || tenantId == null || tenantId.isEmpty) {
+      return _MediaAfterUpload.online(mediaUrls);
+    }
+
+    try {
+      for (final file in _photoFiles) {
+        final url = await MediaService.instance.uploadMedia(
+          file,
+          tenantId: tenantId,
+          moduleName: _storageModuleTasks,
+        );
+        if (url != null && url.isNotEmpty) mediaUrls.add(url);
+      }
+      return _MediaAfterUpload.online(mediaUrls);
+    } catch (e) {
+      // Offline fallback: zkopíruj fotky do persistent storage a ulož do fronty.
+      if (!kIsWeb && MutationQueueService.isNetworkError(e)) {
+        final copiedPaths = await _copyPhotosToPersistentStorage(
+          taskId: widget.taskId,
+          files: _photoFiles,
+        );
+        if (copiedPaths.isEmpty) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('worker.issue_reporter_photo_upload_error'.tr()),
+                backgroundColor: Colors.red.shade700,
+              ),
+            );
+          }
+          return _MediaAfterUpload.stopped();
+        }
+        if (!context.mounted) return _MediaAfterUpload.stopped();
+        if (await _invokeBeforeCompleteIfNeeded(
+              context,
+              mediaUrls: widget.detail.mediaUrls,
+              localPhotoPaths: copiedPaths,
+            )) {
+          return _MediaAfterUpload.stopped();
+        }
+        if (!context.mounted) return _MediaAfterUpload.stopped();
+        final finalized =
+            await _finalizeTaskCompletion(context, localPhotoPaths: copiedPaths);
+        if (!finalized) return _MediaAfterUpload.stopped();
+        return _MediaAfterUpload.offlineDone();
+      }
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(isNetworkError(e)
+                ? 'worker.issue_reporter_photo_required_online'.tr()
+                : 'worker.issue_reporter_photo_upload_error'.tr()),
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
+      }
+      return _MediaAfterUpload.stopped();
+    }
+  }
+
+  /// Vrací true, pokud má orchestrátor skončit (callback vrátil ne-null / provedl vlastní [pop]).
+  Future<bool> _invokeBeforeCompleteIfNeeded(
+    BuildContext context, {
+    required List<String> mediaUrls,
+    List<String>? localPhotoPaths,
+  }) async {
+    if (widget.beforeComplete == null) return false;
+    if (!context.mounted) return true;
+    final done = await widget.beforeComplete!(
+      context,
+      ref,
+      mediaUrls,
+      localPhotoPaths: localPhotoPaths,
+    );
+    if (done == true && context.mounted) context.pop();
+    return done != null;
+  }
+
+  Future<void> _onStartPressed(BuildContext context) async {
+    if (_isProcessing) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('worker.confirm_start_title'.tr()),
+        content: Text('worker.confirm_start_message'.tr()),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text('common.cancel'.tr()),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text('common.ok'.tr()),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    setState(() => _isProcessing = true);
+    try {
+      await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
+            widget.taskId,
+            'in_progress',
+            startedAt: DateTime.now().toUtc(),
+          );
+      if (!mounted) return;
+      _throwIfWorkerStatusUpdateFailed();
+    } catch (e, st) {
+      AppLogger.error('TaskCompleteWithPhotoSection: zahájení úkolu selhalo', e, st);
+      if (context.mounted) {
+        _showFlowErrorSnack(context, e, isStart: true);
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
+  Future<void> _onCompletePressed(BuildContext context) async {
+    if (_isProcessing) return;
+    // PROČ: Obrana proti race – tlačítko musí být šedé, ale dvojitá kontrola z Drift stavu checklistu.
+    final checklistSnap = ref.read(workerTaskChecklistProvider(widget.taskId));
+    final lines = checklistSnap.valueOrNull ?? [];
+    if (!workerTaskChecklistAllowsCompletion(lines)) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('tasks.checklist_not_completed_error'.tr()),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.red.shade700,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isProcessing = true);
+    try {
+      final mediaPhase = await _processAndUploadPhotos(context);
+      if (!context.mounted) return;
+      if (mediaPhase.shouldStop || mediaPhase.offlineFlowFinished) return;
+
+      if (await _invokeBeforeCompleteIfNeeded(
+            context,
+            mediaUrls: mediaPhase.mediaUrls,
+          )) {
+        return;
+      }
+      if (!context.mounted) return;
+
+      await _finalizeTaskCompletion(context, mediaUrls: mediaPhase.mediaUrls);
+    } catch (e, st) {
+      AppLogger.error('TaskCompleteWithPhotoSection: dokončení úkolu selhalo', e, st);
+      if (context.mounted) {
+        _showFlowErrorSnack(context, e, isStart: false);
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
   }
 }
 

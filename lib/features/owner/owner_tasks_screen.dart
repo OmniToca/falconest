@@ -9,214 +9,188 @@ import 'package:falconest/features/admin/providers/task_categories_provider.dart
 import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
 import 'package:falconest/features/owner/providers/owner_tasks_provider.dart';
 import 'package:falconest/features/owner/widgets/owner_report_issue_dialog.dart';
+import 'package:falconest/features/owner/widgets/owner_task_card.dart';
 import 'package:falconest/features/owner/widgets/owner_task_detail_dialog.dart';
-import 'package:falconest/utils/task_visuals.dart';
 
 /// Obrazovka přehledu úkolů (prací) pro Klientský portál.
 ///
-/// Zobrazuje read-only Kanban board se třemi sloupci: Zadáno, Probíhá, Hotovo.
+/// Záložky **Aktivní práce** (Kanban: Zadáno, Probíhá) a **Historie** (dokončené úkoly).
 /// Majitel vidí pouze úkoly u svých bytů; návrhy (draft) jsou filtrovány v provideru.
 class OwnerTasksScreen extends ConsumerWidget {
   const OwnerTasksScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final tasksAsync = ref.watch(ownerTasksProvider);
     final categoriesByCode = ref.watch(taskCategoriesProvider).valueOrNull ?? {};
     final apartments = ref.read(ownerApartmentsProvider).valueOrNull ?? [];
     final profileId = ref.read(authNotifierProvider).state.profileId ?? '';
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('owner.tasks_title'.tr()),
-      ),
-      body: tasksAsync.when(
-        data: (tasks) {
-          if (tasks.isEmpty) {
-            return Center(
-              child: Text(
-                'owner.tasks_empty'.tr(),
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-            );
-          }
-          return _OwnerTasksKanbanBoard(
-            tasks: tasks,
-            categoriesByCode: categoriesByCode,
-            currentUserProfileId: profileId,
-          );
-        },
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, _) => Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
-              const SizedBox(height: 16),
-              Text(
-                'owner.tasks_load_error'.tr(),
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.red.shade700),
-              ),
-              const SizedBox(height: 16),
-              FilledButton(
-                onPressed: () => ref.invalidate(ownerTasksProvider),
-                child: Text('common.retry'.tr()),
-              ),
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        backgroundColor: Theme.of(context).colorScheme.surface,
+        appBar: AppBar(
+          title: Text('owner.tasks_title'.tr()),
+          surfaceTintColor: Colors.transparent,
+          bottom: TabBar(
+            tabs: [
+              Tab(text: 'owner.tasks_tab_active'.tr()),
+              Tab(text: 'owner.tasks_tab_history'.tr()),
             ],
           ),
         ),
-      ),
-      floatingActionButton: apartments.isEmpty
-          ? null
-          : FloatingActionButton.extended(
-              onPressed: () => openOwnerReportIssueDialog(
-                context,
-                apartments: apartments,
-                profileId: profileId,
-                onSuccess: () => ref.invalidate(ownerTasksProvider),
+        body: TabBarView(
+          children: [
+            _ActiveTasksTab(
+              categoriesByCode: categoriesByCode,
+              currentUserProfileId: profileId,
+            ),
+            _HistoryTasksTab(
+              categoriesByCode: categoriesByCode,
+              currentUserProfileId: profileId,
+            ),
+          ],
+        ),
+        floatingActionButton: apartments.isEmpty
+            ? null
+            : FloatingActionButton.extended(
+                onPressed: () => openOwnerReportIssueDialog(
+                  context,
+                  apartments: apartments,
+                  profileId: profileId,
+                  onSuccess: () {
+                    ref.invalidate(ownerTasksProvider);
+                    ref.invalidate(ownerTaskHistoryProvider);
+                  },
+                ),
+                icon: const Icon(Icons.report_problem_outlined),
+                label: Text('owner.report_issue_btn'.tr()),
               ),
-              icon: const Icon(Icons.report_problem_outlined),
-              label: Text('owner.report_issue_btn'.tr()),
-            ),
-    );
-  }
-}
-
-/// Mapování sloupce Kanbanu pro majitele – pouze tři sloupce.
-enum _OwnerColumn { assigned, inProgress, completed }
-
-/// Určí, do kterého sloupce patří úkol podle statusu.
-_OwnerColumn _columnForStatus(String? status) {
-  if (status == null || status.trim().isEmpty) return _OwnerColumn.assigned;
-  final s = status.trim().toLowerCase();
-  if (s == 'in_progress' || s == 'probíhá' || s == 'problem' || s == 'problém') {
-    return _OwnerColumn.inProgress;
-  }
-  if (s == 'completed' || s == 'done' || s == 'hotovo' || s == 'dokončeno') {
-    return _OwnerColumn.completed;
-  }
-  return _OwnerColumn.assigned;
-}
-
-/// Read-only Kanban board – tři sloupce, bez Drag&Drop.
-class _OwnerTasksKanbanBoard extends StatelessWidget {
-  const _OwnerTasksKanbanBoard({
-    required this.tasks,
-    required this.categoriesByCode,
-    required this.currentUserProfileId,
-  });
-
-  final List<TaskRow> tasks;
-  final Map<String, TaskCategoryModel> categoriesByCode;
-  final String currentUserProfileId;
-
-  List<TaskRow> _tasksForColumn(_OwnerColumn col) {
-    return tasks.where((t) => _columnForStatus(t.status) == col).toList();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _OwnerKanbanColumn(
-            tasks: _tasksForColumn(_OwnerColumn.assigned),
-            titleKey: 'owner.tasks_column_assigned',
-            categoriesByCode: categoriesByCode,
-            currentUserProfileId: currentUserProfileId,
-          ),
-          _OwnerKanbanColumn(
-            tasks: _tasksForColumn(_OwnerColumn.inProgress),
-            titleKey: 'owner.tasks_column_in_progress',
-            categoriesByCode: categoriesByCode,
-            currentUserProfileId: currentUserProfileId,
-          ),
-          _OwnerKanbanColumn(
-            tasks: _tasksForColumn(_OwnerColumn.completed),
-            titleKey: 'owner.tasks_column_completed',
-            categoriesByCode: categoriesByCode,
-            currentUserProfileId: currentUserProfileId,
-          ),
-        ].map((w) => Expanded(child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6),
-          child: w,
-        ))).toList(),
       ),
     );
   }
 }
 
-/// Jeden sloupec Kanbanu – bez DragTarget, pouze zobrazení.
-class _OwnerKanbanColumn extends StatelessWidget {
-  const _OwnerKanbanColumn({
-    required this.tasks,
-    required this.titleKey,
+/// Záložka aktivních úkolů – Kanban bez sloupce „Hotovo“ (dokončené jsou v Historii).
+class _ActiveTasksTab extends ConsumerWidget {
+  const _ActiveTasksTab({
     required this.categoriesByCode,
     required this.currentUserProfileId,
   });
 
-  final List<TaskRow> tasks;
-  final String titleKey;
   final Map<String, TaskCategoryModel> categoriesByCode;
   final String currentUserProfileId;
 
   @override
-  Widget build(BuildContext context) {
-    final title = titleKey.tr();
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.grey.shade200,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade300),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.max,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final tasksAsync = ref.watch(ownerTasksProvider);
+    return tasksAsync.when(
+      data: (tasks) {
+        if (tasks.isEmpty) {
+          return Center(
             child: Text(
-              '$title (${tasks.length})',
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
-                  ),
+              'owner.tasks_empty'.tr(),
+              style: Theme.of(context).textTheme.titleMedium,
             ),
+          );
+        }
+        return _OwnerTasksKanbanBoard(
+          tasks: tasks,
+          categoriesByCode: categoriesByCode,
+          currentUserProfileId: currentUserProfileId,
+        );
+      },
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (error, _) => _TasksError(onRetry: () => ref.invalidate(ownerTasksProvider)),
+    );
+  }
+}
+
+/// Záložka historie – dokončené úkoly, řazení od nejnovějších (provider).
+class _HistoryTasksTab extends ConsumerWidget {
+  const _HistoryTasksTab({
+    required this.categoriesByCode,
+    required this.currentUserProfileId,
+  });
+
+  final Map<String, TaskCategoryModel> categoriesByCode;
+  final String currentUserProfileId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final historyAsync = ref.watch(ownerTaskHistoryProvider);
+    return historyAsync.when(
+      data: (tasks) {
+        if (tasks.isEmpty) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                'owner.tasks_history_empty'.tr(),
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+          );
+        }
+        return ListView.builder(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
+          itemCount: tasks.length,
+          itemBuilder: (context, index) {
+            final task = tasks[index];
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: OwnerTaskCard(
+                task: task,
+                categoriesByCode: categoriesByCode,
+                currentUserProfileId: currentUserProfileId,
+                onTap: () => OwnerTaskDetailDialog.show(
+                  context,
+                  OwnerTaskDetailData(
+                    taskId: task.id,
+                    title: task.title,
+                    taskType: task.taskType,
+                    apartmentName: task.apartmentName,
+                    scheduledStart: task.scheduledStart ?? task.dueDate,
+                    status: task.status,
+                    description:
+                        task.description.trim().isEmpty ? null : task.description,
+                    mediaUrls: task.mediaUrls,
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (error, _) => _TasksError(onRetry: () => ref.invalidate(ownerTaskHistoryProvider)),
+    );
+  }
+}
+
+class _TasksError extends StatelessWidget {
+  const _TasksError({required this.onRetry});
+
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.error_outline, size: 48, color: Colors.red.shade700),
+          const SizedBox(height: 16),
+          Text(
+            'owner.tasks_load_error'.tr(),
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.red.shade700),
           ),
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
-              itemCount: tasks.length,
-              itemBuilder: (context, index) {
-                final task = tasks[index];
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: InkWell(
-                    onTap: () => OwnerTaskDetailDialog.show(
-                      context,
-                      OwnerTaskDetailData(
-                        title: task.title,
-                        taskType: task.taskType,
-                        apartmentName: task.apartmentName,
-                        scheduledStart: task.scheduledStart ?? task.dueDate,
-                        status: task.status,
-                        description: task.description.trim().isEmpty ? null : task.description,
-                        mediaUrls: task.mediaUrls,
-                      ),
-                    ),
-                    borderRadius: BorderRadius.circular(12),
-                    child: _OwnerTaskCard(
-                      task: task,
-                      categoriesByCode: categoriesByCode,
-                      currentUserProfileId: currentUserProfileId,
-                    ),
-                  ),
-                );
-              },
-            ),
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: onRetry,
+            child: Text('common.retry'.tr()),
           ),
         ],
       ),
@@ -224,220 +198,189 @@ class _OwnerKanbanColumn extends StatelessWidget {
   }
 }
 
-/// Zjednodušená karta úkolu pro majitele.
-///
-/// UI: Karta je striktně read-only, bez Drag&Drop a jmen personálu.
-/// Zobrazuje: typ úkolu, název, byt, datum a čas. Pokud úkol nahlásil majitel
-/// (createdBy == currentUserProfileId), zobrazí se Chip „Nahlášeno vámi“ a stav je zvýrazněn.
-class _OwnerTaskCard extends StatelessWidget {
-  const _OwnerTaskCard({
-    required this.task,
+/// Dva sloupce Kanbanu: Zadáno, Probíhá (bez dokončených).
+enum _OwnerColumn { assigned, inProgress }
+
+_OwnerColumn _columnForActiveStatus(String? status) {
+  if (status == null || status.trim().isEmpty) return _OwnerColumn.assigned;
+  final s = status.trim().toLowerCase();
+  if (s == 'in_progress' || s == 'probíhá' || s == 'problem' || s == 'problém') {
+    return _OwnerColumn.inProgress;
+  }
+  if (isOwnerTaskCompletedStatus(status)) {
+    return _OwnerColumn.assigned;
+  }
+  return _OwnerColumn.assigned;
+}
+
+/// Read-only Kanban – dva sloupce (aktivní práce).
+class _OwnerTasksKanbanBoard extends StatelessWidget {
+  const _OwnerTasksKanbanBoard({
+    required this.tasks,
     required this.categoriesByCode,
     required this.currentUserProfileId,
   });
 
-  final TaskRow task;
+  static const double _narrowKanbanMaxWidth = 600;
+
+  final List<TaskRow> tasks;
   final Map<String, TaskCategoryModel> categoriesByCode;
   final String currentUserProfileId;
 
-  static String _formatDue(DateTime d) {
-    return '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')} '
-        '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
-  }
-
-  static String _taskTypeLabelKey(String taskType) {
-    switch (taskType.toLowerCase()) {
-      case 'cleaning':
-      case 'úklid':
-        return 'admin.task_type_cleaning';
-      case 'transfer_in':
-      case 'transfer':
-        return 'admin.task_type_transfer_in';
-      case 'transfer_out':
-        return 'admin.task_type_transfer_out';
-      case 'check_in':
-        return 'admin.task_type_check_in';
-      case 'check_out':
-        return 'admin.task_type_check_out';
-      case 'issue':
-        return 'admin.task_type_issue';
-      case 'maintenance':
-      case 'údržba':
-        return 'admin.task_type_maintenance';
-      case 'material':
-        return 'admin.task_type_material';
-      case 'jiné':
-        return 'admin.task_type_other';
-      default:
-        return 'admin.task_type_other';
-    }
-  }
-
-  static Color _statusColor(String? status) {
-    final s = (status ?? '').trim().toLowerCase();
-    if (s == 'in_progress' || s == 'probíhá') return const Color(0xFF1565C0);
-    if (s == 'problem' || s == 'problém') return const Color(0xFFC62828);
-    if (s == 'completed' || s == 'done' || s == 'hotovo') return const Color(0xFF2E7D32);
-    return const Color(0xFF757575);
-  }
-
-  static String _statusLabel(String? status) {
-    final s = (status ?? '').trim().toLowerCase();
-    if (s == 'in_progress' || s == 'probíhá') return 'task_status.in_progress'.tr();
-    if (s == 'problem' || s == 'problém') return 'task_status.problem'.tr();
-    if (s == 'completed' || s == 'done' || s == 'hotovo') return 'task_status.completed'.tr();
-    if (s == 'pending') return 'owner.task_status_new'.tr();
-    return 'task_status.assigned'.tr();
+  List<TaskRow> _tasksForColumn(_OwnerColumn col) {
+    return tasks.where((t) => _columnForActiveStatus(t.status) == col).toList();
   }
 
   @override
   Widget build(BuildContext context) {
-    final isReportedByMe = currentUserProfileId.isNotEmpty &&
-        task.createdBy != null &&
-        task.createdBy == currentUserProfileId;
-    final dueStr = _formatDue(task.dueDate);
-    final cardColor = TaskVisuals.getBackgroundColor(
-      task.taskType,
-      categoriesByCode: categoriesByCode.isNotEmpty ? categoriesByCode : null,
-    );
-    final typeIcon = TaskVisuals.getIcon(
-      task.taskType,
-      categoriesByCode: categoriesByCode.isNotEmpty ? categoriesByCode : null,
-    );
-    final statusColor = _statusColor(task.status);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isNarrow = constraints.maxWidth < _narrowKanbanMaxWidth;
 
-    return Card(
-      elevation: isReportedByMe ? 1 : 0,
-      color: cardColor,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(
-          color: isReportedByMe ? const Color(0xFF1976D2) : Colors.grey.shade300,
-          width: isReportedByMe ? 1.5 : 1,
-        ),
-      ),
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
+        if (isNarrow) {
+          return SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Icon(typeIcon, size: 16, color: Colors.grey.shade700),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    _taskTypeLabelKey(task.taskType).tr(),
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
-                  ),
+                _OwnerKanbanColumn(
+                  tasks: _tasksForColumn(_OwnerColumn.assigned),
+                  titleKey: 'owner.tasks_column_assigned',
+                  categoriesByCode: categoriesByCode,
+                  currentUserProfileId: currentUserProfileId,
+                  expandList: false,
+                ),
+                const SizedBox(height: 28),
+                _OwnerKanbanColumn(
+                  tasks: _tasksForColumn(_OwnerColumn.inProgress),
+                  titleKey: 'owner.tasks_column_in_progress',
+                  categoriesByCode: categoriesByCode,
+                  currentUserProfileId: currentUserProfileId,
+                  expandList: false,
                 ),
               ],
             ),
-            if (isReportedByMe) ...[
-              const SizedBox(height: 6),
-              Chip(
-                avatar: Icon(Icons.person_outline, size: 14, color: Colors.blue.shade700),
-                label: Text(
-                  'owner.tasks_reported_by_me'.tr(),
-                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.blue.shade800),
-                ),
-                backgroundColor: Colors.blue.shade50,
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 0),
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                visualDensity: VisualDensity.compact,
+          );
+        }
+
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(12, 16, 12, 28),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _OwnerKanbanColumn(
+                tasks: _tasksForColumn(_OwnerColumn.assigned),
+                titleKey: 'owner.tasks_column_assigned',
+                categoriesByCode: categoriesByCode,
+                currentUserProfileId: currentUserProfileId,
               ),
-            ],
-            const SizedBox(height: 4),
-            Text(
-              (task.title.trim().isNotEmpty)
-                  ? task.title
-                  : (task.apartmentName?.trim().isNotEmpty == true
-                      ? task.apartmentName!
-                      : 'admin.task_no_title'.tr()),
-              style: const TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.bold,
-                color: Colors.black87,
+              _OwnerKanbanColumn(
+                tasks: _tasksForColumn(_OwnerColumn.inProgress),
+                titleKey: 'owner.tasks_column_in_progress',
+                categoriesByCode: categoriesByCode,
+                currentUserProfileId: currentUserProfileId,
               ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            if (task.apartmentName != null &&
-                task.apartmentName!.trim().isNotEmpty &&
-                task.title.trim().isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Text(
-                task.apartmentName!,
-                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
-            const SizedBox(height: 4),
-            // Ochrana soukromí: místo jména zaměstnance generický text.
-            Text(
-              'owner.tasks_staff_label'.tr(),
-              style: TextStyle(
-                fontSize: 11,
-                color: Colors.grey.shade600,
-                fontStyle: FontStyle.italic,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 4,
-              runSpacing: 4,
-              children: [
-                Container(
-                  padding: EdgeInsets.symmetric(
-                    horizontal: isReportedByMe ? 8 : 6,
-                    vertical: isReportedByMe ? 4 : 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: statusColor.withValues(alpha: isReportedByMe ? 0.25 : 0.15),
-                    borderRadius: BorderRadius.circular(8),
-                    border: isReportedByMe ? Border.all(color: statusColor, width: 1) : null,
-                  ),
-                  child: Text(
-                    _statusLabel(task.status),
-                    style: TextStyle(
-                      fontSize: isReportedByMe ? 11 : 10,
-                      fontWeight: FontWeight.bold,
-                      color: statusColor,
+            ]
+                .map(
+                  (w) => Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: w,
                     ),
                   ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade200,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.schedule, size: 10, color: Colors.grey.shade700),
-                      const SizedBox(width: 4),
-                      Text(
-                        'admin.task_due'.tr(namedArgs: {'date': dueStr}),
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w500,
-                          color: Colors.grey.shade800,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+                )
+                .toList(),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _OwnerKanbanColumn extends StatelessWidget {
+  const _OwnerKanbanColumn({
+    required this.tasks,
+    required this.titleKey,
+    required this.categoriesByCode,
+    required this.currentUserProfileId,
+    this.expandList = true,
+  });
+
+  final List<TaskRow> tasks;
+  final String titleKey;
+  final Map<String, TaskCategoryModel> categoriesByCode;
+  final String currentUserProfileId;
+  final bool expandList;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = titleKey.tr();
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    final listView = ListView.builder(
+      shrinkWrap: !expandList,
+      physics: expandList
+          ? null
+          : const NeverScrollableScrollPhysics(),
+      padding: const EdgeInsets.only(bottom: 8),
+      itemCount: tasks.length,
+      itemBuilder: (context, index) {
+        final task = tasks[index];
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: OwnerTaskCard(
+            task: task,
+            categoriesByCode: categoriesByCode,
+            currentUserProfileId: currentUserProfileId,
+            onTap: () => OwnerTaskDetailDialog.show(
+              context,
+              OwnerTaskDetailData(
+                taskId: task.id,
+                title: task.title,
+                taskType: task.taskType,
+                apartmentName: task.apartmentName,
+                scheduledStart: task.scheduledStart ?? task.dueDate,
+                status: task.status,
+                description: task.description.trim().isEmpty ? null : task.description,
+                mediaUrls: task.mediaUrls,
+              ),
             ),
-          ],
+          ),
+        );
+      },
+    );
+
+    final header = Padding(
+      padding: const EdgeInsets.fromLTRB(4, 0, 4, 14),
+      child: Text(
+        '$title (${tasks.length})',
+        style: tt.titleMedium?.copyWith(
+          fontWeight: FontWeight.w700,
+          letterSpacing: -0.2,
+          color: cs.onSurface,
         ),
       ),
+    );
+
+    if (expandList) {
+      return Column(
+        mainAxisSize: MainAxisSize.max,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          header,
+          Expanded(child: listView),
+        ],
+      );
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        header,
+        listView,
+      ],
     );
   }
 }

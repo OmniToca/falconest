@@ -640,6 +640,85 @@ class DriftTaskRepository implements ITaskRepository {
     });
   }
 
+  /// Měsíční motivační statistiky – dokončené úkoly podle `completed_at` v aktuálním kalendářním měsíci (lokální čas).
+  ///
+  /// PROČ: [watchWorkerTasks] neukazuje hotové řádky v seznamu; karta úspěchů potřebuje stejný filtr pracovníka
+  /// jako týdenní statistiky a pole `started_at` / `completed_at` z tabulky `tasks` (parita s DB).
+  Stream<WorkerMonthMotivationStats> watchMonthlyMotivationStats(String tenantId, String workerId) {
+    if (tenantId.isEmpty || workerId.isEmpty) {
+      return Stream.value(
+        const WorkerMonthMotivationStats(
+          completedCount: 0,
+          workedHours: 0,
+          onTimeCount: 0,
+          onTimeEligibleCount: 0,
+        ),
+      );
+    }
+    return (_db.select(_db.tasks)
+          ..where((t) =>
+              t.tenantId.equals(tenantId) &
+              (t.assignedUserSupabaseId.equals(workerId) | t.assignedUserIdsJson.isNotNull())))
+        .watch()
+        .map((rows) {
+      final forWorker = rows.where((t) {
+        if (t.assignedUserSupabaseId == workerId) return true;
+        final json = t.assignedUserIdsJson;
+        if (json == null || json.isEmpty) return false;
+        try {
+          final list = jsonDecode(json);
+          if (list is! List) return false;
+          return list.any((e) => (e?.toString().trim() ?? '') == workerId);
+        } catch (e, st) {
+          AppLogger.error('DriftTaskRepository: parsování assigned_user_ids JSON (watchMonthlyMotivationStats) selhalo', e, st);
+          return false;
+        }
+      });
+
+      final now = DateTime.now();
+      final monthStart = DateTime(now.year, now.month, 1);
+      final monthEndExclusive = DateTime(now.year, now.month + 1, 1);
+
+      var completedCount = 0;
+      var workedMinutesTotal = 0.0;
+      var onTimeCount = 0;
+      var onTimeEligible = 0;
+
+      for (final t in forWorker) {
+        if (!_isCompletedTaskStatus(t.status)) continue;
+        final ca = t.completedAt;
+        if (ca == null) continue;
+        final localDone = ca.toLocal();
+        if (localDone.isBefore(monthStart) || !localDone.isBefore(monthEndExclusive)) continue;
+
+        completedCount++;
+
+        final sa = t.startedAt;
+        if (sa != null) {
+          final dur = ca.difference(sa);
+          if (dur.inMinutes > 0 && dur.inHours <= 16) {
+            workedMinutesTotal += dur.inMinutes.toDouble();
+          }
+        }
+
+        final sched = t.scheduledStart;
+        onTimeEligible++;
+        final sd = DateTime(sched.toLocal().year, sched.toLocal().month, sched.toLocal().day);
+        final dd = DateTime(localDone.year, localDone.month, localDone.day);
+        if (sd == dd) {
+          onTimeCount++;
+        }
+      }
+
+      return WorkerMonthMotivationStats(
+        completedCount: completedCount,
+        workedHours: workedMinutesTotal / 60.0,
+        onTimeCount: onTimeCount,
+        onTimeEligibleCount: onTimeEligible,
+      );
+    });
+  }
+
   /// Začátek týdne (pondělí 00:00) v lokálním čase – shodně s původním weekly stats UI.
   DateTime _weekStartLocal(DateTime now) {
     final daysFromMonday = now.weekday - 1;

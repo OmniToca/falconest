@@ -73,6 +73,22 @@ class Apartments extends Table {
   TextColumn get zoneId => text().nullable()();
   /// Instrukce k parkování pro offline zobrazení – z `apartments.parking_instructions`.
   TextColumn get parkingInstructions => text().nullable()();
+  /// Příznak investičního modulu – z `apartments.investment_tracking_enabled`.
+  BoolColumn get investmentTrackingEnabled => boolean().withDefault(const Constant(false))();
+  /// `short_term` | `long_term` – z `apartments.rental_mode`.
+  TextColumn get rentalMode => text().withDefault(const Constant('short_term'))();
+  /// Platnost smlouvy od (nullable) – z `apartments.lease_start_date`.
+  DateTimeColumn get leaseStartDate => dateTime().nullable()();
+  /// Platnost smlouvy do – z `apartments.lease_end_date`.
+  DateTimeColumn get leaseEndDate => dateTime().nullable()();
+  /// Měsíční nájem (dlouhodobý) – z `apartments.rent_amount`.
+  RealColumn get rentAmount => real().withDefault(const Constant(0))();
+  /// Den splatnosti 1–31 – z `apartments.rent_due_day`.
+  IntColumn get rentDueDay => integer().withDefault(const Constant(1))();
+  /// `notification` | `task` – z `apartments.rent_collection_mode`.
+  TextColumn get rentCollectionMode => text().withDefault(const Constant('notification'))();
+  /// Odpovědný pracovník (profiles.id) – z `apartments.rent_task_assignee_id`.
+  TextColumn get rentTaskAssigneeId => text().nullable()();
   IntColumn get syncStatus => integer().withDefault(const Constant(0))();
   DateTimeColumn get localUpdatedAt => dateTime()();
   DateTimeColumn get lastSyncedAt => dateTime().nullable()();
@@ -411,7 +427,7 @@ class AppDatabase extends _$AppDatabase {
       : super(executor ?? openFalcoNestDriftConnection());
 
   @override
-  int get schemaVersion => 15;
+  int get schemaVersion => 18;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -491,6 +507,23 @@ class AppDatabase extends _$AppDatabase {
           // PROČ v15: parita se Supabase – sloupce is_owner_block / agency_collects_payment odstraněny.
           if (from < 15) {
             await migrator.dropColumn(reservations, 'is_owner_block');
+          }
+          // PROČ v16: příznak investičního sledování u bytu (Supabase apartments.investment_tracking_enabled).
+          if (from < 16) {
+            await migrator.addColumn(apartments, apartments.investmentTrackingEnabled);
+          }
+          // PROČ v17: režim pronájmu STR vs. dlouhodobý + volitelná platnost smlouvy (Supabase).
+          if (from < 17) {
+            await migrator.addColumn(apartments, apartments.rentalMode);
+            await migrator.addColumn(apartments, apartments.leaseStartDate);
+            await migrator.addColumn(apartments, apartments.leaseEndDate);
+          }
+          // PROČ v18: automatizace nájmu u dlouhodobých bytů (částka, splatnost, režim, assignee).
+          if (from < 18) {
+            await migrator.addColumn(apartments, apartments.rentAmount);
+            await migrator.addColumn(apartments, apartments.rentDueDay);
+            await migrator.addColumn(apartments, apartments.rentCollectionMode);
+            await migrator.addColumn(apartments, apartments.rentTaskAssigneeId);
           }
         },
       );

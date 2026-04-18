@@ -4,6 +4,7 @@ import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
+import 'package:falconest/features/owner/providers/owner_billing_provider.dart';
 
 /// Jedna firemní výdajová transakce (COMPANY_EXPENSE) navázaná na byt majitele.
 ///
@@ -101,6 +102,28 @@ final ownerCompanyExpensesProvider =
     AppLogger.error('ownerCompanyExpensesProvider: načtení COMPANY_EXPENSE selhalo', e, st);
     return [];
   }
+});
+
+/// Firemní výdaje, které **nejsou** uvedeny v `snapshot_data.expenses[].id` žádného uzamčeného vyúčtování.
+///
+/// PROČ: Na kartě Vyúčtování má majitel vidět jen položky, které ještě nejsou zahrnuty ve faktuře
+/// za uzavřený měsíc; historické výdaje už ve snapshotu jsou duplicitně nezobrazujeme.
+final ownerUninvoicedCompanyExpensesProvider =
+    FutureProvider<List<OwnerCompanyExpenseRow>>((ref) async {
+  final expenses = await ref.watch(ownerCompanyExpensesProvider.future);
+  final snapshots = await ref.watch(ownerBillingSnapshotsProvider.future);
+  final invoicedIds = <String>{};
+  for (final s in snapshots) {
+    final raw = s.snapshotData['expenses'];
+    if (raw is! List) continue;
+    for (final e in raw) {
+      if (e is Map) {
+        final id = e['id']?.toString().trim();
+        if (id != null && id.isNotEmpty) invoicedIds.add(id);
+      }
+    }
+  }
+  return expenses.where((r) => !invoicedIds.contains(r.id)).toList();
 });
 
 /// Zapíše schválení majitele do [metadata] transakce (merge nad existujícím JSON).

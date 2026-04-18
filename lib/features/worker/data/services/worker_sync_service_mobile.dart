@@ -84,7 +84,11 @@ class WorkerSyncService {
       List<dynamic> apartmentsData = [];
       if (apartmentIds.isNotEmpty) {
         apartmentsData = await SupabaseService.safeFrom('apartments', tenantId)
-            .select('id, tenant_id, name, address, code, keybox, owner_notes, check_in_time, check_out_time, zone_id, parking_instructions')
+            .select(
+              'id, tenant_id, name, address, code, keybox, owner_notes, check_in_time, check_out_time, '
+              'zone_id, parking_instructions, investment_tracking_enabled, rental_mode, lease_start_date, lease_end_date, '
+              'rent_amount, rent_due_day, rent_collection_mode, rent_task_assignee_id',
+            )
             .inFilter('id', apartmentIds.toList())
             .isFilter('deleted_at', null);
         apartmentsData = List<dynamic>.from(apartmentsData);

@@ -382,6 +382,95 @@ List<WeekProcessedTask> getProcessedTasksForWeek(
   return result;
 }
 
+/// Začátek časové mřížky (hodina) – musí odpovídat `_gridStartHour` v [PlanningCalendarScreen].
+const int kPlanningCalendarGridStartHour = 0;
+
+/// Filtr personálu + fulltext pro týdenní plán (dříve `_WeekGridScrollBody._filteredTasks`).
+List<PlanningTask> filterPlanningTasksForWeekGrid(
+  List<PlanningTask> tasks,
+  String? selectedResourceFilterId,
+  String searchQuery,
+) {
+  var list = tasks;
+  if (selectedResourceFilterId != null) {
+    list = list.where((t) => t.resourceId == selectedResourceFilterId).toList();
+  }
+  final q = searchQuery.trim();
+  if (q.isEmpty) return list;
+  final ql = q.toLowerCase();
+  return list.where((t) {
+    final title = t.title.toLowerCase();
+    final apartment = (t.apartmentName ?? '').toLowerCase();
+    final assignee = (t.assignedUserName ?? '').toLowerCase();
+    return title.contains(ql) || apartment.contains(ql) || assignee.contains(ql);
+  }).toList();
+}
+
+/// Klíč pro cache [planningWeekGridProcessedProvider] – žádný přepočet při bezvýznamném rebuildu UI.
+///
+/// PROČ: [taskDataFingerprint] se změní při jakékoli změně úkolů z [planningCalendarDataProvider];
+/// scroll a překreslení bez změny dat drží stejný klíč → Riverpod vrátí cache.
+class PlanningWeekGridLayoutKey {
+  const PlanningWeekGridLayoutKey({
+    required this.weekMonday,
+    required this.selectedResourceFilterId,
+    required this.searchQuery,
+    required this.taskDataFingerprint,
+  });
+
+  final DateTime weekMonday;
+  final String? selectedResourceFilterId;
+  final String searchQuery;
+  final int taskDataFingerprint;
+
+  static int computeTaskDataFingerprint(List<PlanningTask> tasks) {
+    var h = tasks.length;
+    for (final t in tasks) {
+      h = 0x1fffffff & (h * 31 + t.id.hashCode);
+      h = 0x1fffffff & (h * 31 + t.scheduledStart.millisecondsSinceEpoch);
+      h = 0x1fffffff & (h * 31 + (t.dueDate?.millisecondsSinceEpoch ?? 0));
+      h = 0x1fffffff & (h * 31 + t.resourceId.hashCode);
+      h = 0x1fffffff & (h * 31 + Object.hashAll(t.assignedUserIds));
+    }
+    return h;
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PlanningWeekGridLayoutKey &&
+          other.weekMonday == weekMonday &&
+          other.selectedResourceFilterId == selectedResourceFilterId &&
+          other.searchQuery == searchQuery &&
+          other.taskDataFingerprint == taskDataFingerprint;
+
+  @override
+  int get hashCode => Object.hash(
+        weekMonday,
+        selectedResourceFilterId,
+        searchQuery,
+        taskDataFingerprint,
+      );
+}
+
+/// Rozložení karet v týdenní mřížce – těžký výpočet jen při změně vstupů (viz [PlanningWeekGridLayoutKey]).
+final planningWeekGridProcessedProvider =
+    Provider.autoDispose.family<List<WeekProcessedTask>, PlanningWeekGridLayoutKey>((ref, key) {
+  final async = ref.watch(planningCalendarDataProvider(key.weekMonday));
+  final data = async.valueOrNull;
+  if (data == null) return const <WeekProcessedTask>[];
+  final filtered = filterPlanningTasksForWeekGrid(
+    data.tasks,
+    key.selectedResourceFilterId,
+    key.searchQuery,
+  );
+  return getProcessedTasksForWeek(
+    filtered,
+    key.weekMonday,
+    kPlanningCalendarGridStartHour,
+  );
+});
+
 /// Detekce konfliktů: stejný assigned_to, překrývající se čas.
 /// Vrací množinu ID úkolů, které jsou v konfliktu.
 Set<String> detectConflicts(List<PlanningTask> tasks) {

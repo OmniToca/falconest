@@ -477,6 +477,7 @@ SmartGenPhaseCResult runSmartGenerationPhaseCSync(SmartGenPhaseCPack pack) {
     double finalPrice = (fallback?['price'] as num?)?.toDouble() ?? 0.0;
     String finalPayer = fallback?['payer'] as String? ?? 'owner';
     bool finalPhoto = fallback?['photo'] as bool? ?? false;
+    final serviceTransitPrice = (fallback?['transit_price'] as num?)?.toDouble();
     String? finalNote;
     String? finalFlight;
 
@@ -498,6 +499,11 @@ SmartGenPhaseCResult runSmartGenerationPhaseCSync(SmartGenPhaseCPack pack) {
     final metadata = <String, dynamic>{};
 
     metadata['requires_photo'] = finalPhoto;
+    if (serviceTransitPrice != null && serviceTransitPrice > 0) {
+      metadata['transit_amount_to_collect'] = serviceTransitPrice;
+      metadata['long_term_rent_due'] = true;
+      metadata['rent_cash_flow'] = 'agency_float';
+    }
     if (finalNote != null && finalNote.isNotEmpty) metadata['custom_note'] = finalNote;
     if (finalFlight != null && finalFlight.isNotEmpty) {
       metadata['flight_number'] = finalFlight;

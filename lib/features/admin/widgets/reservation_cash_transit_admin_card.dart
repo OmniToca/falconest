@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/providers/tenant_currency_provider.dart';
-import 'package:falconest/core/repositories/cash/reservation_cash_transit_repository.dart';
+import 'package:falconest/features/owner/repositories/reservation_cash_transit_repository.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/core/theme/app_spacing.dart';
 import 'package:falconest/core/theme/theme_ext.dart';
