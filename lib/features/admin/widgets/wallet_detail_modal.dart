@@ -748,6 +748,7 @@ class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
     }
 
     String? ridForSubmit = _reservationId;
+    String? sourceTaskIdForSubmit;
     final txList = ref.read(walletTransactionsProvider(widget.row.id)).value;
     var mustSelectReservation = false;
     if (txList != null) {
@@ -755,6 +756,26 @@ class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
       mustSelectReservation = _hasTransitCashInCurrentBatch(txList);
       if (ridForSubmit != null && !opts.any((o) => o.id == ridForSubmit)) {
         ridForSubmit = null;
+      }
+      if (ridForSubmit == null || ridForSubmit.trim().isEmpty) {
+        final split = _WalletDetailModalContentState._splitByLastHandover(txList);
+        for (final t in split.current) {
+          if ((t.transactionType ?? '') != 'COLLECTED_FROM_GUEST') continue;
+          final transitRaw = t.raw['transit_portion'];
+          final transit = transitRaw is num
+              ? transitRaw.toDouble()
+              : double.tryParse(transitRaw?.toString() ?? '');
+          final taskId = t.taskId?.trim();
+          if (transit != null &&
+              transit > 0 &&
+              taskId != null &&
+              taskId.isNotEmpty) {
+            // PROČ: U dlouhodobého nájmu nemusí existovat reservation_id. Přeneseme task_id,
+            // aby Fáze C uměla dohledat apartment_id a připsat hotovost správnému majiteli.
+            sourceTaskIdForSubmit = taskId;
+            break;
+          }
+        }
       }
     }
     if (mustSelectReservation &&
@@ -779,18 +800,17 @@ class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
             adminProfileId: adminProfileId,
             tenantId: tenantId,
             reservationId: (rid != null && rid.isNotEmpty) ? rid : null,
+            sourceTaskId: sourceTaskIdForSubmit,
           );
       // PROČ: Samotné HANDED_TO_AGENCY nestačí – majitelův zůstatek v portálu čte `owner_cash_transit_settlements`.
       // Po převzetí s vazbou na rezervaci doplníme uznaný podíl (transit) až do výše předané částky.
       var syncSuccess = true;
-      if (handedTxId != null &&
-          handedTxId.isNotEmpty &&
-          rid != null &&
-          rid.isNotEmpty) {
+      if (handedTxId != null && handedTxId.isNotEmpty) {
         syncSuccess =
             await ReservationCashTransitRepository.syncOwnerSettlementAfterHandedToAgency(
               tenantId: tenantId,
-              reservationId: rid,
+              reservationId: (rid != null && rid.isNotEmpty) ? rid : null,
+              sourceTaskId: sourceTaskIdForSubmit,
               adminProfileId: adminProfileId,
               workerProfileId: widget.row.profileId,
               handedAmountPositive: amount,

@@ -208,17 +208,27 @@ class ReservationCashTransitRepository {
       final id = r['id']?.toString();
       if (id != null && id.isNotEmpty) resIds.add(id);
     }
-    if (resIds.isEmpty) return [];
 
     final safeSettlements = SupabaseService.safeFrom(
       'owner_cash_transit_settlements',
       tid,
     );
-    // PROČ: Základní migrace nemá `created_at`; `settled_at` je vždy NOT NULL s defaultem.
-    final rows = await safeSettlements
-        .select()
-        .inFilter('reservation_id', resIds)
-        .order('settled_at', ascending: false);
+    dynamic rows;
+    if (resIds.isEmpty) {
+      rows = await safeSettlements
+          .select()
+          .inFilter('apartment_id', aptIds)
+          .order('settled_at', ascending: false);
+    } else {
+      final resCsv = resIds.join(',');
+      final aptCsv = aptIds.join(',');
+      // PROČ: Nové settlementy z dlouhodobého nájmu mohou mít `reservation_id=NULL`, proto musíme
+      // vracet jak větev přes rezervaci, tak větev přes přímý `apartment_id`.
+      rows = await safeSettlements
+          .select()
+          .or('reservation_id.in.($resCsv),apartment_id.in.($aptCsv)')
+          .order('settled_at', ascending: false);
+    }
     return _parseSettlementRows(rows);
   }
 
@@ -284,7 +294,7 @@ class ReservationCashTransitRepository {
   }) async {
     if (settlements.isEmpty) return settlements;
     final ids = settlements
-        .map((s) => s.reservationId.trim())
+        .map((s) => s.reservationId?.trim() ?? '')
         .where((id) => id.isNotEmpty)
         .toSet()
         .toList();
@@ -317,7 +327,9 @@ class ReservationCashTransitRepository {
       }
 
       return settlements.map((s) {
-        final pair = byId[s.reservationId];
+        final rid = s.reservationId?.trim();
+        if (rid == null || rid.isEmpty) return s;
+        final pair = byId[rid];
         if (pair == null) return s;
         return s.copyWith(
           reservationStayStart: pair.start,
@@ -552,18 +564,23 @@ class ReservationCashTransitRepository {
   /// Částečné výběry: povoluje více settlement řádků na jednu rezervaci (součet nesmí překročit „nasbíraný“ podíl).
   static Future<bool> syncOwnerSettlementAfterHandedToAgency({
     required String tenantId,
-    required String reservationId,
+    String? reservationId,
+    String? sourceTaskId,
     required String adminProfileId,
     required String workerProfileId,
     required double handedAmountPositive,
     required String handedTransactionId,
   }) async {
     final tid = tenantId.trim();
-    final rid = reservationId.trim();
+    final rid = reservationId?.trim();
+    final taskId = sourceTaskId?.trim();
     final pid = adminProfileId.trim();
     final wid = workerProfileId.trim();
     final txId = handedTransactionId.trim();
-    if (tid.isEmpty || rid.isEmpty || pid.isEmpty || txId.isEmpty) return true;
+    if (tid.isEmpty || pid.isEmpty || txId.isEmpty) return true;
+    if ((rid == null || rid.isEmpty) && (taskId == null || taskId.isEmpty)) {
+      return true;
+    }
     if (handedAmountPositive <= 0) return true;
 
     try {
@@ -572,36 +589,109 @@ class ReservationCashTransitRepository {
         tid,
       );
 
-      final collected = await ownerTransitCollectedTotalForReservation(
-        tenantId: tid,
-        reservationId: rid,
-      );
-      if (collected <= 1e-9) return true;
+      Map<String, dynamic>? payloadData;
+      if (rid != null && rid.isNotEmpty) {
+        final collected = await ownerTransitCollectedTotalForReservation(
+          tenantId: tid,
+          reservationId: rid,
+        );
+        if (collected <= 1e-9) return true;
 
-      final existing = await fetchSettlementsForReservation(
-        tenantId: tid,
-        reservationId: rid,
-      );
-      final alreadySettled = existing.fold<double>(0, (a, s) => a + s.amount);
-      final remaining = math.max(0.0, collected - alreadySettled);
-      if (remaining <= 1e-9) return true;
+        final existing = await fetchSettlementsForReservation(
+          tenantId: tid,
+          reservationId: rid,
+        );
+        final alreadySettled = existing.fold<double>(0, (a, s) => a + s.amount);
+        final remaining = math.max(0.0, collected - alreadySettled);
+        if (remaining <= 1e-9) return true;
 
-      final credit = math.min(remaining, handedAmountPositive);
-      if (credit <= 1e-9) return true;
+        final credit = math.min(remaining, handedAmountPositive);
+        if (credit <= 1e-9) return true;
 
-      final cur =
-          existing.isNotEmpty && existing.first.currency.trim().isNotEmpty
-          ? existing.first.currency.trim().toUpperCase()
-          : 'EUR';
+        final cur =
+            existing.isNotEmpty && existing.first.currency.trim().isNotEmpty
+            ? existing.first.currency.trim().toUpperCase()
+            : 'EUR';
+        payloadData = {
+          'reservation_id': rid,
+          'amount': credit,
+          'currency': cur,
+          'created_by': pid,
+          'note': 'auto_handoff: HANDED_TO_AGENCY (tx: $txId)',
+        };
+      } else if (taskId != null && taskId.isNotEmpty) {
+        final taskRow = await SupabaseService.safeFrom('tasks', tid)
+            .select('id, apartment_id, reservation_id, metadata')
+            .eq('id', taskId)
+            .maybeSingle();
+        if (taskRow == null) return true;
+        final apartmentId = taskRow['apartment_id']?.toString().trim();
+        if (apartmentId == null || apartmentId.isEmpty) return true;
+        final reservationFromTask = taskRow['reservation_id']?.toString().trim();
+        final metadataRaw = taskRow['metadata'];
+        Map<String, dynamic>? taskMeta;
+        if (metadataRaw is Map<String, dynamic>) {
+          taskMeta = metadataRaw;
+        } else if (metadataRaw is Map) {
+          taskMeta = Map<String, dynamic>.from(metadataRaw);
+        }
+        final longTermDue = taskMeta?['long_term_rent_due'] == true;
+        final plannedTransit = _transitAmountToCollectFromMetadata(taskMeta);
 
-      final payload = SupabaseService.safeInsertPayload(tid, {
-        'reservation_id': rid,
-        'amount': credit,
-        'currency': cur,
-        'created_by': pid,
-        'note':
-            'auto_handoff: HANDED_TO_AGENCY (tx: $txId)',
-      });
+        var collectedForTask = 0.0;
+        if (plannedTransit != null && plannedTransit > 0) {
+          final txRows = await SupabaseService.safeFrom(
+            'employee_cash_transactions',
+            tid,
+          )
+              .select('transaction_type, amount, transit_portion, task_id')
+              .eq('task_id', taskId)
+              .order('created_at', ascending: true);
+          for (final row in (txRows is List ? txRows : const <dynamic>[])) {
+            if (row is! Map) continue;
+            final type = (row['transaction_type'] as String?)?.trim() ?? '';
+            final amount = (row['amount'] as num?)?.toDouble() ?? 0;
+            if (type == 'COLLECTED_FROM_GUEST' && amount > 0) {
+              collectedForTask += _collectedTransitPortion(
+                txRow: Map<String, dynamic>.from(row),
+                taskMetaById: {taskId: taskMeta ?? const <String, dynamic>{}},
+              );
+            }
+          }
+        }
+        if (collectedForTask <= 1e-9) return true;
+
+        final existingRows = await safe.select('amount').eq('task_id', taskId);
+        final alreadySettled = (existingRows is List ? existingRows : const <dynamic>[])
+            .whereType<Map>()
+            .fold<double>(0.0, (sum, row) {
+              final amount = row['amount'];
+              final v = amount is num
+                  ? amount.toDouble()
+                  : double.tryParse(amount?.toString() ?? '');
+              return sum + (v ?? 0.0);
+            });
+        final remaining = math.max(0.0, collectedForTask - alreadySettled);
+        if (remaining <= 1e-9) return true;
+        final credit = math.min(remaining, handedAmountPositive);
+        if (credit <= 1e-9) return true;
+
+        payloadData = {
+          if (reservationFromTask != null && reservationFromTask.isNotEmpty)
+            'reservation_id': reservationFromTask,
+          'apartment_id': apartmentId,
+          'task_id': taskId,
+          'amount': credit,
+          'currency': 'EUR',
+          'created_by': pid,
+          // PROČ: Na owner dashboardu potřebujeme jasně rozlišit settlementy z dlouhodobého nájmu.
+          'note': longTermDue
+              ? 'Vybrany najem (auto_handoff, tx: $txId)'
+              : 'auto_handoff: HANDED_TO_AGENCY (task: $taskId, tx: $txId)',
+        };
+      }
+      if (payloadData == null) return true;
+      final payload = SupabaseService.safeInsertPayload(tid, payloadData);
       await safe.insert(payload);
       return true;
     } catch (e, st) {
@@ -618,6 +708,7 @@ class ReservationCashTransitRepository {
             'employee_transaction_id': txId,
             'worker_id': wid,
             'reservation_id': rid,
+            'task_id': taskId,
             'handed_amount': handedAmountPositive,
             'error': e.toString(),
             'stacktrace': st.toString(),

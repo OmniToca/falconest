@@ -2,15 +2,13 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:falconest/core/auth/auth_provider.dart';
-import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
 import 'package:falconest/core/theme/app_spacing.dart';
 import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/features/admin/models/task_category_model.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
-import 'package:falconest/features/admin/providers/finance_cash_provider.dart';
 import 'package:falconest/features/admin/widgets/kanban/kanban_shared.dart';
 import 'package:falconest/features/admin/widgets/kanban/kanban_task_card.dart';
+import 'package:falconest/features/worker/utils/cash_collection_dialog.dart';
 
 /// Definice sloupce Kanbanu – systémový status (hodnota v DB) a i18n klíč pro nadpis.
 class KanbanColumnDef {
@@ -142,49 +140,22 @@ class KanbanColumn extends ConsumerWidget {
         // Finanční zámek: úkol s výplatami/provizemi nelze přetahovat (ochrana účetnictví).
         if (lockedFinancialTaskIds.contains(task.id)) return;
 
-        // PROČ: Při dokončení úkolu s výběrem hotovosti nabídneme zápis do peněženky administrátora.
+        // PROČ: Drag&drop do "Hotovo" musí mít stejnou hotovostní kontrolu jako uložení v modalu.
+        // Při expected_cash > 0 nejdřív otevřeme maybeShowCashCollectionDialog a teprve pak uložíme status.
         if (systemStatus == 'completed') {
-          final amount = amountToCollectFromMetadata(task.metadata);
-          if (amount != null && amount > 0) {
-            final recordToWallet = await showCashCollectionOnCompleteDialog(
+          final expectedCash = amountToCollectFromMetadata(task.metadata) ?? 0.0;
+          if (expectedCash > 0) {
+            final cashResult = await maybeShowCashCollectionDialog(
               context,
+              ref,
+              _KanbanCashDialogDetail(task.metadata),
+              taskId: task.id,
+              onCompleted: () {},
+              completeTaskOnConfirm: false,
             );
             if (!context.mounted) return;
-            if (recordToWallet) {
-              final tenantId = ref.read(authNotifierProvider).tenantIdForData;
-              final profileId = ref.read(authNotifierProvider).state.profileId;
-              if (tenantId != null &&
-                  profileId != null &&
-                  tenantId.isNotEmpty &&
-                  profileId.isNotEmpty) {
-                try {
-                  await CashWalletRepository.instance.recordCashCollection(
-                    taskId: task.id,
-                    amount: amount,
-                    tenantId: tenantId,
-                    profileId: profileId,
-                    expectedAmount: amount,
-                    reservationId: task.reservationId,
-                  );
-                  if (context.mounted) {
-                    ref.invalidate(employeeCashWalletsProvider);
-                  }
-                } catch (e) {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          'common.generic_error_user_friendly'.tr(),
-                        ),
-                        backgroundColor: context.colors.error,
-                        behavior: SnackBarBehavior.floating,
-                      ),
-                    );
-                    return;
-                  }
-                }
-              }
-            }
+            // false = uživatel stiskl Zrušit → nepokračujeme se změnou statusu.
+            if (cashResult == false) return;
           }
         }
 
@@ -307,4 +278,10 @@ class KanbanColumn extends ConsumerWidget {
       },
     );
   }
+}
+
+/// Lehký adapter pro `maybeShowCashCollectionDialog`, který očekává objekt s getterem `metadata`.
+class _KanbanCashDialogDetail {
+  const _KanbanCashDialogDetail(this.metadata);
+  final Map<String, dynamic>? metadata;
 }

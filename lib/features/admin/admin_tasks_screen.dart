@@ -3595,14 +3595,35 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
       // PROČ: Sjednocení s interval scheduled_start–due_date; reporty a mobilní UI čtou estimated_minutes.
       mergedMetadata['estimated_minutes'] = durationMinutes;
 
-      // PROČ: Při dokončení úkolu s výběrem hotovosti nabídneme zápis do peněženky administrátora.
-      if (_status == 'completed') {
+      final previousStatus = normalizeToSystemStatus(widget.task.status);
+      final isTransitionToCompleted =
+          _status == 'completed' && previousStatus != 'completed';
+
+      // PROČ: Cash dialog musí vyskočit při skutečném přechodu na completed (ne při každém dalším editu),
+      // aby dispečer při uzavření úkolu vždy potvrdil výběr hotovosti do peněženky.
+      if (isTransitionToCompleted) {
         if (!context.mounted) {
           setState(() => _isSaving = false);
           return;
         }
-        final amount = amountToCollectFromMetadata(mergedMetadata);
-        if (amount != null && amount > 0) {
+        // PROČ: Dialog pro zápis hotovosti musí reagovat na celý plánovaný výběr od hosta:
+        // část pro agenturu (`amount_to_collect`) + průtok pro majitele (`transit_amount_to_collect`).
+        // Dříve jsme sledovali jen amount_to_collect, takže rent_collection / transit-only úkoly
+        // dialog přeskočily a hotovost se nezapsala.
+        final sourceMetadata = Map<String, dynamic>.from(widget.task.metadata ?? {});
+        final amountAgencyRaw =
+            mergedMetadata['amount_to_collect'] ?? sourceMetadata['amount_to_collect'];
+        final amountAgency = (amountAgencyRaw is num)
+            ? amountAgencyRaw.toDouble()
+            : double.tryParse(amountAgencyRaw?.toString() ?? '') ?? 0.0;
+        final amountTransitRaw =
+            mergedMetadata['transit_amount_to_collect'] ??
+            sourceMetadata['transit_amount_to_collect'];
+        final amountTransit = (amountTransitRaw is num)
+            ? amountTransitRaw.toDouble()
+            : double.tryParse(amountTransitRaw?.toString() ?? '') ?? 0.0;
+        final amount = amountAgency + amountTransit;
+        if (amount > 0) {
           final recordToWallet = await showCashCollectionOnCompleteDialog(
             // ignore: use_build_context_synchronously
             context,

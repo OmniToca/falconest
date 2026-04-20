@@ -503,6 +503,16 @@ SmartGenPhaseCResult runSmartGenerationPhaseCSync(SmartGenPhaseCPack pack) {
       metadata['transit_amount_to_collect'] = serviceTransitPrice;
       metadata['long_term_rent_due'] = true;
       metadata['rent_cash_flow'] = 'agency_float';
+      if (effectiveTaskType.trim().toLowerCase() == 'rent_collection') {
+        // PROČ: P&L trigger pro rent_collection parsuje měsíc z metadata.rent_cycle_key
+        // (prefix apartment_id + ":" + první den měsíce). Bez klíče se příjem do P&L nevygeneruje.
+        final monthStartUtc = DateTime.utc(result.start.year, result.start.month, 1);
+        final y = monthStartUtc.year.toString().padLeft(4, '0');
+        final m = monthStartUtc.month.toString().padLeft(2, '0');
+        final d = monthStartUtc.day.toString().padLeft(2, '0');
+        metadata['rent_cycle_key'] = '$apartmentId:$y-$m-$d';
+        metadata['billing_month'] = '$y-$m-$d';
+      }
     }
     if (finalNote != null && finalNote.isNotEmpty) metadata['custom_note'] = finalNote;
     if (finalFlight != null && finalFlight.isNotEmpty) {

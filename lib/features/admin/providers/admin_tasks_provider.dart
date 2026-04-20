@@ -1300,6 +1300,16 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
         scheduledMetadata['transit_amount_to_collect'] = transitPrice;
         scheduledMetadata['long_term_rent_due'] = true;
         scheduledMetadata['rent_cash_flow'] = 'agency_float';
+        if (service.serviceType.trim().toLowerCase() == 'rent_collection') {
+          // PROČ: SQL trigger tasks_apply_rent_collection_to_pnl čte měsíc právě z metadata.rent_cycle_key
+          // (formát "<apartment_id>:YYYY-MM-DD"). Bez tohoto klíče se po dokončení úkolu nezapíše příjem do P&L.
+          final monthStartUtc = DateTime.utc(result.start.year, result.start.month, 1);
+          final y = monthStartUtc.year.toString().padLeft(4, '0');
+          final m = monthStartUtc.month.toString().padLeft(2, '0');
+          final d = monthStartUtc.day.toString().padLeft(2, '0');
+          scheduledMetadata['rent_cycle_key'] = '$apartmentId:$y-$m-$d';
+          scheduledMetadata['billing_month'] = '$y-$m-$d';
+        }
       }
       if (resolvedPrice != null && resolvedPrice > 0) {
         if (scheduledPayerType == 'guest') {

@@ -17,7 +17,9 @@ abstract class OwnerCashTransitSettlement with _$OwnerCashTransitSettlement {
   const factory OwnerCashTransitSettlement({
     required String id,
     @JsonKey(name: 'tenant_id') required String tenantId,
-    @JsonKey(name: 'reservation_id') required String reservationId,
+    @JsonKey(name: 'reservation_id') String? reservationId,
+    @JsonKey(name: 'apartment_id') String? apartmentId,
+    @JsonKey(name: 'task_id') String? taskId,
     @JsonKey(fromJson: amountFromJson, toJson: amountToJson) required double amount,
     @Default('EUR') String currency,
     @JsonKey(name: 'settled_at') @NullableIsoDateTimeConverter() DateTime? settledAt,

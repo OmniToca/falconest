@@ -15,12 +15,13 @@ const _cleanColor = Color(0xFF2E7D32);
 const _cleaningColor = Color(0xFF1976D2);
 const _pendingColor = Color(0xFFC62828);
 const _unknownColor = Color(0xFF757575);
+/// Obsazenost (aktivní pobyt) — odlišná od úklidu, výrazná ale klidná.
+const _occupiedColor = Color(0xFF5E35B1);
 
 /// Přehled apartmánů majitele s aktuálním stavem úklidu.
 ///
-/// Data se načítají přes [ownerApartmentsProvider] – Supabase vrací byty
-/// s vnořenými úkoly. Stav bytu se určuje z nejnovějšího úkolu (completed
-/// → Čistý, in_progress → Probíhá úklid, pending → Čeká na úklid).
+/// Data se načítají přes [ownerApartmentsProvider] – byty, rezervace a úkoly.
+/// Stav: nejdřív obsazenost pobytem, jinak nejnovější úklid (Čistý / Probíhá / Čeká).
 class OwnerApartmentsScreen extends ConsumerWidget {
   const OwnerApartmentsScreen({super.key});
 
@@ -520,6 +521,8 @@ class _PropertyCard extends ConsumerWidget {
 
   (Color, IconData) _getStatusStyle(OwnerApartmentStatus status) {
     switch (status) {
+      case OwnerApartmentStatus.occupied:
+        return (_occupiedColor, Icons.night_shelter_rounded);
       case OwnerApartmentStatus.clean:
         return (_cleanColor, Icons.check_circle);
       case OwnerApartmentStatus.cleaningInProgress:
@@ -533,6 +536,8 @@ class _PropertyCard extends ConsumerWidget {
 
   String _getStatusLabel(OwnerApartmentStatus status) {
     switch (status) {
+      case OwnerApartmentStatus.occupied:
+        return 'owner.status_occupied'.tr();
       case OwnerApartmentStatus.clean:
         return 'owner.status_clean'.tr();
       case OwnerApartmentStatus.cleaningInProgress:

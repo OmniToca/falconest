@@ -335,6 +335,12 @@ class CashWalletRepository {
 
     /// Volitelná vazba na rezervaci – pro stav „v trezoru agentury“ v průtokové hotovosti.
     String? reservationId,
+
+    /// Volitelná vazba na úkol – klíčové pro dlouhodobý nájem bez reservation_id.
+    ///
+    /// PROČ: U `rent_collection` bývá `reservation_id = NULL`, ale právě přes `task_id`
+    /// umíme v navazujícím kroku dohledat `apartment_id` a správného majitele.
+    String? sourceTaskId,
   }) async {
     if (amountToClear <= 0) return null;
 
@@ -364,11 +370,12 @@ class CashWalletRepository {
     }
 
     final rid = reservationId?.trim();
+    final taskId = sourceTaskId?.trim();
     // (b) Vložení záporné transakce HANDED_TO_AGENCY + vrácení id pro audit (owner settlements).
     final inserted = await safeTx
         .insert({
           'wallet_id': walletId,
-          'task_id': null,
+          if (taskId != null && taskId.isNotEmpty) 'task_id': taskId,
           if (rid != null && rid.isNotEmpty) 'reservation_id': rid,
           'amount': -amountToClear,
           'transaction_type': 'HANDED_TO_AGENCY',

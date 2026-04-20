@@ -6,6 +6,7 @@ import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
 import 'package:falconest/core/theme/premium_card_decoration.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/features/admin/screens/admin_owner_cash_requests_screen.dart';
+import 'package:falconest/features/admin/screens/admin_cash_audit_screen.dart';
 import 'package:falconest/features/admin/screens/admin_settlements_screen.dart';
 import 'package:falconest/features/admin/screens/finance_billing_screen.dart';
 import 'package:falconest/features/admin/premium_upsell_dialog.dart';
@@ -14,9 +15,10 @@ import 'package:falconest/features/admin/providers/finance_tab_provider.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
 import 'package:falconest/features/admin/widgets/wallet_detail_modal.dart';
 
-/// Administrační obrazovka Finance – Zaměstnanecká pokladna a Vyúčtování.
+/// Administrační obrazovka Finance – hlavní vstup pro cashflow, billing a audit.
 ///
-/// Dvě záložky: Peněženky (dluhy zaměstnanců) a Vyúčtování (fronta ke schválení).
+/// Záložky: Peněženky, Vyúčtování, Podklady pro fakturaci, Hlídač hotovosti,
+/// a žádosti majitelů o výplatu průtokové hotovosti.
 class FinanceDashboardScreen extends ConsumerStatefulWidget {
   const FinanceDashboardScreen({super.key});
 
@@ -32,7 +34,7 @@ class _FinanceDashboardScreenState extends ConsumerState<FinanceDashboardScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 5, vsync: this);
   }
 
   @override
@@ -83,6 +85,7 @@ class _FinanceDashboardScreenState extends ConsumerState<FinanceDashboardScreen>
               Tab(text: 'admin.finance.title'.tr()),
               Tab(child: _SettlementsTabLabel(isActive: hasSettlements)),
               Tab(child: _FinanceExportTabLabel(isActive: hasExport)),
+              Tab(text: 'admin.finance.cash_audit_tab'.tr()),
               Tab(text: 'admin.finance.owner_cash_requests_tab'.tr()),
             ],
           ),
@@ -97,6 +100,7 @@ class _FinanceDashboardScreenState extends ConsumerState<FinanceDashboardScreen>
                 hasExport
                     ? const FinanceBillingContent(inDialog: false)
                     : _FinanceExportLockedPlaceholder(),
+                const AdminCashAuditScreen(),
                 const AdminOwnerCashRequestsScreen(),
               ],
             ),

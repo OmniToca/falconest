@@ -2,10 +2,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/billing/billing_task_financials.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
-import 'package:falconest/features/owner/providers/owner_billing_provider.dart';
 
 /// Souhrnné metriky pro nástěnku majitele (bez nových tabulek).
 class OwnerDashboardMetrics {
@@ -17,23 +17,10 @@ class OwnerDashboardMetrics {
   /// Počet rezervací (ne zrušených) se začátkem v příštích 14 dnech včetně dneška.
   final int upcomingStaysNext14Days;
 
-  /// Součet charged_price u služeb s plátcem majitel, u rezervací jejichž ID ještě nefiguruje ve zmražených snapshotech.
+  /// Součet částek u dokončených nevyfakturovaných úkolů (`invoiced_at` IS NULL) s plátcem majitel,
+  /// vypočtený stejně jako v Admin „Podklady pro fakturaci“ ([billingChargedPriceAndPayerForTask]).
+  /// Stav vyfakturování řeší výhradně sloupec úkolu `invoiced_at` (po uzavření z Adminu), ne agregace snapshotů.
   final double uninvoicedOwnerServicesTotal;
-}
-
-/// Vytáhne z [snapshot_data.items] všechna reservation_id pro odfiltrování již uzavřených období.
-Set<String> _reservationIdsFromSnapshots(List<BillingSnapshotModel> snapshots) {
-  final ids = <String>{};
-  for (final s in snapshots) {
-    final itemsRaw = s.snapshotData['items'];
-    if (itemsRaw is! List) continue;
-    for (final item in itemsRaw) {
-      if (item is! Map) continue;
-      final rid = item['reservation_id']?.toString().trim();
-      if (rid != null && rid.isNotEmpty) ids.add(rid);
-    }
-  }
-  return ids;
 }
 
 final ownerDashboardMetricsProvider =
@@ -82,46 +69,43 @@ final ownerDashboardMetricsProvider =
     upcoming = 0;
   }
 
-  final snapshots = await ref.watch(ownerBillingSnapshotsProvider.future);
-  final lockedReservationIds = _reservationIdsFromSnapshots(snapshots);
-
   double uninvoiced = 0;
   try {
-    final resList = await SupabaseService.safeFrom('reservations', tenantId)
-        .select('id')
+    final tasksRes = await SupabaseService.safeFrom('tasks', tenantId)
+        .select(
+          'id, apartment_id, client_id, reservation_id, service_id, metadata',
+        )
         .inFilter('apartment_id', ownedIds)
+        .eq('status', 'completed')
+        .isFilter('invoiced_at', null)
         .isFilter('deleted_at', null)
-        .neq('status', 'cancelled');
+        .limit(5000);
 
-    final resRows = resList as List? ?? [];
-    final reservationIds = <String>[];
-    for (final e in resRows) {
-      final id = (e as Map)['id']?.toString().trim();
-      if (id != null && id.isNotEmpty) reservationIds.add(id);
-    }
-
-    if (reservationIds.isEmpty) {
+    final tasksList = (tasksRes as List?)?.cast<Map<String, dynamic>>() ?? [];
+    if (tasksList.isEmpty) {
       return OwnerDashboardMetrics(
         upcomingStaysNext14Days: upcoming,
         uninvoicedOwnerServicesTotal: 0,
       );
     }
 
-    final rsRes = await SupabaseService.safeFrom('reservation_services', tenantId)
-        .select('charged_price, reservation_id, payer_type')
-        .inFilter('reservation_id', reservationIds)
-        .eq('payer_type', 'owner');
+    final reservationIds = tasksList
+        .map((t) => (t['reservation_id'] as String?)?.trim() ?? '')
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList();
 
-    final rsRows = rsRes as List? ?? [];
-    for (final row in rsRows) {
-      final m = Map<String, dynamic>.from(row as Map);
-      final rid = (m['reservation_id']?.toString() ?? '').trim();
-      if (rid.isEmpty || lockedReservationIds.contains(rid)) continue;
-      final cp = m['charged_price'];
-      final price = cp is num
-          ? cp.toDouble()
-          : (double.tryParse(cp?.toString() ?? '') ?? 0.0);
-      uninvoiced += price;
+    final billingMaps = await buildBillingReservationServiceMaps(
+      reservationIds: reservationIds,
+      tenantId: tenantId,
+    );
+
+    for (final t in tasksList) {
+      final priced = billingChargedPriceAndPayerForTask(t, billingMaps);
+      if (priced.payerType != 'owner') continue;
+      if (priced.chargedPrice > 0) {
+        uninvoiced += priced.chargedPrice;
+      }
     }
   } catch (e, st) {
     AppLogger.error('ownerDashboardMetricsProvider: výpočet nevyfakturovaných služeb selhal', e, st);

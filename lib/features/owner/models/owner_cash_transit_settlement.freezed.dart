@@ -15,7 +15,7 @@ T _$identity<T>(T value) => value;
 /// @nodoc
 mixin _$OwnerCashTransitSettlement {
 
- String get id;@JsonKey(name: 'tenant_id') String get tenantId;@JsonKey(name: 'reservation_id') String get reservationId;@JsonKey(fromJson: amountFromJson, toJson: amountToJson) double get amount; String get currency;@JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter() DateTime? get settledAt;@JsonKey(name: 'settled_by') String? get settledBy;/// V rozšířené DB může být CHECK; jinak výchozí `available` (majitel nefiltruje podle DB sloupce).
+ String get id;@JsonKey(name: 'tenant_id') String get tenantId;@JsonKey(name: 'reservation_id') String? get reservationId;@JsonKey(name: 'apartment_id') String? get apartmentId;@JsonKey(name: 'task_id') String? get taskId;@JsonKey(fromJson: amountFromJson, toJson: amountToJson) double get amount; String get currency;@JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter() DateTime? get settledAt;@JsonKey(name: 'settled_by') String? get settledBy;/// V rozšířené DB může být CHECK; jinak výchozí `available` (majitel nefiltruje podle DB sloupce).
  String get status;@JsonKey(name: 'employee_cash_transaction_id') String? get employeeCashTransactionId;@JsonKey(name: 'note') String? get notes;@JsonKey(name: 'created_at')@NullableIsoDateTimeConverter() DateTime? get createdAt;@JsonKey(name: 'updated_at')@NullableIsoDateTimeConverter() DateTime? get updatedAt;/// Začátek pobytu z `reservations.start_date` – doplní repozitář při výpisu pro majitele; není v JSON odpovědi settlements.
 @JsonKey(includeFromJson: false, includeToJson: false) DateTime? get reservationStayStart;/// Konec pobytu z `reservations.end_date` (viz [reservationStayStart]).
 @JsonKey(includeFromJson: false, includeToJson: false) DateTime? get reservationStayEnd;
@@ -31,16 +31,16 @@ $OwnerCashTransitSettlementCopyWith<OwnerCashTransitSettlement> get copyWith => 
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is OwnerCashTransitSettlement&&(identical(other.id, id) || other.id == id)&&(identical(other.tenantId, tenantId) || other.tenantId == tenantId)&&(identical(other.reservationId, reservationId) || other.reservationId == reservationId)&&(identical(other.amount, amount) || other.amount == amount)&&(identical(other.currency, currency) || other.currency == currency)&&(identical(other.settledAt, settledAt) || other.settledAt == settledAt)&&(identical(other.settledBy, settledBy) || other.settledBy == settledBy)&&(identical(other.status, status) || other.status == status)&&(identical(other.employeeCashTransactionId, employeeCashTransactionId) || other.employeeCashTransactionId == employeeCashTransactionId)&&(identical(other.notes, notes) || other.notes == notes)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&(identical(other.updatedAt, updatedAt) || other.updatedAt == updatedAt)&&(identical(other.reservationStayStart, reservationStayStart) || other.reservationStayStart == reservationStayStart)&&(identical(other.reservationStayEnd, reservationStayEnd) || other.reservationStayEnd == reservationStayEnd));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is OwnerCashTransitSettlement&&(identical(other.id, id) || other.id == id)&&(identical(other.tenantId, tenantId) || other.tenantId == tenantId)&&(identical(other.reservationId, reservationId) || other.reservationId == reservationId)&&(identical(other.apartmentId, apartmentId) || other.apartmentId == apartmentId)&&(identical(other.taskId, taskId) || other.taskId == taskId)&&(identical(other.amount, amount) || other.amount == amount)&&(identical(other.currency, currency) || other.currency == currency)&&(identical(other.settledAt, settledAt) || other.settledAt == settledAt)&&(identical(other.settledBy, settledBy) || other.settledBy == settledBy)&&(identical(other.status, status) || other.status == status)&&(identical(other.employeeCashTransactionId, employeeCashTransactionId) || other.employeeCashTransactionId == employeeCashTransactionId)&&(identical(other.notes, notes) || other.notes == notes)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&(identical(other.updatedAt, updatedAt) || other.updatedAt == updatedAt)&&(identical(other.reservationStayStart, reservationStayStart) || other.reservationStayStart == reservationStayStart)&&(identical(other.reservationStayEnd, reservationStayEnd) || other.reservationStayEnd == reservationStayEnd));
 }
 
 @JsonKey(includeFromJson: false, includeToJson: false)
 @override
-int get hashCode => Object.hash(runtimeType,id,tenantId,reservationId,amount,currency,settledAt,settledBy,status,employeeCashTransactionId,notes,createdAt,updatedAt,reservationStayStart,reservationStayEnd);
+int get hashCode => Object.hash(runtimeType,id,tenantId,reservationId,apartmentId,taskId,amount,currency,settledAt,settledBy,status,employeeCashTransactionId,notes,createdAt,updatedAt,reservationStayStart,reservationStayEnd);
 
 @override
 String toString() {
-  return 'OwnerCashTransitSettlement(id: $id, tenantId: $tenantId, reservationId: $reservationId, amount: $amount, currency: $currency, settledAt: $settledAt, settledBy: $settledBy, status: $status, employeeCashTransactionId: $employeeCashTransactionId, notes: $notes, createdAt: $createdAt, updatedAt: $updatedAt, reservationStayStart: $reservationStayStart, reservationStayEnd: $reservationStayEnd)';
+  return 'OwnerCashTransitSettlement(id: $id, tenantId: $tenantId, reservationId: $reservationId, apartmentId: $apartmentId, taskId: $taskId, amount: $amount, currency: $currency, settledAt: $settledAt, settledBy: $settledBy, status: $status, employeeCashTransactionId: $employeeCashTransactionId, notes: $notes, createdAt: $createdAt, updatedAt: $updatedAt, reservationStayStart: $reservationStayStart, reservationStayEnd: $reservationStayEnd)';
 }
 
 
@@ -51,7 +51,7 @@ abstract mixin class $OwnerCashTransitSettlementCopyWith<$Res>  {
   factory $OwnerCashTransitSettlementCopyWith(OwnerCashTransitSettlement value, $Res Function(OwnerCashTransitSettlement) _then) = _$OwnerCashTransitSettlementCopyWithImpl;
 @useResult
 $Res call({
- String id,@JsonKey(name: 'tenant_id') String tenantId,@JsonKey(name: 'reservation_id') String reservationId,@JsonKey(fromJson: amountFromJson, toJson: amountToJson) double amount, String currency,@JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter() DateTime? settledAt,@JsonKey(name: 'settled_by') String? settledBy, String status,@JsonKey(name: 'employee_cash_transaction_id') String? employeeCashTransactionId,@JsonKey(name: 'note') String? notes,@JsonKey(name: 'created_at')@NullableIsoDateTimeConverter() DateTime? createdAt,@JsonKey(name: 'updated_at')@NullableIsoDateTimeConverter() DateTime? updatedAt,@JsonKey(includeFromJson: false, includeToJson: false) DateTime? reservationStayStart,@JsonKey(includeFromJson: false, includeToJson: false) DateTime? reservationStayEnd
+ String id,@JsonKey(name: 'tenant_id') String tenantId,@JsonKey(name: 'reservation_id') String? reservationId,@JsonKey(name: 'apartment_id') String? apartmentId,@JsonKey(name: 'task_id') String? taskId,@JsonKey(fromJson: amountFromJson, toJson: amountToJson) double amount, String currency,@JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter() DateTime? settledAt,@JsonKey(name: 'settled_by') String? settledBy, String status,@JsonKey(name: 'employee_cash_transaction_id') String? employeeCashTransactionId,@JsonKey(name: 'note') String? notes,@JsonKey(name: 'created_at')@NullableIsoDateTimeConverter() DateTime? createdAt,@JsonKey(name: 'updated_at')@NullableIsoDateTimeConverter() DateTime? updatedAt,@JsonKey(includeFromJson: false, includeToJson: false) DateTime? reservationStayStart,@JsonKey(includeFromJson: false, includeToJson: false) DateTime? reservationStayEnd
 });
 
 
@@ -68,12 +68,14 @@ class _$OwnerCashTransitSettlementCopyWithImpl<$Res>
 
 /// Create a copy of OwnerCashTransitSettlement
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? tenantId = null,Object? reservationId = null,Object? amount = null,Object? currency = null,Object? settledAt = freezed,Object? settledBy = freezed,Object? status = null,Object? employeeCashTransactionId = freezed,Object? notes = freezed,Object? createdAt = freezed,Object? updatedAt = freezed,Object? reservationStayStart = freezed,Object? reservationStayEnd = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? tenantId = null,Object? reservationId = freezed,Object? apartmentId = freezed,Object? taskId = freezed,Object? amount = null,Object? currency = null,Object? settledAt = freezed,Object? settledBy = freezed,Object? status = null,Object? employeeCashTransactionId = freezed,Object? notes = freezed,Object? createdAt = freezed,Object? updatedAt = freezed,Object? reservationStayStart = freezed,Object? reservationStayEnd = freezed,}) {
   return _then(_self.copyWith(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,tenantId: null == tenantId ? _self.tenantId : tenantId // ignore: cast_nullable_to_non_nullable
-as String,reservationId: null == reservationId ? _self.reservationId : reservationId // ignore: cast_nullable_to_non_nullable
-as String,amount: null == amount ? _self.amount : amount // ignore: cast_nullable_to_non_nullable
+as String,reservationId: freezed == reservationId ? _self.reservationId : reservationId // ignore: cast_nullable_to_non_nullable
+as String?,apartmentId: freezed == apartmentId ? _self.apartmentId : apartmentId // ignore: cast_nullable_to_non_nullable
+as String?,taskId: freezed == taskId ? _self.taskId : taskId // ignore: cast_nullable_to_non_nullable
+as String?,amount: null == amount ? _self.amount : amount // ignore: cast_nullable_to_non_nullable
 as double,currency: null == currency ? _self.currency : currency // ignore: cast_nullable_to_non_nullable
 as String,settledAt: freezed == settledAt ? _self.settledAt : settledAt // ignore: cast_nullable_to_non_nullable
 as DateTime?,settledBy: freezed == settledBy ? _self.settledBy : settledBy // ignore: cast_nullable_to_non_nullable
@@ -169,10 +171,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id, @JsonKey(name: 'tenant_id')  String tenantId, @JsonKey(name: 'reservation_id')  String reservationId, @JsonKey(fromJson: amountFromJson, toJson: amountToJson)  double amount,  String currency, @JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter()  DateTime? settledAt, @JsonKey(name: 'settled_by')  String? settledBy,  String status, @JsonKey(name: 'employee_cash_transaction_id')  String? employeeCashTransactionId, @JsonKey(name: 'note')  String? notes, @JsonKey(name: 'created_at')@NullableIsoDateTimeConverter()  DateTime? createdAt, @JsonKey(name: 'updated_at')@NullableIsoDateTimeConverter()  DateTime? updatedAt, @JsonKey(includeFromJson: false, includeToJson: false)  DateTime? reservationStayStart, @JsonKey(includeFromJson: false, includeToJson: false)  DateTime? reservationStayEnd)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id, @JsonKey(name: 'tenant_id')  String tenantId, @JsonKey(name: 'reservation_id')  String? reservationId, @JsonKey(name: 'apartment_id')  String? apartmentId, @JsonKey(name: 'task_id')  String? taskId, @JsonKey(fromJson: amountFromJson, toJson: amountToJson)  double amount,  String currency, @JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter()  DateTime? settledAt, @JsonKey(name: 'settled_by')  String? settledBy,  String status, @JsonKey(name: 'employee_cash_transaction_id')  String? employeeCashTransactionId, @JsonKey(name: 'note')  String? notes, @JsonKey(name: 'created_at')@NullableIsoDateTimeConverter()  DateTime? createdAt, @JsonKey(name: 'updated_at')@NullableIsoDateTimeConverter()  DateTime? updatedAt, @JsonKey(includeFromJson: false, includeToJson: false)  DateTime? reservationStayStart, @JsonKey(includeFromJson: false, includeToJson: false)  DateTime? reservationStayEnd)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _OwnerCashTransitSettlement() when $default != null:
-return $default(_that.id,_that.tenantId,_that.reservationId,_that.amount,_that.currency,_that.settledAt,_that.settledBy,_that.status,_that.employeeCashTransactionId,_that.notes,_that.createdAt,_that.updatedAt,_that.reservationStayStart,_that.reservationStayEnd);case _:
+return $default(_that.id,_that.tenantId,_that.reservationId,_that.apartmentId,_that.taskId,_that.amount,_that.currency,_that.settledAt,_that.settledBy,_that.status,_that.employeeCashTransactionId,_that.notes,_that.createdAt,_that.updatedAt,_that.reservationStayStart,_that.reservationStayEnd);case _:
   return orElse();
 
 }
@@ -190,10 +192,10 @@ return $default(_that.id,_that.tenantId,_that.reservationId,_that.amount,_that.c
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id, @JsonKey(name: 'tenant_id')  String tenantId, @JsonKey(name: 'reservation_id')  String reservationId, @JsonKey(fromJson: amountFromJson, toJson: amountToJson)  double amount,  String currency, @JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter()  DateTime? settledAt, @JsonKey(name: 'settled_by')  String? settledBy,  String status, @JsonKey(name: 'employee_cash_transaction_id')  String? employeeCashTransactionId, @JsonKey(name: 'note')  String? notes, @JsonKey(name: 'created_at')@NullableIsoDateTimeConverter()  DateTime? createdAt, @JsonKey(name: 'updated_at')@NullableIsoDateTimeConverter()  DateTime? updatedAt, @JsonKey(includeFromJson: false, includeToJson: false)  DateTime? reservationStayStart, @JsonKey(includeFromJson: false, includeToJson: false)  DateTime? reservationStayEnd)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id, @JsonKey(name: 'tenant_id')  String tenantId, @JsonKey(name: 'reservation_id')  String? reservationId, @JsonKey(name: 'apartment_id')  String? apartmentId, @JsonKey(name: 'task_id')  String? taskId, @JsonKey(fromJson: amountFromJson, toJson: amountToJson)  double amount,  String currency, @JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter()  DateTime? settledAt, @JsonKey(name: 'settled_by')  String? settledBy,  String status, @JsonKey(name: 'employee_cash_transaction_id')  String? employeeCashTransactionId, @JsonKey(name: 'note')  String? notes, @JsonKey(name: 'created_at')@NullableIsoDateTimeConverter()  DateTime? createdAt, @JsonKey(name: 'updated_at')@NullableIsoDateTimeConverter()  DateTime? updatedAt, @JsonKey(includeFromJson: false, includeToJson: false)  DateTime? reservationStayStart, @JsonKey(includeFromJson: false, includeToJson: false)  DateTime? reservationStayEnd)  $default,) {final _that = this;
 switch (_that) {
 case _OwnerCashTransitSettlement():
-return $default(_that.id,_that.tenantId,_that.reservationId,_that.amount,_that.currency,_that.settledAt,_that.settledBy,_that.status,_that.employeeCashTransactionId,_that.notes,_that.createdAt,_that.updatedAt,_that.reservationStayStart,_that.reservationStayEnd);case _:
+return $default(_that.id,_that.tenantId,_that.reservationId,_that.apartmentId,_that.taskId,_that.amount,_that.currency,_that.settledAt,_that.settledBy,_that.status,_that.employeeCashTransactionId,_that.notes,_that.createdAt,_that.updatedAt,_that.reservationStayStart,_that.reservationStayEnd);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -210,10 +212,10 @@ return $default(_that.id,_that.tenantId,_that.reservationId,_that.amount,_that.c
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id, @JsonKey(name: 'tenant_id')  String tenantId, @JsonKey(name: 'reservation_id')  String reservationId, @JsonKey(fromJson: amountFromJson, toJson: amountToJson)  double amount,  String currency, @JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter()  DateTime? settledAt, @JsonKey(name: 'settled_by')  String? settledBy,  String status, @JsonKey(name: 'employee_cash_transaction_id')  String? employeeCashTransactionId, @JsonKey(name: 'note')  String? notes, @JsonKey(name: 'created_at')@NullableIsoDateTimeConverter()  DateTime? createdAt, @JsonKey(name: 'updated_at')@NullableIsoDateTimeConverter()  DateTime? updatedAt, @JsonKey(includeFromJson: false, includeToJson: false)  DateTime? reservationStayStart, @JsonKey(includeFromJson: false, includeToJson: false)  DateTime? reservationStayEnd)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id, @JsonKey(name: 'tenant_id')  String tenantId, @JsonKey(name: 'reservation_id')  String? reservationId, @JsonKey(name: 'apartment_id')  String? apartmentId, @JsonKey(name: 'task_id')  String? taskId, @JsonKey(fromJson: amountFromJson, toJson: amountToJson)  double amount,  String currency, @JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter()  DateTime? settledAt, @JsonKey(name: 'settled_by')  String? settledBy,  String status, @JsonKey(name: 'employee_cash_transaction_id')  String? employeeCashTransactionId, @JsonKey(name: 'note')  String? notes, @JsonKey(name: 'created_at')@NullableIsoDateTimeConverter()  DateTime? createdAt, @JsonKey(name: 'updated_at')@NullableIsoDateTimeConverter()  DateTime? updatedAt, @JsonKey(includeFromJson: false, includeToJson: false)  DateTime? reservationStayStart, @JsonKey(includeFromJson: false, includeToJson: false)  DateTime? reservationStayEnd)?  $default,) {final _that = this;
 switch (_that) {
 case _OwnerCashTransitSettlement() when $default != null:
-return $default(_that.id,_that.tenantId,_that.reservationId,_that.amount,_that.currency,_that.settledAt,_that.settledBy,_that.status,_that.employeeCashTransactionId,_that.notes,_that.createdAt,_that.updatedAt,_that.reservationStayStart,_that.reservationStayEnd);case _:
+return $default(_that.id,_that.tenantId,_that.reservationId,_that.apartmentId,_that.taskId,_that.amount,_that.currency,_that.settledAt,_that.settledBy,_that.status,_that.employeeCashTransactionId,_that.notes,_that.createdAt,_that.updatedAt,_that.reservationStayStart,_that.reservationStayEnd);case _:
   return null;
 
 }
@@ -225,12 +227,14 @@ return $default(_that.id,_that.tenantId,_that.reservationId,_that.amount,_that.c
 @JsonSerializable()
 
 class _OwnerCashTransitSettlement extends OwnerCashTransitSettlement {
-  const _OwnerCashTransitSettlement({required this.id, @JsonKey(name: 'tenant_id') required this.tenantId, @JsonKey(name: 'reservation_id') required this.reservationId, @JsonKey(fromJson: amountFromJson, toJson: amountToJson) required this.amount, this.currency = 'EUR', @JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter() this.settledAt, @JsonKey(name: 'settled_by') this.settledBy, this.status = 'available', @JsonKey(name: 'employee_cash_transaction_id') this.employeeCashTransactionId, @JsonKey(name: 'note') this.notes, @JsonKey(name: 'created_at')@NullableIsoDateTimeConverter() this.createdAt, @JsonKey(name: 'updated_at')@NullableIsoDateTimeConverter() this.updatedAt, @JsonKey(includeFromJson: false, includeToJson: false) this.reservationStayStart, @JsonKey(includeFromJson: false, includeToJson: false) this.reservationStayEnd}): super._();
+  const _OwnerCashTransitSettlement({required this.id, @JsonKey(name: 'tenant_id') required this.tenantId, @JsonKey(name: 'reservation_id') this.reservationId, @JsonKey(name: 'apartment_id') this.apartmentId, @JsonKey(name: 'task_id') this.taskId, @JsonKey(fromJson: amountFromJson, toJson: amountToJson) required this.amount, this.currency = 'EUR', @JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter() this.settledAt, @JsonKey(name: 'settled_by') this.settledBy, this.status = 'available', @JsonKey(name: 'employee_cash_transaction_id') this.employeeCashTransactionId, @JsonKey(name: 'note') this.notes, @JsonKey(name: 'created_at')@NullableIsoDateTimeConverter() this.createdAt, @JsonKey(name: 'updated_at')@NullableIsoDateTimeConverter() this.updatedAt, @JsonKey(includeFromJson: false, includeToJson: false) this.reservationStayStart, @JsonKey(includeFromJson: false, includeToJson: false) this.reservationStayEnd}): super._();
   factory _OwnerCashTransitSettlement.fromJson(Map<String, dynamic> json) => _$OwnerCashTransitSettlementFromJson(json);
 
 @override final  String id;
 @override@JsonKey(name: 'tenant_id') final  String tenantId;
-@override@JsonKey(name: 'reservation_id') final  String reservationId;
+@override@JsonKey(name: 'reservation_id') final  String? reservationId;
+@override@JsonKey(name: 'apartment_id') final  String? apartmentId;
+@override@JsonKey(name: 'task_id') final  String? taskId;
 @override@JsonKey(fromJson: amountFromJson, toJson: amountToJson) final  double amount;
 @override@JsonKey() final  String currency;
 @override@JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter() final  DateTime? settledAt;
@@ -259,16 +263,16 @@ Map<String, dynamic> toJson() {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is _OwnerCashTransitSettlement&&(identical(other.id, id) || other.id == id)&&(identical(other.tenantId, tenantId) || other.tenantId == tenantId)&&(identical(other.reservationId, reservationId) || other.reservationId == reservationId)&&(identical(other.amount, amount) || other.amount == amount)&&(identical(other.currency, currency) || other.currency == currency)&&(identical(other.settledAt, settledAt) || other.settledAt == settledAt)&&(identical(other.settledBy, settledBy) || other.settledBy == settledBy)&&(identical(other.status, status) || other.status == status)&&(identical(other.employeeCashTransactionId, employeeCashTransactionId) || other.employeeCashTransactionId == employeeCashTransactionId)&&(identical(other.notes, notes) || other.notes == notes)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&(identical(other.updatedAt, updatedAt) || other.updatedAt == updatedAt)&&(identical(other.reservationStayStart, reservationStayStart) || other.reservationStayStart == reservationStayStart)&&(identical(other.reservationStayEnd, reservationStayEnd) || other.reservationStayEnd == reservationStayEnd));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _OwnerCashTransitSettlement&&(identical(other.id, id) || other.id == id)&&(identical(other.tenantId, tenantId) || other.tenantId == tenantId)&&(identical(other.reservationId, reservationId) || other.reservationId == reservationId)&&(identical(other.apartmentId, apartmentId) || other.apartmentId == apartmentId)&&(identical(other.taskId, taskId) || other.taskId == taskId)&&(identical(other.amount, amount) || other.amount == amount)&&(identical(other.currency, currency) || other.currency == currency)&&(identical(other.settledAt, settledAt) || other.settledAt == settledAt)&&(identical(other.settledBy, settledBy) || other.settledBy == settledBy)&&(identical(other.status, status) || other.status == status)&&(identical(other.employeeCashTransactionId, employeeCashTransactionId) || other.employeeCashTransactionId == employeeCashTransactionId)&&(identical(other.notes, notes) || other.notes == notes)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt)&&(identical(other.updatedAt, updatedAt) || other.updatedAt == updatedAt)&&(identical(other.reservationStayStart, reservationStayStart) || other.reservationStayStart == reservationStayStart)&&(identical(other.reservationStayEnd, reservationStayEnd) || other.reservationStayEnd == reservationStayEnd));
 }
 
 @JsonKey(includeFromJson: false, includeToJson: false)
 @override
-int get hashCode => Object.hash(runtimeType,id,tenantId,reservationId,amount,currency,settledAt,settledBy,status,employeeCashTransactionId,notes,createdAt,updatedAt,reservationStayStart,reservationStayEnd);
+int get hashCode => Object.hash(runtimeType,id,tenantId,reservationId,apartmentId,taskId,amount,currency,settledAt,settledBy,status,employeeCashTransactionId,notes,createdAt,updatedAt,reservationStayStart,reservationStayEnd);
 
 @override
 String toString() {
-  return 'OwnerCashTransitSettlement(id: $id, tenantId: $tenantId, reservationId: $reservationId, amount: $amount, currency: $currency, settledAt: $settledAt, settledBy: $settledBy, status: $status, employeeCashTransactionId: $employeeCashTransactionId, notes: $notes, createdAt: $createdAt, updatedAt: $updatedAt, reservationStayStart: $reservationStayStart, reservationStayEnd: $reservationStayEnd)';
+  return 'OwnerCashTransitSettlement(id: $id, tenantId: $tenantId, reservationId: $reservationId, apartmentId: $apartmentId, taskId: $taskId, amount: $amount, currency: $currency, settledAt: $settledAt, settledBy: $settledBy, status: $status, employeeCashTransactionId: $employeeCashTransactionId, notes: $notes, createdAt: $createdAt, updatedAt: $updatedAt, reservationStayStart: $reservationStayStart, reservationStayEnd: $reservationStayEnd)';
 }
 
 
@@ -279,7 +283,7 @@ abstract mixin class _$OwnerCashTransitSettlementCopyWith<$Res> implements $Owne
   factory _$OwnerCashTransitSettlementCopyWith(_OwnerCashTransitSettlement value, $Res Function(_OwnerCashTransitSettlement) _then) = __$OwnerCashTransitSettlementCopyWithImpl;
 @override @useResult
 $Res call({
- String id,@JsonKey(name: 'tenant_id') String tenantId,@JsonKey(name: 'reservation_id') String reservationId,@JsonKey(fromJson: amountFromJson, toJson: amountToJson) double amount, String currency,@JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter() DateTime? settledAt,@JsonKey(name: 'settled_by') String? settledBy, String status,@JsonKey(name: 'employee_cash_transaction_id') String? employeeCashTransactionId,@JsonKey(name: 'note') String? notes,@JsonKey(name: 'created_at')@NullableIsoDateTimeConverter() DateTime? createdAt,@JsonKey(name: 'updated_at')@NullableIsoDateTimeConverter() DateTime? updatedAt,@JsonKey(includeFromJson: false, includeToJson: false) DateTime? reservationStayStart,@JsonKey(includeFromJson: false, includeToJson: false) DateTime? reservationStayEnd
+ String id,@JsonKey(name: 'tenant_id') String tenantId,@JsonKey(name: 'reservation_id') String? reservationId,@JsonKey(name: 'apartment_id') String? apartmentId,@JsonKey(name: 'task_id') String? taskId,@JsonKey(fromJson: amountFromJson, toJson: amountToJson) double amount, String currency,@JsonKey(name: 'settled_at')@NullableIsoDateTimeConverter() DateTime? settledAt,@JsonKey(name: 'settled_by') String? settledBy, String status,@JsonKey(name: 'employee_cash_transaction_id') String? employeeCashTransactionId,@JsonKey(name: 'note') String? notes,@JsonKey(name: 'created_at')@NullableIsoDateTimeConverter() DateTime? createdAt,@JsonKey(name: 'updated_at')@NullableIsoDateTimeConverter() DateTime? updatedAt,@JsonKey(includeFromJson: false, includeToJson: false) DateTime? reservationStayStart,@JsonKey(includeFromJson: false, includeToJson: false) DateTime? reservationStayEnd
 });
 
 
@@ -296,12 +300,14 @@ class __$OwnerCashTransitSettlementCopyWithImpl<$Res>
 
 /// Create a copy of OwnerCashTransitSettlement
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? tenantId = null,Object? reservationId = null,Object? amount = null,Object? currency = null,Object? settledAt = freezed,Object? settledBy = freezed,Object? status = null,Object? employeeCashTransactionId = freezed,Object? notes = freezed,Object? createdAt = freezed,Object? updatedAt = freezed,Object? reservationStayStart = freezed,Object? reservationStayEnd = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? tenantId = null,Object? reservationId = freezed,Object? apartmentId = freezed,Object? taskId = freezed,Object? amount = null,Object? currency = null,Object? settledAt = freezed,Object? settledBy = freezed,Object? status = null,Object? employeeCashTransactionId = freezed,Object? notes = freezed,Object? createdAt = freezed,Object? updatedAt = freezed,Object? reservationStayStart = freezed,Object? reservationStayEnd = freezed,}) {
   return _then(_OwnerCashTransitSettlement(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,tenantId: null == tenantId ? _self.tenantId : tenantId // ignore: cast_nullable_to_non_nullable
-as String,reservationId: null == reservationId ? _self.reservationId : reservationId // ignore: cast_nullable_to_non_nullable
-as String,amount: null == amount ? _self.amount : amount // ignore: cast_nullable_to_non_nullable
+as String,reservationId: freezed == reservationId ? _self.reservationId : reservationId // ignore: cast_nullable_to_non_nullable
+as String?,apartmentId: freezed == apartmentId ? _self.apartmentId : apartmentId // ignore: cast_nullable_to_non_nullable
+as String?,taskId: freezed == taskId ? _self.taskId : taskId // ignore: cast_nullable_to_non_nullable
+as String?,amount: null == amount ? _self.amount : amount // ignore: cast_nullable_to_non_nullable
 as double,currency: null == currency ? _self.currency : currency // ignore: cast_nullable_to_non_nullable
 as String,settledAt: freezed == settledAt ? _self.settledAt : settledAt // ignore: cast_nullable_to_non_nullable
 as DateTime?,settledBy: freezed == settledBy ? _self.settledBy : settledBy // ignore: cast_nullable_to_non_nullable

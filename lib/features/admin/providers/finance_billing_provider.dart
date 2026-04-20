@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/billing/billing_task_financials.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/providers/reservation_services_repository.dart';
 
@@ -679,60 +680,11 @@ final billingReportProvider = FutureProvider.autoDispose.family<BillingMonthStat
         .toSet()
         .toList();
 
-    final priceByResService = <String, double>{};
-    final payerTypeByResService = <String, String>{};
-
-    /// Fallback: rezervace → seznam (charged_price, payer_type) u řádků reservation_services,
-    /// jejichž apartment_service_id už v apartment_services neexistuje (byt přeřazen, záznamy nahrazeny).
-    final fallbackPricePayerByResId =
-        <String, List<({double price, String payer})>>{};
-    if (reservationIds.isNotEmpty) {
-      final servicesByRes = await fetchByReservationIds(
-        reservationIds,
-        tenantId,
-      );
-      final apartmentServiceIds = <String>{};
-      for (final list in servicesByRes.values) {
-        for (final rs in list) {
-          final id = rs.apartmentServiceId.trim();
-          if (id.isNotEmpty) apartmentServiceIds.add(id);
-        }
-      }
-      final aptServiceToServiceId = <String, String>{};
-      if (apartmentServiceIds.isNotEmpty) {
-        final aptRes = await SupabaseService.safeFrom(
-          'apartment_services',
-          tenantId,
-        ).select('id, service_id').inFilter('id', apartmentServiceIds.toList());
-        for (final row in (aptRes as List)) {
-          final m = row as Map<String, dynamic>;
-          final id = (m['id'] as String?)?.trim();
-          final sid = (m['service_id'] as String?)?.trim();
-          if (id != null && id.isNotEmpty && sid != null && sid.isNotEmpty) {
-            aptServiceToServiceId[id] = sid;
-          }
-        }
-      }
-      for (final entry in servicesByRes.entries) {
-        final resId = entry.key;
-        for (final rs in entry.value) {
-          final sid = aptServiceToServiceId[rs.apartmentServiceId];
-          final price = (rs.chargedPrice ?? 0).toDouble();
-          final payer = rs.payerType ?? 'guest';
-          if (sid != null) {
-            final key = '$resId|$sid';
-            priceByResService[key] = price;
-            payerTypeByResService[key] = payer;
-          } else {
-            // apartment_services záznam už neexistuje (např. přeřazení bytu) – uchováme pro fallback
-            fallbackPricePayerByResId.putIfAbsent(resId, () => []).add((
-              price: price,
-              payer: payer,
-            ));
-          }
-        }
-      }
-    }
+    /// Ceny a plátci z reservation_services — sdílená stavba map (Admin + Owner portál).
+    final billingMaps = await buildBillingReservationServiceMaps(
+      reservationIds: reservationIds,
+      tenantId: tenantId,
+    );
 
     // Krok 3: Mapování byt → majitel (profile) → klient pro ÚKOLY. Vazba: apartment_owners.owner_id
     // = profiles.id, clients.profile_id = profiles.id. Doplnění do již naplněných map z Krok 0b (paušály).
@@ -929,67 +881,18 @@ final billingReportProvider = FutureProvider.autoDispose.family<BillingMonthStat
       final completedAt = completedAtRaw?.toLocal();
       final scheduledStartRaw = _parseDateTime(t['scheduled_start']);
       final scheduledStart = scheduledStartRaw?.toLocal();
-      final clientId = (t['client_id'] as String?)?.trim() ?? '';
-      final resId = (t['reservation_id'] as String?)?.trim() ?? '';
-      final svcId = (t['service_id'] as String?)?.trim() ?? '';
-      final resSvcKey = '$resId|$svcId';
 
-      // Cena a plátce VŽDY z historie (úkol / reservation_services), nikdy z aktuálního ceníku klienta.
-      double chargedPrice;
-      String payerType;
+      // Cena a plátce: sdílená logika s Klientským portálem — viz [billingChargedPriceAndPayerForTask].
       final meta = t['metadata'];
-      final metaServicePrice = meta is Map
-          ? double.tryParse((meta['service_price']?.toString() ?? '').trim())
-          : null;
-      final metaAmountToCollect = meta is Map
-          ? double.tryParse(
-              (meta['amount_to_collect']?.toString() ?? '').trim(),
-            )
-          : null;
-      final metaPayerType = meta is Map
-          ? ((meta['payer_type'] as String?)?.trim())
-          : null;
       final requiresPhoto = _requiresPhotoFromMetadata(meta);
       final assignedToRaw = (t['assigned_to'] as String?)?.trim();
       final assignedTo =
           assignedToRaw != null && assignedToRaw.isNotEmpty ? assignedToRaw : null;
       final assignedUserIds = _parseUuidList(t['assigned_user_ids']);
 
-      if (resId.isNotEmpty && svcId.isNotEmpty) {
-        // PRAVIDLO A: Úkol napojen na rezervaci – primárně reservation_services (jak bylo uloženo u rezervace).
-        final fromRes = priceByResService[resSvcKey];
-        final payerFromRes = payerTypeByResService[resSvcKey];
-        if (fromRes != null && payerFromRes != null) {
-          chargedPrice = metaServicePrice ?? metaAmountToCollect ?? fromRes;
-          payerType = payerFromRes;
-        } else {
-          // Mapování selhalo (apartment_services po přeřazení bytu už neexistují) – fallback z reservation_services.
-          final fallbackList = fallbackPricePayerByResId[resId];
-          if (fallbackList != null && fallbackList.length == 1) {
-            chargedPrice =
-                metaServicePrice ??
-                metaAmountToCollect ??
-                fallbackList.first.price;
-            payerType = fallbackList.first.payer;
-          } else {
-            chargedPrice = metaServicePrice ?? metaAmountToCollect ?? 0.0;
-            payerType = _resolvePayerType(
-              metaPayerType,
-              metaAmountToCollect,
-              clientId,
-            );
-          }
-        }
-      } else {
-        // PRAVIDLO B: Manuální/externí úkol bez rezervace – VŽDY respektovat metadata.payer_type.
-        // Legacy: amount_to_collect > 0 implikuje guest (konzistentní s mobilním UI).
-        chargedPrice = metaServicePrice ?? metaAmountToCollect ?? 0.0;
-        payerType = _resolvePayerType(
-          metaPayerType,
-          metaAmountToCollect,
-          clientId,
-        );
-      }
+      final priced = billingChargedPriceAndPayerForTask(t, billingMaps);
+      final chargedPrice = priced.chargedPrice;
+      final payerType = priced.payerType;
 
       final reservationId =
           (t['reservation_id'] as String?)?.trim().isNotEmpty == true
@@ -1431,22 +1334,6 @@ String formatReservationBlockWithDates({
 String _resolveGroupName(String groupKey, Map<String, String> clientIdToName) {
   if (groupKey == 'external') return 'admin.finance.billing_group_external';
   return clientIdToName[groupKey] ?? groupKey;
-}
-
-/// Určí plátce z metadata.payer_type; legacy: amount_to_collect > 0 implikuje guest.
-String _resolvePayerType(
-  String? metaPayerType,
-  double? metaAmountToCollect,
-  String clientId,
-) {
-  if (metaPayerType == 'guest' ||
-      metaPayerType == 'owner' ||
-      metaPayerType == 'client') {
-    return metaPayerType!;
-  }
-  // Konzistence s mobilním UI: amount_to_collect = „host platí hotovost“ (viz DATA_FLOW_PRICING.md).
-  if ((metaAmountToCollect ?? 0) > 0) return 'guest';
-  return clientId.isNotEmpty ? 'client' : 'owner';
 }
 
 DateTime? _parseDateTime(dynamic raw) {

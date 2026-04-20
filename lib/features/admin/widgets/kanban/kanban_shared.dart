@@ -17,15 +17,24 @@ const _statusInProgress = Color(0xFF1565C0);
 const _statusDone = Color(0xFF2E7D32);
 const _statusProblem = Color(0xFFC62828);
 
-/// Vrací kladnou částku k výběru z metadata.amount_to_collect, jinak null.
+/// Vrací kladnou částku k výběru jako součet:
+/// metadata.amount_to_collect + metadata.transit_amount_to_collect.
+///
+/// PROČ: Některé úkoly (např. rent_collection) mají hotovost jen v transit části.
+/// Pokud bychom sledovali jen amount_to_collect, drag&drop do "Hotovo" by přeskočil
+/// cash potvrzení a výběr by se do peněženky nezapsal.
 double? amountToCollectFromMetadata(Map<String, dynamic>? metadata) {
   if (metadata == null) return null;
-  final amt = metadata['amount_to_collect'];
-  if (amt is num && amt > 0) return amt.toDouble();
-  if (amt != null) {
-    final parsed = double.tryParse(amt.toString());
-    return parsed != null && parsed > 0 ? parsed : null;
-  }
+  final agencyRaw = metadata['amount_to_collect'];
+  final agency = agencyRaw is num
+      ? agencyRaw.toDouble()
+      : double.tryParse(agencyRaw?.toString() ?? '') ?? 0.0;
+  final transitRaw = metadata['transit_amount_to_collect'];
+  final transit = transitRaw is num
+      ? transitRaw.toDouble()
+      : double.tryParse(transitRaw?.toString() ?? '') ?? 0.0;
+  final total = agency + transit;
+  if (total > 0) return total;
   return null;
 }
 
