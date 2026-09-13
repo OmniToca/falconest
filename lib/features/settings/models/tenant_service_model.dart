@@ -20,6 +20,8 @@ class TenantServiceModel {
     this.requiredRole,
     this.durationMinutes,
     this.requiresPhoto = false,
+    /// Překlady názvu služby z DB (`name_i18n` JSONB) — zdroj pro snapshot do `tasks.title_i18n`.
+    this.nameI18n,
   });
 
   final String id;
@@ -37,6 +39,9 @@ class TenantServiceModel {
   final int? durationMinutes;
   /// Vyžadovat fotodokumentaci při dokončení úkolu (např. stav apartmánu, ofocené pasy).
   final bool requiresPhoto;
+
+  /// JSONB `name_i18n` — stejná očekávaná struktura jako u `tasks.title_i18n` (`translations`, volitelně `source_hash`).
+  final Map<String, dynamic>? nameI18n;
 
   factory TenantServiceModel.fromJson(Map<String, dynamic> json) {
     final rawPrice = json['default_price'];
@@ -77,6 +82,18 @@ class TenantServiceModel {
     }
     final rawRequiresPhoto = json['requires_photo'];
     final requiresPhoto = rawRequiresPhoto == true || rawRequiresPhoto == 1;
+
+    Map<String, dynamic>? nameI18n;
+    final rawNameI18n = json['name_i18n'];
+    if (rawNameI18n != null) {
+      if (rawNameI18n is Map<String, dynamic> && rawNameI18n.isNotEmpty) {
+        nameI18n = rawNameI18n;
+      } else if (rawNameI18n is Map) {
+        final m = Map<String, dynamic>.from(rawNameI18n);
+        if (m.isNotEmpty) nameI18n = m;
+      }
+    }
+
     return TenantServiceModel(
       id: json['id'] as String? ?? '',
       tenantId: json['tenant_id'] as String? ?? '',
@@ -93,6 +110,7 @@ class TenantServiceModel {
       requiredRole: requiredRole,
       durationMinutes: durationMinutes,
       requiresPhoto: requiresPhoto,
+      nameI18n: nameI18n,
     );
   }
 
@@ -107,5 +125,6 @@ class TenantServiceModel {
         if (requiredRole != null && requiredRole!.isNotEmpty) 'required_role': requiredRole,
         if (durationMinutes != null) 'duration_minutes': durationMinutes,
         'requires_photo': requiresPhoto,
+        if (nameI18n != null && nameI18n!.isNotEmpty) 'name_i18n': nameI18n,
       };
 }

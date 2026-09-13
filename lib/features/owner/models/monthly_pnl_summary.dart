@@ -18,5 +18,20 @@ abstract class MonthlyPnlSummary with _$MonthlyPnlSummary {
     @Default(0.0) double ownerExpense,
     /// Částka vyúčtovaná agenturou za tento byt a měsíc (0 = žádný uzamčený snapshot).
     @Default(0.0) double agencyCosts,
+    /// Datum skutečného výběru / potvrzení nájmu (dlouhodobý pronájem) – hotovost / P&L.
+    DateTime? rentPaidAt,
+    /// Plánovaný termín výběru ([tasks.due_date], rent_collection).
+    DateTime? rentPlannedCollectionDate,
+    /// Skutečné dokončení ([tasks.completed_at] nebo potvrzení převodu).
+    DateTime? rentActualCollectionDate,
+    /// Bilance nájmu po FIFO amortizaci napříč měsíci (alokované platby − očekáváno).
+    /// null = bez kontextu nájmu nebo měsíc kauce.
+    double? rentBalanceDifference,
+    /// Částka kauce z P&L (`description` obsahuje „Kauce“) – nezapočítává se do [rentBalanceDifference].
+    double? rentDepositAmount,
+    /// Částka z FIFO poolu alokovaná na tento měsíc (pro vysvětlení úhrady z minula).
+    @Default(0.0) double rentFifoAllocatedFromPool,
+    /// True = část úhrady šla z historických plateb, ne jen z výběru v tomto měsíci.
+    @Default(false) bool rentCoveredFromPreviousPool,
   }) = _MonthlyPnlSummary;
 }

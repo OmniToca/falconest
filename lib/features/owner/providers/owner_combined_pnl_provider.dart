@@ -1,11 +1,15 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/constants/apartment_rental_constants.dart';
 import 'package:falconest/core/models/apartment_investment_pnl_entry.dart';
 import 'package:falconest/features/owner/models/monthly_pnl_summary.dart';
 import 'package:falconest/features/owner/providers/apartment_investment_pnl_entries_provider.dart';
+import 'package:falconest/features/owner/providers/owner_apartment_detail_provider.dart';
 import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
 import 'package:falconest/features/owner/providers/owner_billing_provider.dart';
 import 'package:falconest/features/owner/services/owner_apartment_agency_costs_from_snapshots.dart';
+import 'package:falconest/features/owner/services/owner_rent_payment_details_service.dart';
 
 /// Spojený měsíční P&L: manuální záznamy majitele + agenturní náklady z uzamčených faktur.
 ///
@@ -23,10 +27,12 @@ final ownerCombinedPnlProvider = FutureProvider.autoDispose
   final results = await Future.wait([
     ref.watch(apartmentInvestmentPnlEntriesProvider(apartmentId).future),
     ref.watch(ownerBillingSnapshotsProvider.future),
+    ref.watch(ownerApartmentDetailProvider(apartmentId).future),
   ]);
 
   final entries = results[0] as List<ApartmentInvestmentPnlEntry>;
   final snapshots = results[1] as List<BillingSnapshotModel>;
+  final apartmentDetail = results[2] as OwnerApartmentDetail?;
 
   final agencyByMonth = await OwnerApartmentAgencyCostsFromSnapshots.agencyCostsByMonth(
     apartmentId: apartmentId,
@@ -46,19 +52,43 @@ final ownerCombinedPnlProvider = FutureProvider.autoDispose
     }
   }
 
+  Map<DateTime, MonthlyRentPaymentMeta> rentPaymentByMonth = {};
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData ?? '';
+  if (apartmentDetail != null &&
+      tenantId.isNotEmpty &&
+      apartmentDetail.rentalMode == kApartmentRentalModeLongTerm) {
+    rentPaymentByMonth = await OwnerRentPaymentDetailsService.loadByApartmentId(
+      tenantId: tenantId,
+      apartmentId: apartmentId,
+      apartmentRentAmountFallback: apartmentDetail.rentAmount,
+      pnlEntries: entries,
+    );
+  }
+
   final monthKeys = <DateTime>{}
     ..addAll(incomeByMonth.keys)
     ..addAll(expenseByMonth.keys)
-    ..addAll(agencyByMonth.keys);
+    ..addAll(agencyByMonth.keys)
+    ..addAll(rentPaymentByMonth.keys);
 
   final out = monthKeys
       .map(
-        (mk) => MonthlyPnlSummary(
-          month: mk,
-          ownerIncome: incomeByMonth[mk] ?? 0,
-          ownerExpense: expenseByMonth[mk] ?? 0,
-          agencyCosts: agencyByMonth[mk] ?? 0,
-        ),
+        (mk) {
+          final rentMeta = rentPaymentByMonth[mk];
+          return MonthlyPnlSummary(
+            month: mk,
+            ownerIncome: incomeByMonth[mk] ?? 0,
+            ownerExpense: expenseByMonth[mk] ?? 0,
+            agencyCosts: agencyByMonth[mk] ?? 0,
+            rentPaidAt: rentMeta?.rentPaidAt,
+            rentPlannedCollectionDate: rentMeta?.plannedCollectionDate,
+            rentActualCollectionDate: rentMeta?.actualCollectionDate,
+            rentBalanceDifference: rentMeta?.rentBalanceDifference,
+            rentDepositAmount: rentMeta?.depositAmount,
+            rentFifoAllocatedFromPool: rentMeta?.fifoAllocatedFromPool ?? 0,
+            rentCoveredFromPreviousPool: rentMeta?.coveredFromPreviousPool ?? false,
+          );
+        },
       )
       .toList();
 

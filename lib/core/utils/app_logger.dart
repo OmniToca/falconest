@@ -8,6 +8,11 @@ import 'package:flutter/foundation.dart';
 class AppLogger {
   AppLogger._();
 
+  /// Dočasné diagnostické logy (např. dvojnásobný „Dostupný zůstatek“) – v release buildu typicky potlačeno.
+  static void debug(String message) {
+    debugPrint('[FalcoNest][DEBUG] $message');
+  }
+
   /// Zaloguje chybu s kontextem. [error] a [stackTrace] jsou volitelné (např. z `catch (e, st)`).
   static void error(String message, [Object? error, StackTrace? stackTrace]) {
     debugPrint('[FalcoNest][ERROR] $message');

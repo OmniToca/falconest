@@ -1,6 +1,9 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
+
+import 'package:falconest/features/owner/widgets/owner_read_only_gate.dart';
 
 import 'package:falconest/core/utils/id_generator.dart';
 import 'package:falconest/core/repositories/task/supabase_task_insert_repository.dart';
@@ -20,11 +23,13 @@ import 'package:falconest/features/owner/providers/owner_apartments_provider.dar
 /// Pro otevření z obrazovky s ref volej [openOwnerReportIssueDialog].
 void openOwnerReportIssueDialog(
   BuildContext context, {
+  required WidgetRef ref,
   required List<OwnerApartmentWithStatus> apartments,
   required String profileId,
   String? preselectedApartmentId,
   VoidCallback? onSuccess,
 }) {
+  if (isOwnerPortalReadOnly(ref)) return;
   showDialog<bool>(
     context: context,
     builder: (ctx) => OwnerReportIssueDialog(

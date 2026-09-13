@@ -50,7 +50,7 @@ class ClientRepository {
     final q = searchQuery?.trim() ?? '';
     dynamic query = SupabaseService.safeFrom('clients', tenantId)
         .select(
-          'id, tenant_id, name, email, phone, client_type, language_code, profile_id, agency_id, created_at, deleted_at, geo_location',
+          'id, tenant_id, name, email, phone, client_type, language_code, profile_id, agency_id, can_bill_external_tasks, created_at, deleted_at, geo_location',
         )
         .isFilter('deleted_at', null);
 
@@ -135,7 +135,7 @@ class ClientRepository {
 
     final response = await SupabaseService.safeFrom('clients', tenantId)
         .select(
-          'id, tenant_id, name, email, phone, client_type, language_code, profile_id, agency_id, created_at, deleted_at, geo_location',
+          'id, tenant_id, name, email, phone, client_type, language_code, profile_id, agency_id, can_bill_external_tasks, created_at, deleted_at, geo_location',
         )
         .eq('agency_id', agencyId.trim())
         .isFilter('deleted_at', null)

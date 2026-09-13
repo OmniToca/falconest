@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/auth/owner_view_impersonation_providers.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
 /// Stav bytu v Klientském portálu — kombinace pobytu hosta a workflow úklidu.
@@ -52,7 +53,7 @@ class OwnerApartmentWithStatus {
 final ownerApartmentsProvider = FutureProvider<List<OwnerApartmentWithStatus>>((
   ref,
 ) async {
-  final profileId = ref.watch(authNotifierProvider).state.profileId;
+  final profileId = ref.watch(effectiveProfileIdProvider);
   if (profileId == null || profileId.isEmpty) return [];
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];

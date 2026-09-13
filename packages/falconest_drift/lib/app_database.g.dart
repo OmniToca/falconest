@@ -265,6 +265,17 @@ class $TasksTable extends Tasks with TableInfo<$TasksTable, Task> {
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _titleI18nJsonMeta = const VerificationMeta(
+    'titleI18nJson',
+  );
+  @override
+  late final GeneratedColumn<String> titleI18nJson = GeneratedColumn<String>(
+    'title_i18n_json',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _unassignedInfoMeta = const VerificationMeta(
     'unassignedInfo',
   );
@@ -356,6 +367,7 @@ class $TasksTable extends Tasks with TableInfo<$TasksTable, Task> {
     syncStatus,
     lastUpdated,
     metadataJson,
+    titleI18nJson,
     unassignedInfo,
     serviceId,
     mediaUrlsJson,
@@ -562,6 +574,15 @@ class $TasksTable extends Tasks with TableInfo<$TasksTable, Task> {
         ),
       );
     }
+    if (data.containsKey('title_i18n_json')) {
+      context.handle(
+        _titleI18nJsonMeta,
+        titleI18nJson.isAcceptableOrUnknown(
+          data['title_i18n_json']!,
+          _titleI18nJsonMeta,
+        ),
+      );
+    }
     if (data.containsKey('unassigned_info')) {
       context.handle(
         _unassignedInfoMeta,
@@ -708,6 +729,10 @@ class $TasksTable extends Tasks with TableInfo<$TasksTable, Task> {
         DriftSqlType.string,
         data['${effectivePrefix}metadata_json'],
       ),
+      titleI18nJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}title_i18n_json'],
+      ),
       unassignedInfo: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}unassigned_info'],
@@ -770,6 +795,9 @@ class Task extends DataClass implements Insertable<Task> {
   final DateTime lastUpdated;
   final String? metadataJson;
 
+  /// JSON z `tasks.title_i18n` (jsonb) – uložené překlady názvu pro exporty; prázdné řádky = null.
+  final String? titleI18nJson;
+
   /// JSON z `tasks.unassigned_info` (jsonb) jako text – pro offline kontext nepřiřazeného úkolu.
   final String? unassignedInfo;
 
@@ -806,6 +834,7 @@ class Task extends DataClass implements Insertable<Task> {
     required this.syncStatus,
     required this.lastUpdated,
     this.metadataJson,
+    this.titleI18nJson,
     this.unassignedInfo,
     this.serviceId,
     this.mediaUrlsJson,
@@ -866,6 +895,9 @@ class Task extends DataClass implements Insertable<Task> {
     map['last_updated'] = Variable<DateTime>(lastUpdated);
     if (!nullToAbsent || metadataJson != null) {
       map['metadata_json'] = Variable<String>(metadataJson);
+    }
+    if (!nullToAbsent || titleI18nJson != null) {
+      map['title_i18n_json'] = Variable<String>(titleI18nJson);
     }
     if (!nullToAbsent || unassignedInfo != null) {
       map['unassigned_info'] = Variable<String>(unassignedInfo);
@@ -939,6 +971,9 @@ class Task extends DataClass implements Insertable<Task> {
       metadataJson: metadataJson == null && nullToAbsent
           ? const Value.absent()
           : Value(metadataJson),
+      titleI18nJson: titleI18nJson == null && nullToAbsent
+          ? const Value.absent()
+          : Value(titleI18nJson),
       unassignedInfo: unassignedInfo == null && nullToAbsent
           ? const Value.absent()
           : Value(unassignedInfo),
@@ -997,6 +1032,7 @@ class Task extends DataClass implements Insertable<Task> {
       syncStatus: serializer.fromJson<int>(json['syncStatus']),
       lastUpdated: serializer.fromJson<DateTime>(json['lastUpdated']),
       metadataJson: serializer.fromJson<String?>(json['metadataJson']),
+      titleI18nJson: serializer.fromJson<String?>(json['titleI18nJson']),
       unassignedInfo: serializer.fromJson<String?>(json['unassignedInfo']),
       serviceId: serializer.fromJson<String?>(json['serviceId']),
       mediaUrlsJson: serializer.fromJson<String?>(json['mediaUrlsJson']),
@@ -1036,6 +1072,7 @@ class Task extends DataClass implements Insertable<Task> {
       'syncStatus': serializer.toJson<int>(syncStatus),
       'lastUpdated': serializer.toJson<DateTime>(lastUpdated),
       'metadataJson': serializer.toJson<String?>(metadataJson),
+      'titleI18nJson': serializer.toJson<String?>(titleI18nJson),
       'unassignedInfo': serializer.toJson<String?>(unassignedInfo),
       'serviceId': serializer.toJson<String?>(serviceId),
       'mediaUrlsJson': serializer.toJson<String?>(mediaUrlsJson),
@@ -1069,6 +1106,7 @@ class Task extends DataClass implements Insertable<Task> {
     int? syncStatus,
     DateTime? lastUpdated,
     Value<String?> metadataJson = const Value.absent(),
+    Value<String?> titleI18nJson = const Value.absent(),
     Value<String?> unassignedInfo = const Value.absent(),
     Value<String?> serviceId = const Value.absent(),
     Value<String?> mediaUrlsJson = const Value.absent(),
@@ -1113,6 +1151,9 @@ class Task extends DataClass implements Insertable<Task> {
     syncStatus: syncStatus ?? this.syncStatus,
     lastUpdated: lastUpdated ?? this.lastUpdated,
     metadataJson: metadataJson.present ? metadataJson.value : this.metadataJson,
+    titleI18nJson: titleI18nJson.present
+        ? titleI18nJson.value
+        : this.titleI18nJson,
     unassignedInfo: unassignedInfo.present
         ? unassignedInfo.value
         : this.unassignedInfo,
@@ -1181,6 +1222,9 @@ class Task extends DataClass implements Insertable<Task> {
       metadataJson: data.metadataJson.present
           ? data.metadataJson.value
           : this.metadataJson,
+      titleI18nJson: data.titleI18nJson.present
+          ? data.titleI18nJson.value
+          : this.titleI18nJson,
       unassignedInfo: data.unassignedInfo.present
           ? data.unassignedInfo.value
           : this.unassignedInfo,
@@ -1224,6 +1268,7 @@ class Task extends DataClass implements Insertable<Task> {
           ..write('syncStatus: $syncStatus, ')
           ..write('lastUpdated: $lastUpdated, ')
           ..write('metadataJson: $metadataJson, ')
+          ..write('titleI18nJson: $titleI18nJson, ')
           ..write('unassignedInfo: $unassignedInfo, ')
           ..write('serviceId: $serviceId, ')
           ..write('mediaUrlsJson: $mediaUrlsJson, ')
@@ -1259,6 +1304,7 @@ class Task extends DataClass implements Insertable<Task> {
     syncStatus,
     lastUpdated,
     metadataJson,
+    titleI18nJson,
     unassignedInfo,
     serviceId,
     mediaUrlsJson,
@@ -1293,6 +1339,7 @@ class Task extends DataClass implements Insertable<Task> {
           other.syncStatus == this.syncStatus &&
           other.lastUpdated == this.lastUpdated &&
           other.metadataJson == this.metadataJson &&
+          other.titleI18nJson == this.titleI18nJson &&
           other.unassignedInfo == this.unassignedInfo &&
           other.serviceId == this.serviceId &&
           other.mediaUrlsJson == this.mediaUrlsJson &&
@@ -1325,6 +1372,7 @@ class TasksCompanion extends UpdateCompanion<Task> {
   final Value<int> syncStatus;
   final Value<DateTime> lastUpdated;
   final Value<String?> metadataJson;
+  final Value<String?> titleI18nJson;
   final Value<String?> unassignedInfo;
   final Value<String?> serviceId;
   final Value<String?> mediaUrlsJson;
@@ -1355,6 +1403,7 @@ class TasksCompanion extends UpdateCompanion<Task> {
     this.syncStatus = const Value.absent(),
     this.lastUpdated = const Value.absent(),
     this.metadataJson = const Value.absent(),
+    this.titleI18nJson = const Value.absent(),
     this.unassignedInfo = const Value.absent(),
     this.serviceId = const Value.absent(),
     this.mediaUrlsJson = const Value.absent(),
@@ -1386,6 +1435,7 @@ class TasksCompanion extends UpdateCompanion<Task> {
     this.syncStatus = const Value.absent(),
     required DateTime lastUpdated,
     this.metadataJson = const Value.absent(),
+    this.titleI18nJson = const Value.absent(),
     this.unassignedInfo = const Value.absent(),
     this.serviceId = const Value.absent(),
     this.mediaUrlsJson = const Value.absent(),
@@ -1421,6 +1471,7 @@ class TasksCompanion extends UpdateCompanion<Task> {
     Expression<int>? syncStatus,
     Expression<DateTime>? lastUpdated,
     Expression<String>? metadataJson,
+    Expression<String>? titleI18nJson,
     Expression<String>? unassignedInfo,
     Expression<String>? serviceId,
     Expression<String>? mediaUrlsJson,
@@ -1456,6 +1507,7 @@ class TasksCompanion extends UpdateCompanion<Task> {
       if (syncStatus != null) 'sync_status': syncStatus,
       if (lastUpdated != null) 'last_updated': lastUpdated,
       if (metadataJson != null) 'metadata_json': metadataJson,
+      if (titleI18nJson != null) 'title_i18n_json': titleI18nJson,
       if (unassignedInfo != null) 'unassigned_info': unassignedInfo,
       if (serviceId != null) 'service_id': serviceId,
       if (mediaUrlsJson != null) 'media_urls_json': mediaUrlsJson,
@@ -1489,6 +1541,7 @@ class TasksCompanion extends UpdateCompanion<Task> {
     Value<int>? syncStatus,
     Value<DateTime>? lastUpdated,
     Value<String?>? metadataJson,
+    Value<String?>? titleI18nJson,
     Value<String?>? unassignedInfo,
     Value<String?>? serviceId,
     Value<String?>? mediaUrlsJson,
@@ -1522,6 +1575,7 @@ class TasksCompanion extends UpdateCompanion<Task> {
       syncStatus: syncStatus ?? this.syncStatus,
       lastUpdated: lastUpdated ?? this.lastUpdated,
       metadataJson: metadataJson ?? this.metadataJson,
+      titleI18nJson: titleI18nJson ?? this.titleI18nJson,
       unassignedInfo: unassignedInfo ?? this.unassignedInfo,
       serviceId: serviceId ?? this.serviceId,
       mediaUrlsJson: mediaUrlsJson ?? this.mediaUrlsJson,
@@ -1611,6 +1665,9 @@ class TasksCompanion extends UpdateCompanion<Task> {
     if (metadataJson.present) {
       map['metadata_json'] = Variable<String>(metadataJson.value);
     }
+    if (titleI18nJson.present) {
+      map['title_i18n_json'] = Variable<String>(titleI18nJson.value);
+    }
     if (unassignedInfo.present) {
       map['unassigned_info'] = Variable<String>(unassignedInfo.value);
     }
@@ -1658,6 +1715,7 @@ class TasksCompanion extends UpdateCompanion<Task> {
           ..write('syncStatus: $syncStatus, ')
           ..write('lastUpdated: $lastUpdated, ')
           ..write('metadataJson: $metadataJson, ')
+          ..write('titleI18nJson: $titleI18nJson, ')
           ..write('unassignedInfo: $unassignedInfo, ')
           ..write('serviceId: $serviceId, ')
           ..write('mediaUrlsJson: $mediaUrlsJson, ')
@@ -11804,6 +11862,7 @@ typedef $$TasksTableCreateCompanionBuilder =
       Value<int> syncStatus,
       required DateTime lastUpdated,
       Value<String?> metadataJson,
+      Value<String?> titleI18nJson,
       Value<String?> unassignedInfo,
       Value<String?> serviceId,
       Value<String?> mediaUrlsJson,
@@ -11836,6 +11895,7 @@ typedef $$TasksTableUpdateCompanionBuilder =
       Value<int> syncStatus,
       Value<DateTime> lastUpdated,
       Value<String?> metadataJson,
+      Value<String?> titleI18nJson,
       Value<String?> unassignedInfo,
       Value<String?> serviceId,
       Value<String?> mediaUrlsJson,
@@ -11964,6 +12024,11 @@ class $$TasksTableFilterComposer extends Composer<_$AppDatabase, $TasksTable> {
 
   ColumnFilters<String> get metadataJson => $composableBuilder(
     column: $table.metadataJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get titleI18nJson => $composableBuilder(
+    column: $table.titleI18nJson,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -12122,6 +12187,11 @@ class $$TasksTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get titleI18nJson => $composableBuilder(
+    column: $table.titleI18nJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get unassignedInfo => $composableBuilder(
     column: $table.unassignedInfo,
     builder: (column) => ColumnOrderings(column),
@@ -12263,6 +12333,11 @@ class $$TasksTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<String> get titleI18nJson => $composableBuilder(
+    column: $table.titleI18nJson,
+    builder: (column) => column,
+  );
+
   GeneratedColumn<String> get unassignedInfo => $composableBuilder(
     column: $table.unassignedInfo,
     builder: (column) => column,
@@ -12341,6 +12416,7 @@ class $$TasksTableTableManager
                 Value<int> syncStatus = const Value.absent(),
                 Value<DateTime> lastUpdated = const Value.absent(),
                 Value<String?> metadataJson = const Value.absent(),
+                Value<String?> titleI18nJson = const Value.absent(),
                 Value<String?> unassignedInfo = const Value.absent(),
                 Value<String?> serviceId = const Value.absent(),
                 Value<String?> mediaUrlsJson = const Value.absent(),
@@ -12371,6 +12447,7 @@ class $$TasksTableTableManager
                 syncStatus: syncStatus,
                 lastUpdated: lastUpdated,
                 metadataJson: metadataJson,
+                titleI18nJson: titleI18nJson,
                 unassignedInfo: unassignedInfo,
                 serviceId: serviceId,
                 mediaUrlsJson: mediaUrlsJson,
@@ -12403,6 +12480,7 @@ class $$TasksTableTableManager
                 Value<int> syncStatus = const Value.absent(),
                 required DateTime lastUpdated,
                 Value<String?> metadataJson = const Value.absent(),
+                Value<String?> titleI18nJson = const Value.absent(),
                 Value<String?> unassignedInfo = const Value.absent(),
                 Value<String?> serviceId = const Value.absent(),
                 Value<String?> mediaUrlsJson = const Value.absent(),
@@ -12433,6 +12511,7 @@ class $$TasksTableTableManager
                 syncStatus: syncStatus,
                 lastUpdated: lastUpdated,
                 metadataJson: metadataJson,
+                titleI18nJson: titleI18nJson,
                 unassignedInfo: unassignedInfo,
                 serviceId: serviceId,
                 mediaUrlsJson: mediaUrlsJson,

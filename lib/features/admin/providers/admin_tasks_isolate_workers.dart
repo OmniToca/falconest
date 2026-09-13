@@ -12,6 +12,7 @@
 
 import 'package:intl/intl.dart';
 
+import 'package:falconest/core/repositories/task/task_insert_sanitizer.dart';
 import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/core/utils/id_generator.dart';
 import 'package:falconest/features/admin/models/reservation_service_model.dart'
@@ -562,7 +563,9 @@ SmartGenPhaseCResult runSmartGenerationPhaseCSync(SmartGenPhaseCPack pack) {
     _applyTransitFromReservationService(metadata, rsRaw);
     _ensureGuestPayerWhenTransitWithoutAgencyCash(metadata);
 
-    toInsert.add({
+    // Snapshot překladů z katalogu (přeneseno v candidate.service z hlavního vlákna) — stejná ochrana
+    // historických výstupů jako u scheduled generátoru; viz task_title_i18n_snapshot.dart.
+    final row = <String, dynamic>{
       'tenant_id': pack.tenantId,
       'apartment_id': apartmentId,
       'reservation_id': reservationId,
@@ -576,7 +579,13 @@ SmartGenPhaseCResult runSmartGenerationPhaseCSync(SmartGenPhaseCPack pack) {
       'scheduled_start': result.start.toIso8601String(),
       'due_date': result.end.toIso8601String(),
       'metadata': metadata,
-    });
+    };
+    final snapRaw = svcMap['titleI18nForTask'];
+    // Ochrana před chybou 23502: NOT NULL sloupec — vždy {}, nebo snapshot z katalogu (viz ensureTaskTitleI18nForInsert).
+    row['title_i18n'] = ensureTaskTitleI18nForInsert(
+      snapRaw is Map && snapRaw.isNotEmpty ? snapRaw : null,
+    );
+    toInsert.add(row);
     checklistTemplateIdsForBatch.add(svcMap['checklistTemplateId'] as String?);
     effectiveDurations.add(effectiveDuration);
   }

@@ -5,9 +5,10 @@ import 'package:falconest/core/services/supabase_service.dart';
 /// PROČ: Pracovník může nahlásit problém bez připojení k internetu. Payload
 /// obsahuje surový přepis (description), tenant_id, apartment_id atd. Místo
 /// přímého INSERT voláme Edge Function `process-issue-ai`, která:
-/// 1) Pomocí OpenAI přeloží popis do španělštiny a vytvoří nadpis,
-/// 2) Při výpadku AI (fail-safe) uloží surový text s fallback nadpisem,
-/// 3) Provede INSERT do tasks s Service Role. Mutace se smaže ze fronty
+/// 1) Ověří uživatelský JWT a vynutí tenant_id z profilu (P0 bezpečnost),
+/// 2) Pomocí OpenAI přeloží popis do španělštiny a vytvoří nadpis,
+/// 3) Při výpadku AI (fail-safe) uloží surový text s fallback nadpisem,
+/// 4) Provede INSERT do tasks přes RLS uživatele. Mutace se smaže ze fronty
 /// POUZE při 200 OK – při 5xx zůstane k opakování.
 Future<void> processOfflineIssueTask(Map<String, dynamic> payload) async {
   final tenantId = payload['tenant_id']?.toString();

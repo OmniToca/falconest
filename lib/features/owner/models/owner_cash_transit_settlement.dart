@@ -34,8 +34,15 @@ abstract class OwnerCashTransitSettlement with _$OwnerCashTransitSettlement {
     @JsonKey(includeFromJson: false, includeToJson: false) DateTime? reservationStayStart,
     /// Konec pobytu z `reservations.end_date` (viz [reservationStayStart]).
     @JsonKey(includeFromJson: false, includeToJson: false) DateTime? reservationStayEnd,
+    /// Jméno hosta z `reservations.guest_name` – doplní repozitář pro dropdown dispozice.
+    @JsonKey(includeFromJson: false, includeToJson: false) String? guestName,
+    /// Reálně dostupná částka pro novou žádost (po odečtení rezervací z `owner_cash_disposition_requests`).
+    @JsonKey(includeFromJson: false, includeToJson: false) double? availableAmount,
   }) = _OwnerCashTransitSettlement;
 
   factory OwnerCashTransitSettlement.fromJson(Map<String, dynamic> json) =>
       _$OwnerCashTransitSettlementFromJson(json);
+
+  /// Částka pro formulář dispozice – [availableAmount] z repozitáře, jinak surové [amount] z DB.
+  double get amountForDisposition => availableAmount ?? amount;
 }

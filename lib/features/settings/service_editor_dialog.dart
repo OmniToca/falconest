@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/features/admin/providers/task_categories_provider.dart';
+import 'package:falconest/core/widgets/export_i18n_editor_dialog.dart';
 import 'package:falconest/features/settings/models/tenant_service_model.dart';
 import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
 
@@ -40,6 +41,9 @@ class _ServiceEditorDialogState extends ConsumerState<ServiceEditorDialog> {
   bool _isSaving = false;
   /// Zda už byl do pole ceny nastaven přepočet z EUR na lokální měnu (pouze při editaci).
   bool _initialPriceSet = false;
+
+  /// Překlady názvu pro export (`name_i18n`); po potvrzení dialogu přepíše výchozí stav z [widget.existing].
+  Map<String, dynamic>? _nameI18nDraft;
 
   /// Možnosti pro požadovanou profesi (kdo službu vykonává). any = kdokoliv.
   static const List<String> _requiredRoleValues = ['any', 'cleaner', 'driver', 'maintenance', 'checkin_agent'];
@@ -153,6 +157,7 @@ class _ServiceEditorDialogState extends ConsumerState<ServiceEditorDialog> {
       requiredRole: _requiredRole == 'any' ? null : _requiredRole,
       durationMinutes: durationMinutes,
       requiresPhoto: _requiresPhoto,
+      nameI18n: _nameI18nDraft ?? widget.existing?.nameI18n,
     );
     try {
       if (_isEditing) {
@@ -235,6 +240,20 @@ class _ServiceEditorDialogState extends ConsumerState<ServiceEditorDialog> {
                   decoration: InputDecoration(
                     labelText: 'settings.field_name'.tr(),
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.translate_outlined),
+                      tooltip: 'export_i18n.tooltip_edit'.tr(),
+                      onPressed: () async {
+                        final initial = _nameI18nDraft ?? widget.existing?.nameI18n;
+                        final next = await ExportI18nEditorDialog.show(
+                          context,
+                          initial: initial,
+                        );
+                        if (next != null && mounted) {
+                          setState(() => _nameI18nDraft = next);
+                        }
+                      },
+                    ),
                   ),
                   validator: (v) =>
                       (v == null || v.trim().isEmpty) ? 'settings.validation_key_required'.tr() : null,

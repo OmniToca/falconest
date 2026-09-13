@@ -137,11 +137,13 @@ final clientsFullListProvider = FutureProvider<List<ClientModel>>((ref) async {
   return list;
 });
 
-/// Provider pro přidání nového klienta – vrací async funkci pro insert.
+/// Provider pro přidání nového klienta – vrací vytvořený [ClientModel] včetně DB `id`.
 ///
 /// Při insertu kontrolujeme tenant_id proti authNotifier, aby uživatel
 /// nemohl vložit klienta jinému tenantovi (RLS to stejně zablokuje, ale obrana v hloubce).
-final addClientProvider = Provider<Future<void> Function(ClientModel client)>((ref) {
+/// PROČ `.select().single()`: formulář úkolu (inline vytvoření) potřebuje ID pro auto-výběr.
+final addClientProvider =
+    Provider<Future<ClientModel> Function(ClientModel client)>((ref) {
   return (ClientModel client) async {
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     if (tenantId == null || tenantId.isEmpty) {
@@ -157,7 +159,15 @@ final addClientProvider = Provider<Future<void> Function(ClientModel client)>((r
       ..remove('deleted_at')
       ..['tenant_id'] = tenantId; // Explicitně přepsat z auth – obrana v hloubce pro RLS
 
-    await SupabaseService.safeFrom('clients', tenantId).insert(map);
+    final res = await SupabaseService.safeFrom('clients', tenantId)
+        .insert(map)
+        .select()
+        .single();
+
+    // PROČ: Dropdowny a Autocomplete čtou clientsFullListProvider – bez invalidace by nový klient chyběl.
+    ref.invalidate(clientsFullListProvider);
+
+    return ClientModel.fromJson(Map<String, dynamic>.from(res as Map));
   };
 });
 
@@ -185,6 +195,7 @@ final updateClientProvider = Provider<Future<void> Function(ClientModel client)>
       if (client.languageCode != null) 'language_code': client.languageCode,
       'profile_id': client.profileId,
       'agency_id': client.agencyId,
+      'can_bill_external_tasks': client.canBillExternalTasks,
       // PROČ: Explicitně posíláme null, aby dispečer mohl geolokaci v CRM smazat.
       'geo_location': GeoJsonPoint.toPostgrestJson(client.latitude, client.longitude),
     };

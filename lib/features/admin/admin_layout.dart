@@ -34,6 +34,7 @@ import 'package:falconest/features/admin/widgets/client_detail_dialog.dart';
 import 'package:falconest/features/admin/widgets/omnibox_dialog.dart';
 import 'package:falconest/features/admin/providers/omnibox_search_provider.dart';
 import 'package:falconest/features/settings/settings_screen.dart';
+import 'package:falconest/core/widgets/lazy_indexed_stack.dart';
 
 /// Práh šířky v pixelech – pod ním Drawer, nad ním permanentní Sidebar.
 const double _breakpointWidth = 800;
@@ -128,7 +129,7 @@ class AdminTabScope extends InheritedWidget {
 
 /// Responzivní layout pro admin sekci FalcoNest.
 ///
-/// Používá [IndexedStack] – podle [_selectedIndex] zobrazuje jednu z existujících
+/// Používá [LazyIndexedStack] – podle [_selectedIndex] zobrazuje jednu z existujících
 /// obrazovek: Nástěnka, Personál, Byty, Rezervace, Úkoly.
 /// Na úzkých obrazovkách Drawer, na širokých stálý Sidebar.
 class AdminLayout extends StatefulWidget {
@@ -144,8 +145,8 @@ class _AdminLayoutState extends State<AdminLayout> {
   /// Stav kolapsu levého menu – true = zobrazeno, false = skryto (široký layout).
   bool _isSidebarOpen = true;
 
-  /// Tělo obsahu – IndexedStack drží všechny obrazovky, přepíná podle výběru.
-  /// Zachovává stav při přepnutí záložky (scroll, formuláře).
+  /// Tělo obsahu – [LazyIndexedStack] mountuje obrazovku až při první návštěvě tabu;
+  /// po načtení drží stav v paměti (scroll, formuláře) stejně jako původní IndexedStack.
   static final List<Widget> _screens = [
     const AdminDashboardScreen(),
     const AdminTeamScreen(),
@@ -167,7 +168,7 @@ class _AdminLayoutState extends State<AdminLayout> {
 
   /// Otevře Omnibox a po výběru výsledku přeskočí do správné sekce + detailu.
   ///
-  /// PROČ: Admin navigace je `IndexedStack` bez route per tab. Proto nejprve přepínáme
+  /// PROČ: Admin navigace je `LazyIndexedStack` bez route per tab. Proto nejprve přepínáme
   /// tab a následně otevíráme existující detail dialog / editor nad danou sekcí.
   Future<void> _openOmnibox(BuildContext context, WidgetRef ref) async {
     final role = ref.read(authNotifierProvider).state.role;
@@ -221,7 +222,7 @@ class _AdminLayoutState extends State<AdminLayout> {
       child: Consumer(
         builder: (context, ref, _) {
           // PROČ: Křížová navigace z dialogů nastaví [adminTabJumpRequestProvider]; přepínáme záložku
-          // až po frame, aby se [IndexedStack] bezpečně přestavila po zavření overlay dialogu.
+          // až po frame, aby se [LazyIndexedStack] bezpečně přestavila po zavření overlay dialogu.
           ref.listen<int?>(adminTabJumpRequestProvider, (previous, next) {
             if (next != null) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -232,11 +233,18 @@ class _AdminLayoutState extends State<AdminLayout> {
               });
             }
           });
-          final auth = ref.watch(authNotifierProvider);
-          final isImpersonating = auth.state.isImpersonating;
+          final isImpersonating = ref.watch(
+            authNotifierProvider.select((a) => a.state.isImpersonating),
+          );
+          final role = ref.watch(
+            authNotifierProvider.select((a) => a.state.role),
+          );
+          final tenantIdForData = ref.watch(
+            authNotifierProvider.select((a) => a.tenantIdForData),
+          );
           // Super Admin a Account Manager smí na /admin jen s vybranou agenturou (převtělení) – jinak na velín.
-          if ((auth.state.role == 'super_admin' || auth.state.role == 'account_manager') &&
-              auth.tenantIdForData == null) {
+          if ((role == 'super_admin' || role == 'account_manager') &&
+              tenantIdForData == null) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (context.mounted) context.go('/super-admin');
             });
@@ -286,7 +294,7 @@ class _AdminLayoutState extends State<AdminLayout> {
                             onSidebarToggle: () => setState(() => _isSidebarOpen = !_isSidebarOpen),
                             selectedIndex: _selectedIndex,
                             onIndexChanged: (i) => setState(() => _selectedIndex = i),
-                            body: IndexedStack(
+                            body: LazyIndexedStack(
                               index: _selectedIndex.clamp(0, _screens.length - 1),
                               children: _screens,
                             ),
@@ -294,7 +302,7 @@ class _AdminLayoutState extends State<AdminLayout> {
                         : _NarrowLayout(
                             selectedIndex: _selectedIndex,
                             onIndexChanged: (i) => setState(() => _selectedIndex = i),
-                            body: IndexedStack(
+                            body: LazyIndexedStack(
                               index: _selectedIndex.clamp(0, _screens.length - 1),
                               children: _screens,
                             ),
@@ -678,11 +686,14 @@ class _AdminTopBar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final auth = ref.watch(authNotifierProvider);
+    final role = ref.watch(
+      authNotifierProvider.select((a) => a.state.role),
+    );
+    final isImpersonating = ref.watch(
+      authNotifierProvider.select((a) => a.state.isImpersonating),
+    );
     final profileAsync = ref.watch(currentUserProfileProvider);
     final profile = profileAsync.valueOrNull;
-    final role = auth.state.role;
-    final isImpersonating = auth.state.isImpersonating;
 
     final displayName = (profile?.name ?? '').trim().isNotEmpty
         ? profile!.name
@@ -949,8 +960,9 @@ class _NarrowLayout extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final auth = ref.watch(authNotifierProvider);
-    final isImpersonating = auth.state.isImpersonating;
+    final isImpersonating = ref.watch(
+      authNotifierProvider.select((a) => a.state.isImpersonating),
+    );
 
     return Scaffold(
       appBar: AppBar(
@@ -1012,7 +1024,10 @@ class _AdminSidebar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final modulesAsync = ref.watch(allModulesProvider);
     final activeKeysAsync = ref.watch(activeModuleKeysProvider);
-    final isSuperAdmin = ref.watch(authNotifierProvider).state.role == 'super_admin';
+    final isSuperAdmin = ref.watch(
+          authNotifierProvider.select((a) => a.state.role),
+        ) ==
+        'super_admin';
     final activeKeys = activeKeysAsync.valueOrNull ?? {};
     final rawModules = modulesAsync.valueOrNull;
     final allModules = (rawModules == null || rawModules.isEmpty)

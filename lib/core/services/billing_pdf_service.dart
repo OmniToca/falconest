@@ -1,4 +1,5 @@
-import 'package:easy_localization/easy_localization.dart';
+import 'package:flutter/widgets.dart' show Locale;
+import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -11,24 +12,24 @@ import 'package:falconest/features/admin/providers/finance_billing_provider.dart
 ///
 /// Používá balíčky [pdf] a [printing]. Obrázky z [BillingTaskItem.mediaUrls] se stahují
 /// přes [networkImage] a vykreslují jako miniatury. Selhání jedné fotky neshodí celé PDF.
+///
+/// **PROČ nepoužíváme EasyLocalization `.tr()`:** překlady pro PDF předává UI/service helpery jako hotové řetězce
+/// v konkrétním jazyce exportu; třída zůstává čistě „PDF builder“ bez závislosti na aktuálním locale aplikace.
 class BillingPdfService {
   BillingPdfService._();
 
   /// Vygeneruje PDF report pro jednoho klienta a spustí stahování souboru.
   ///
-  /// [group] – BillingGroup klienta s úkoly a výdaji.
-  /// [month] – měsíc fakturace.
-  /// [tenantCurrency] – kód měny (např. EUR, CZK).
-  /// [externalDisplayName] – zobrazovaný název pro skupinu 'external'.
-  /// [payerLabels] – mapování payerType → přeložený label (owner, guest, client).
-  /// [footerLabels] – všechny popisky (report_title, client_label, guest_label, ...).
+  /// [exportLocale] řídí formátování datumů ([DateFormat] s jazykovým kódem).
+  /// [payerLabels] a [footerLabels] musí být kompletní — žádné fallbacky v angličtině uvnitř této služby.
   static Future<void> generateAndDownloadPdf(
     BillingGroup group,
     DateTime month,
     String tenantCurrency, {
+    required Locale exportLocale,
     required String externalDisplayName,
-    Map<String, String>? payerLabels,
-    Map<String, String>? footerLabels,
+    required Map<String, String> payerLabels,
+    required Map<String, String> footerLabels,
   }) async {
     final clientName = group.groupKey == 'external'
         ? externalDisplayName
@@ -81,7 +82,9 @@ class BillingPdfService {
     }
 
     final doc = pw.Document();
-    final monthStr = '${_pad(month.month)}/${month.year}';
+    final lang = exportLocale.languageCode;
+    final monthPeriod = DateTime(month.year, month.month, 1);
+    final monthStr = DateFormat.yMMMM(lang).format(monthPeriod);
 
     // Rozdělení úkolů podle rezervací a samostatné.
     final tasksWithRes = <String, List<BillingTaskItem>>{};
@@ -97,31 +100,33 @@ class BillingPdfService {
 
     final bodyChildren = <pw.Widget>[];
 
-    // Lokalizované labely – fallback anglicky při chybějící mapě (např. Klientská zóna).
-    final labels = footerLabels ?? {};
-    final labelReportTitle = labels['report_title'] ?? 'Services report for ';
-    final labelClient = labels['client_label'] ?? 'Client: ';
-    final labelSummary = labels['summary_section'] ?? 'Executive Summary';
-    final labelServices = labels['services_breakdown'] ?? 'Breakdown of services provided';
-    final labelTotalTurnover = labels['total_turnover'] ?? 'Total turnover for services';
-    final labelPaidByGuests = labels['paid_by_guests'] ?? 'Paid by guests (cash)';
-    final labelExpenses = labels['expenses_to_reimburse'] ?? 'Costs to reimburse';
-    final labelFinalPay = labels['final_pay'] ?? 'AMOUNT DUE (Owner balance)';
-    final labelSubtotalPerRes = labels['subtotal_per_reservation'] ?? 'Amount due for reservation';
-    final labelTurnoverShort = labels['turnover_short'] ?? 'Turnover';
-    final labelGuestPaidShort = labels['guest_paid_short'] ?? 'Paid by guests';
-    final labelGuest = labels['guest_label'] ?? 'Guest: ';
-    final labelReservation = labels['reservation_prefix'] ?? 'Reservation: ';
-    final labelStandalone = labels['standalone_services'] ?? 'Standalone services (No reservation)';
-    final labelExpensesSection = labels['expenses_section'] ?? 'Costs to reimburse (Materials and purchases)';
-    final labelScheduled = labels['scheduled_label'] ?? 'Scheduled: ';
-    final labelCompleted = labels['completed_label'] ?? 'Completed: ';
-    final labelDate = labels['date_label'] ?? 'Date: ';
-    final fallbackClientName = labels['fallback_client_name'] ?? 'client';
-    final labelMonthlyManagementFee = labels['monthly_management_fee'] ?? 'Monthly management fee';
-    final labelTaskPrice = labels['task_price_label'] ?? 'Price';
-    final labelGuestPaid = labels['task_guest_paid_label'] ?? 'Guest paid';
-    final labelShortfallDue = labels['task_shortfall_due_label'] ?? 'Balance due';
+    final labelReportTitle = _req(footerLabels, 'report_title');
+    final labelClient = _req(footerLabels, 'client_label');
+    final labelSummary = _req(footerLabels, 'summary_section');
+    final labelServices = _req(footerLabels, 'services_breakdown');
+    final labelTotalTurnover = _req(footerLabels, 'total_turnover');
+    final labelPaidByGuests = _req(footerLabels, 'paid_by_guests');
+    final labelExpenses = _req(footerLabels, 'expenses_to_reimburse');
+    final labelFinalPay = _req(footerLabels, 'final_pay');
+    final labelSubtotalPerRes = _req(footerLabels, 'subtotal_per_reservation');
+    final labelTurnoverShort = _req(footerLabels, 'turnover_short');
+    final labelGuestPaidShort = _req(footerLabels, 'guest_paid_short');
+    final labelGuest = _req(footerLabels, 'guest_label');
+    final labelReservation = _req(footerLabels, 'reservation_prefix');
+    final labelApartmentBoundServices =
+        _req(footerLabels, 'apartment_bound_services');
+    final labelExternalServices = _req(footerLabels, 'external_services');
+    final labelExpensesSection = _req(footerLabels, 'expenses_section');
+    final labelScheduled = _req(footerLabels, 'scheduled_label');
+    final labelCompleted = _req(footerLabels, 'completed_label');
+    final labelDate = _req(footerLabels, 'date_label');
+    final fallbackClientName = _req(footerLabels, 'fallback_client_name');
+    final labelMonthlyManagementFee = _req(footerLabels, 'monthly_management_fee');
+    final labelTaskPrice = _req(footerLabels, 'task_price_label');
+    final labelGuestPaid = _req(footerLabels, 'task_guest_paid_label');
+    final labelShortfallDue = _req(footerLabels, 'task_shortfall_due_label');
+    final placeholderDash = _req(footerLabels, 'placeholder_dash');
+    final fileNamePrefix = _req(footerLabels, 'file_name_prefix');
 
     // Hlavička
     bodyChildren.add(
@@ -198,9 +203,12 @@ class BillingPdfService {
       bodyChildren.add(pw.SizedBox(height: 8));
     }
 
-    final pdfPayerLabels = payerLabels ??
-        {'owner': 'Owner – invoice', 'guest': 'Guest – cash', 'client': 'Client – invoice'};
-    final pdfPayerPrefix = labels['payer'] ?? 'Payer';
+    final pdfPayerPrefix = _req(footerLabels, 'payer');
+    final pdfPayerLabels = {
+      'owner': _req(payerLabels, 'owner'),
+      'guest': _req(payerLabels, 'guest'),
+      'client': _req(payerLabels, 'client'),
+    };
 
     // Bloky rezervací – chronologicky podle data první služby (od nejstarší)
     final resIds = tasksWithRes.keys.toList()
@@ -209,7 +217,8 @@ class BillingPdfService {
         final dateB = _firstTaskDate(tasksWithRes[b]!);
         return dateA.compareTo(dateB);
       });
-    final dateFormatShort = DateFormat('dd.MM.yyyy');
+    final dateFormatShort = DateFormat.yMd(lang);
+    final taskDateTimeFormat = DateFormat.yMd(lang).add_Hm();
     for (final resId in resIds) {
       final tasks = tasksWithRes[resId]!;
       final first = tasks.first;
@@ -234,11 +243,21 @@ class BillingPdfService {
             child: pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: _taskToPdfWidgets(
-                  task, imageCache, textStyle, pdfPayerLabels, pdfPayerPrefix,
-                  labelScheduled: labelScheduled, labelCompleted: labelCompleted,
-                  tenantCurrency: tenantCurrency,
-                  labelTaskPrice: labelTaskPrice, labelGuestPaid: labelGuestPaid,
-                  labelShortfallDue: labelShortfallDue),
+                task,
+                imageCache,
+                textStyle,
+                pdfPayerLabels,
+                pdfPayerPrefix,
+                exportLocale: exportLocale,
+                labelScheduled: labelScheduled,
+                labelCompleted: labelCompleted,
+                tenantCurrency: tenantCurrency,
+                labelTaskPrice: labelTaskPrice,
+                labelGuestPaid: labelGuestPaid,
+                labelShortfallDue: labelShortfallDue,
+                emptyPlaceholder: placeholderDash,
+                taskDateTimeFormat: taskDateTimeFormat,
+              ),
             ),
           ),
         );
@@ -281,31 +300,46 @@ class BillingPdfService {
       bodyChildren.add(pw.SizedBox(height: 12));
     }
 
-    // Samostatné služby (mimo rezervace)
-    if (tasksWithoutRes.isNotEmpty) {
-      bodyChildren.add(pw.Divider(thickness: 1));
-      bodyChildren.add(pw.SizedBox(height: 8));
-      bodyChildren.add(pw.Text(labelStandalone, style: boldStyle));
-      bodyChildren.add(pw.SizedBox(height: 6));
-
-      for (final task in tasksWithoutRes) {
-        bodyChildren.add(
-          pw.Padding(
-            padding: const pw.EdgeInsets.only(bottom: 8),
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: _taskToPdfWidgets(
-                  task, imageCache, textStyle, pdfPayerLabels, pdfPayerPrefix,
-                  labelScheduled: labelScheduled, labelCompleted: labelCompleted,
-                  tenantCurrency: tenantCurrency,
-                  labelTaskPrice: labelTaskPrice, labelGuestPaid: labelGuestPaid,
-                  labelShortfallDue: labelShortfallDue),
-            ),
-          ),
-        );
-      }
-      bodyChildren.add(pw.SizedBox(height: 12));
-    }
+    // Úkoly mimo rezervaci – vázané na apartmán vs. externí služba (podle tasks.apartment_id).
+    final standaloneSplit = splitBillingTasksWithoutReservation(tasksWithoutRes);
+    _appendPdfTaskSection(
+      bodyChildren,
+      sectionTitle: labelApartmentBoundServices,
+      tasks: standaloneSplit.apartmentBoundServices,
+      imageCache: imageCache,
+      textStyle: textStyle,
+      boldStyle: boldStyle,
+      pdfPayerLabels: pdfPayerLabels,
+      pdfPayerPrefix: pdfPayerPrefix,
+      exportLocale: exportLocale,
+      labelScheduled: labelScheduled,
+      labelCompleted: labelCompleted,
+      tenantCurrency: tenantCurrency,
+      labelTaskPrice: labelTaskPrice,
+      labelGuestPaid: labelGuestPaid,
+      labelShortfallDue: labelShortfallDue,
+      placeholderDash: placeholderDash,
+      taskDateTimeFormat: taskDateTimeFormat,
+    );
+    _appendPdfTaskSection(
+      bodyChildren,
+      sectionTitle: labelExternalServices,
+      tasks: standaloneSplit.externalServices,
+      imageCache: imageCache,
+      textStyle: textStyle,
+      boldStyle: boldStyle,
+      pdfPayerLabels: pdfPayerLabels,
+      pdfPayerPrefix: pdfPayerPrefix,
+      exportLocale: exportLocale,
+      labelScheduled: labelScheduled,
+      labelCompleted: labelCompleted,
+      tenantCurrency: tenantCurrency,
+      labelTaskPrice: labelTaskPrice,
+      labelGuestPaid: labelGuestPaid,
+      labelShortfallDue: labelShortfallDue,
+      placeholderDash: placeholderDash,
+      taskDateTimeFormat: taskDateTimeFormat,
+    );
 
     // Náklady k proplacení – detailní rozpis (datum, popis, částka, účtenka)
     if (group.expenses.isNotEmpty) {
@@ -320,8 +354,13 @@ class BillingPdfService {
             child: pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: _expenseToPdfWidgets(
-                  exp, expenseImageCache, textStyle,
-                  labelDate: labelDate, tenantCurrency: tenantCurrency),
+                exp,
+                expenseImageCache,
+                textStyle,
+                labelDate: labelDate,
+                tenantCurrency: tenantCurrency,
+                exportLanguageCode: lang,
+              ),
             ),
           ),
         );
@@ -340,8 +379,72 @@ class BillingPdfService {
 
     final bytes = await doc.save();
     final safeName = _sanitizeFileName(clientName, fallback: fallbackClientName);
-    final fileName = 'Report_${safeName}_${_pad(month.month)}_${month.year}.pdf';
+    final fileName = '${fileNamePrefix}_${safeName}_${_pad(month.month)}_${month.year}.pdf';
     await downloadBytesAsFile(bytes, fileName);
+  }
+
+  static String _req(Map<String, String> map, String key) {
+    final v = map[key];
+    if (v == null || v.trim().isEmpty) {
+      throw ArgumentError('Chybí povinný řetězec pro PDF: $key');
+    }
+    return v;
+  }
+
+  /// Vykreslí jednu sekci úkolů mimo rezervaci (vázané na apartmán / externí služba).
+  ///
+  /// PROČ: Stejné rozdělení jako v admin UI – odpovídá typům úkolů v aplikaci (TaskFormMode).
+  static void _appendPdfTaskSection(
+    List<pw.Widget> bodyChildren, {
+    required String sectionTitle,
+    required List<BillingTaskItem> tasks,
+    required Map<String, List<pw.ImageProvider>> imageCache,
+    required pw.TextStyle textStyle,
+    required pw.TextStyle boldStyle,
+    required Map<String, String> pdfPayerLabels,
+    required String pdfPayerPrefix,
+    required Locale exportLocale,
+    required String labelScheduled,
+    required String labelCompleted,
+    required String tenantCurrency,
+    required String labelTaskPrice,
+    required String labelGuestPaid,
+    required String labelShortfallDue,
+    required String placeholderDash,
+    required DateFormat taskDateTimeFormat,
+  }) {
+    if (tasks.isEmpty) return;
+    bodyChildren.add(pw.Divider(thickness: 1));
+    bodyChildren.add(pw.SizedBox(height: 8));
+    bodyChildren.add(pw.Text(sectionTitle, style: boldStyle));
+    bodyChildren.add(pw.SizedBox(height: 6));
+    for (final task in tasks) {
+      bodyChildren.add(
+        pw.Padding(
+          padding: const pw.EdgeInsets.only(bottom: 8),
+          child: pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: _taskToPdfWidgets(
+              task,
+              imageCache,
+              textStyle,
+              pdfPayerLabels,
+              pdfPayerPrefix,
+              exportLocale: exportLocale,
+              labelScheduled: labelScheduled,
+              labelCompleted: labelCompleted,
+              tenantCurrency: tenantCurrency,
+              labelTaskPrice: labelTaskPrice,
+              labelGuestPaid: labelGuestPaid,
+              labelShortfallDue: labelShortfallDue,
+              emptyPlaceholder: placeholderDash,
+              taskDateTimeFormat: taskDateTimeFormat,
+            ),
+          ),
+        ),
+      );
+    }
+    bodyChildren.add(pw.SizedBox(height: 12));
   }
 
   static List<pw.Widget> _taskToPdfWidgets(
@@ -350,23 +453,29 @@ class BillingPdfService {
     pw.TextStyle textStyle,
     Map<String, String> payerLabels,
     String payerPrefix, {
+    required Locale exportLocale,
     required String labelScheduled,
     required String labelCompleted,
     required String tenantCurrency,
-    String labelTaskPrice = 'Price',
-    String labelGuestPaid = 'Guest paid',
-    String labelShortfallDue = 'Balance due',
+    required String labelTaskPrice,
+    required String labelGuestPaid,
+    required String labelShortfallDue,
+    required String emptyPlaceholder,
+    required DateFormat taskDateTimeFormat,
   }) {
     final widgets = <pw.Widget>[];
-    final dateFormat = DateFormat('dd.MM.yyyy HH:mm');
-    final emptyPlaceholder = 'common.placeholder_dash'.tr();
     final scheduledStr = task.scheduledStart != null
-        ? dateFormat.format(task.scheduledStart!)
+        ? taskDateTimeFormat.format(task.scheduledStart!)
         : emptyPlaceholder;
     final completedStr =
-        task.completedAt != null ? dateFormat.format(task.completedAt!) : emptyPlaceholder;
+        task.completedAt != null ? taskDateTimeFormat.format(task.completedAt!) : emptyPlaceholder;
     final timesLine = '$labelScheduled$scheduledStr  |  $labelCompleted$completedStr';
-    final payerLabel = '$payerPrefix: ${payerLabels[task.payerType] ?? task.payerType}';
+    final payerType = task.payerType;
+    final payerResolved = payerLabels[payerType];
+    if (payerResolved == null || payerResolved.trim().isEmpty) {
+      throw ArgumentError('Neznámý nebo ne přeložený payerType: $payerType');
+    }
+    final payerLabel = '$payerPrefix: $payerResolved';
     final grayStyle = pw.TextStyle(
       font: textStyle.font,
       fontSize: 9,
@@ -376,8 +485,10 @@ class BillingPdfService {
         task.isShortfallResolved &&
         task.cashShortfallMissingAmount != null &&
         task.cashShortfallMissingAmount! > 0;
+    // PROČ: Stejná logika jako v [billingTaskTitleForPdfExport] – PDF musí respektovat jazyk z dialogu exportu.
+    final taskTitleForPdf = billingTaskTitleForPdfExport(task, exportLocale);
     final priceChildren = <pw.Widget>[
-      pw.Text(task.title, style: textStyle),
+      pw.Text(taskTitleForPdf, style: textStyle),
       pw.SizedBox(height: 2),
       pw.Text(timesLine, style: grayStyle),
       pw.Text(payerLabel, style: grayStyle),
@@ -438,9 +549,10 @@ class BillingPdfService {
     pw.TextStyle textStyle, {
     required String labelDate,
     required String tenantCurrency,
+    required String exportLanguageCode,
   }) {
     final widgets = <pw.Widget>[];
-    final dateFormat = DateFormat('dd.MM.yyyy');
+    final dateFormat = DateFormat.yMd(exportLanguageCode);
     final dateStr = dateFormat.format(exp.date);
     final grayStyle = pw.TextStyle(
       font: textStyle.font,
@@ -500,7 +612,7 @@ class BillingPdfService {
 
   static String _pad(int n) => n.toString().padLeft(2, '0');
 
-  static String _sanitizeFileName(String name, {String fallback = 'client'}) {
+  static String _sanitizeFileName(String name, {required String fallback}) {
     const diacritics = {
       'á': 'a', 'à': 'a', 'â': 'a', 'ä': 'a', 'ã': 'a',
       'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',

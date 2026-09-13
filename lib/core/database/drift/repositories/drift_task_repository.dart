@@ -421,6 +421,7 @@ class DriftTaskRepository implements ITaskRepository {
             syncStatus: 1, // pending
             lastUpdated: now,
             metadataJson: newMetadataJson,
+            titleI18nJson: task.titleI18nJson,
             unassignedInfo: task.unassignedInfo,
             serviceId: task.serviceId,
             mediaUrlsJson: newMediaUrlsJson,
@@ -480,6 +481,7 @@ class DriftTaskRepository implements ITaskRepository {
             syncStatus: 1,
             lastUpdated: now,
             metadataJson: task.metadataJson,
+            titleI18nJson: task.titleI18nJson,
             unassignedInfo: task.unassignedInfo,
             serviceId: task.serviceId,
             mediaUrlsJson: task.mediaUrlsJson,
@@ -800,6 +802,7 @@ class DriftTaskRepository implements ITaskRepository {
                 syncStatus: task.syncStatus,
                 lastUpdated: task.lastUpdated,
                 metadataJson: task.metadataJson,
+                titleI18nJson: task.titleI18nJson,
                 unassignedInfo: task.unassignedInfo,
                 serviceId: task.serviceId,
                 mediaUrlsJson: task.mediaUrlsJson,
@@ -834,6 +837,7 @@ class DriftTaskRepository implements ITaskRepository {
               syncStatus: Value(task.syncStatus),
               lastUpdated: task.lastUpdated,
               metadataJson: Value(task.metadataJson),
+              titleI18nJson: Value(task.titleI18nJson),
               unassignedInfo: Value(task.unassignedInfo),
               serviceId: Value(task.serviceId),
               mediaUrlsJson: Value(task.mediaUrlsJson),
@@ -893,6 +897,17 @@ class DriftTaskRepository implements ITaskRepository {
       }
     }
 
+    /// Parita s Supabase `title_i18n` – ukládáme jako JSON text; při chybějícím klíči zůstane null (starší API odpovědi).
+    String? titleI18nJson;
+    final rawI18n = map['title_i18n'];
+    if (rawI18n != null) {
+      if (rawI18n is Map) {
+        titleI18nJson = jsonEncode(Map<String, dynamic>.from(rawI18n));
+      } else if (rawI18n is String && rawI18n.trim().isNotEmpty) {
+        titleI18nJson = rawI18n.trim();
+      }
+    }
+
     String? opt(dynamic key) {
       final v = map[key]?.toString().trim();
       return (v == null || v.isEmpty) ? null : v;
@@ -928,6 +943,7 @@ class DriftTaskRepository implements ITaskRepository {
       syncStatus: 0, // synced
       lastUpdated: now,
       metadataJson: metadataJson,
+      titleI18nJson: titleI18nJson,
       unassignedInfo: _encodeUnassignedInfo(map['unassigned_info']),
       serviceId: opt('service_id'),
       mediaUrlsJson: _encodeMediaUrlsForDrift(map['media_urls']),
@@ -1060,6 +1076,7 @@ class DriftTaskRepository implements ITaskRepository {
             syncStatus: 0, // synced
             lastUpdated: now,
             metadataJson: task.metadataJson,
+            titleI18nJson: task.titleI18nJson,
             unassignedInfo: task.unassignedInfo,
             serviceId: task.serviceId,
             mediaUrlsJson: task.mediaUrlsJson,
@@ -1110,6 +1127,7 @@ class DriftTaskRepository implements ITaskRepository {
             syncStatus: 0,
             lastUpdated: now,
             metadataJson: mergedMetadataJson ?? task.metadataJson,
+            titleI18nJson: task.titleI18nJson,
             unassignedInfo: task.unassignedInfo,
             serviceId: task.serviceId,
             mediaUrlsJson: task.mediaUrlsJson,

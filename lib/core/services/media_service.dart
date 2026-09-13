@@ -60,8 +60,11 @@ class MediaService {
   /// PROČ try-catch: Zabraňuje pádu aplikace při chybě při nahrávání na Supabase Storage.
   /// Umožní volajícímu zachytit výjimku, zalogovat ji a zobrazit uživateli smysluplnou hlášku.
   ///
+  /// PROČ signed URL: bucket `falconest_media` je private (P0 RLS) – veřejný getPublicUrl
+  /// by nefungoval. Dlouhá platnost (10 let) pro URL uložené v DB (účtenky, škody).
+  ///
   /// [moduleName] – např. 'receipts' (účtenky), 'damage_reports' (hlášení škod).
-  /// Vrací veřejnou URL nahraného souboru, nebo null při chybě.
+  /// Vrací signed URL nahraného souboru, nebo null při chybě.
   Future<String?> uploadMedia(
     File file, {
     required String tenantId,
@@ -77,7 +80,7 @@ class MediaService {
             path,
             file,
           );
-      return SupabaseService.client.storage.from(_bucket).getPublicUrl(path);
+      return _signedUrlForPath(path);
     } catch (e) {
       // PROČ: Zabraňuje pádu aplikace, pokud dojde k chybě při nahrávání na Supabase
       // Storage, a umožní logování. Volající může zachytit výjimku, zalogovat ji
@@ -97,7 +100,7 @@ class MediaService {
   ///
   /// [fileName] – původní název souboru (např. letenka.pdf). Bude sanizován pro cestu
   /// (odstranění path separatorů, nebezpečných znaků).
-  /// Vrací veřejnou URL nahraného souboru, nebo null při chybě.
+  /// Vrací signed URL nahraného souboru, nebo null při chybě.
   Future<String?> uploadMediaBytes(
     Uint8List bytes, {
     required String fileName,
@@ -120,9 +123,20 @@ class MediaService {
             path,
             bytes,
           );
-      return SupabaseService.client.storage.from(_bucket).getPublicUrl(path);
+      return _signedUrlForPath(path);
     } catch (e) {
       rethrow;
     }
   }
+
+  /// Signed URL pro private bucket – platnost 10 let (pro uložení do DB).
+  static Future<String?> _signedUrlForPath(String path) async {
+    final signed = await SupabaseService.client.storage
+        .from(_bucket)
+        .createSignedUrl(path, _signedUrlTtlSeconds);
+    return signed;
+  }
+
+  /// TTL signed URL (sekundy) – 10 let; starší public URL po migraci bucketu přestanou fungovat.
+  static const int _signedUrlTtlSeconds = 60 * 60 * 24 * 365 * 10;
 }

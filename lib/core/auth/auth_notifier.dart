@@ -9,6 +9,7 @@ import 'package:falconest/features/communication/services/template_placeholder_s
 import 'package:falconest/core/services/push_notification_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/core/utils/app_logger.dart';
+import 'package:falconest/features/admin/services/owner_portal_view_sessions_repository.dart';
 import 'package:falconest/features/super_admin/services/support_interventions_repository.dart';
 
 /// Stav přihlášeného uživatele (efektivní „profile model“) – role a tenant_id z profiles.
@@ -22,6 +23,9 @@ import 'package:falconest/features/super_admin/services/support_interventions_re
 /// - běžný uživatel: tenant_id z profilu;
 /// - Super Admin: vybraná agentura (_selectedTenantId, pouze v paměti, NIKDY neukládat do DB).
 /// [isImpersonating] true = Super Admin prohlíží data jedné agentury (vybraná v UI).
+/// [isOwnerViewImpersonating] true = admin/manager prohlíží Klientský portál konkrétního majitele (read-only MVP).
+/// [impersonatedOwnerProfileId] / [impersonatedOwnerClientId] / [impersonatedOwnerDisplayName] – kontext owner view;
+/// platí jen při [isOwnerViewImpersonating]; skutečný profil dispečera zůstává v [profileId].
 /// [isTenantActive] = false znamená, že agentura je pozastavena (kill-switch); router
 /// přesměruje na /suspended. Null = neznámo (super_admin bez vybrané agentury).
 /// [paidUntil] = datum do kdy je předplatné zaplaceno. Pokud now > paidUntil → router
@@ -33,6 +37,10 @@ class AppAuthState {
     this.tenantId,
     this.profileId,
     this.isImpersonating = false,
+    this.isOwnerViewImpersonating = false,
+    this.impersonatedOwnerProfileId,
+    this.impersonatedOwnerClientId,
+    this.impersonatedOwnerDisplayName,
     this.isTenantActive,
     this.paidUntil,
     this.languageCode,
@@ -53,6 +61,18 @@ class AppAuthState {
 
   /// True = Super Admin prohlíží data agentury (režim převtělení).
   final bool isImpersonating;
+
+  /// True = dispečer (admin/manager) prohlíží OwnerLayout jako konkrétní majitel.
+  final bool isOwnerViewImpersonating;
+
+  /// profiles.id majitele, jehož portál se zobrazuje (jen při [isOwnerViewImpersonating]).
+  final String? impersonatedOwnerProfileId;
+
+  /// clients.id – CRM kontext pro návrat do detailu klienta.
+  final String? impersonatedOwnerClientId;
+
+  /// Jméno majitele pro banner „Prohlížíte jako …“.
+  final String? impersonatedOwnerDisplayName;
 
   /// Zda je tenant (agentura) aktivní (is_active). Null = nemáme tenant nebo neznámo.
   final bool? isTenantActive;
@@ -90,6 +110,50 @@ class AppAuthState {
 
   /// Zda je uživatel majitel bytu (přístup pouze do /owner).
   bool get isPropertyOwner => role == 'property_owner';
+
+  /// Kopie stavu – zachová owner view pole, pokud nejsou explicitně přepsána nebo vymazána.
+  AppAuthState copyWith({
+    User? user,
+    String? role,
+    String? tenantId,
+    String? profileId,
+    bool? isImpersonating,
+    bool? isOwnerViewImpersonating,
+    String? impersonatedOwnerProfileId,
+    String? impersonatedOwnerClientId,
+    String? impersonatedOwnerDisplayName,
+    bool? isTenantActive,
+    DateTime? paidUntil,
+    String? languageCode,
+    String? preferredCurrency,
+    String? tenantTimezone,
+    bool clearOwnerViewImpersonation = false,
+  }) {
+    return AppAuthState(
+      user: user ?? this.user,
+      role: role ?? this.role,
+      tenantId: tenantId ?? this.tenantId,
+      profileId: profileId ?? this.profileId,
+      isImpersonating: isImpersonating ?? this.isImpersonating,
+      isOwnerViewImpersonating: clearOwnerViewImpersonation
+          ? false
+          : (isOwnerViewImpersonating ?? this.isOwnerViewImpersonating),
+      impersonatedOwnerProfileId: clearOwnerViewImpersonation
+          ? null
+          : (impersonatedOwnerProfileId ?? this.impersonatedOwnerProfileId),
+      impersonatedOwnerClientId: clearOwnerViewImpersonation
+          ? null
+          : (impersonatedOwnerClientId ?? this.impersonatedOwnerClientId),
+      impersonatedOwnerDisplayName: clearOwnerViewImpersonation
+          ? null
+          : (impersonatedOwnerDisplayName ?? this.impersonatedOwnerDisplayName),
+      isTenantActive: isTenantActive ?? this.isTenantActive,
+      paidUntil: paidUntil ?? this.paidUntil,
+      languageCode: languageCode ?? this.languageCode,
+      preferredCurrency: preferredCurrency ?? this.preferredCurrency,
+      tenantTimezone: tenantTimezone ?? this.tenantTimezone,
+    );
+  }
 }
 
 /// Notifier poslouchající změny Supabase Auth a načítající roli z profiles.
@@ -98,7 +162,11 @@ class AppAuthState {
 /// Nikdy neupozorníme router dříve – tím zajistíme, že redirect má vždy
 /// kompletní data (role, tenant_id) a nedojde k race condition.
 class AuthNotifier extends ChangeNotifier {
-  AuthNotifier([SupportInterventionsRepository? repository]) : _repository = repository {
+  AuthNotifier([
+    SupportInterventionsRepository? repository,
+    OwnerPortalViewSessionsRepository? ownerViewSessionsRepository,
+  ])  : _repository = repository,
+        _ownerViewSessionsRepository = ownerViewSessionsRepository {
     _init();
   }
 
@@ -109,12 +177,18 @@ class AuthNotifier extends ChangeNotifier {
   /// PROČ: Prevence zneužití Magic Loginu a podklady pro fakturaci/provize. Null = neinjektováno (testy).
   final SupportInterventionsRepository? _repository;
 
+  /// Audit náhledu Owner portálu z CRM – start/stop session v [owner_portal_view_sessions].
+  final OwnerPortalViewSessionsRepository? _ownerViewSessionsRepository;
+
   /// Pouze v paměti: Super Admin si vybere agenturu ze seznamu. NIKDY neukládat do DB.
   String? _selectedTenantId;
 
   /// ID aktivního zásahu v support_interventions – nastaví se při startIntervention, vymaže při endIntervention.
   /// Slouží k ukončení zásahu výkazem práce při stopImpersonating.
   String? _activeInterventionId;
+
+  /// ID aktivní session v owner_portal_view_sessions – nastaví se při [startOwnerView], vymaže při [stopOwnerView].
+  String? _ownerViewSessionId;
 
   /// True = Supabase má currentUser, ale profil (role, tenant_id) ještě není načten.
   /// Router NESMÍ dělat rozhodnutí o přesměrování, dokud je true.
@@ -130,7 +204,16 @@ class AuthNotifier extends ChangeNotifier {
   String? get tenantId => _state.tenantId;
 
   /// UUID řádku v `profiles` – např. `completed_by` u položek checklistu.
+  /// PROČ: V owner view zůstává profil dispečera; pro filtry majitele použij [effectiveProfileId].
   String? get profileId => _state.profileId;
+
+  /// Profil pro owner dotazy – při owner view impersonation profil majitele, jinak [profileId].
+  String? get effectiveProfileId => _state.isOwnerViewImpersonating
+      ? _state.impersonatedOwnerProfileId
+      : _state.profileId;
+
+  /// Skutečný profil přihlášeného uživatele (dispečer) – pro audit a FCM.
+  String? get realProfileId => _state.profileId;
 
   /// Super Admin: vybraná agentura v UI. Běžný uživatel: vždy null.
   String? get selectedTenantId => _selectedTenantId;
@@ -190,6 +273,7 @@ class AuthNotifier extends ChangeNotifier {
   /// v support_interventions (audit), uloží výběr v paměti. Volající má po await přesměrovat na context.go('/admin').
   Future<void> impersonateTenant(String tenantId) async {
     if (_state.role != 'super_admin' && _state.role != 'account_manager') return;
+    if (_state.isOwnerViewImpersonating) return;
     final id = tenantId.trim();
     if (id.isEmpty) return;
 
@@ -227,18 +311,14 @@ class AuthNotifier extends ChangeNotifier {
     }
 
     _selectedTenantId = id;
-    _state = AppAuthState(
-      user: _state.user,
-      role: _state.role,
-      tenantId: _state.tenantId,
-      profileId: _state.profileId,
+    _state = _state.copyWith(
       isImpersonating: true,
       isTenantActive: isTenantActive,
       paidUntil: paidUntil,
-      languageCode: _state.languageCode,
-      preferredCurrency: _state.preferredCurrency,
       tenantTimezone: impersonationTz,
+      clearOwnerViewImpersonation: true,
     );
+    _ownerViewSessionId = null;
     notifyListeners();
   }
 
@@ -258,18 +338,84 @@ class AuthNotifier extends ChangeNotifier {
     }
     _activeInterventionId = null;
     _selectedTenantId = null;
-    _state = AppAuthState(
-      user: _state.user,
-      role: _state.role,
-      tenantId: _state.tenantId,
-      profileId: _state.profileId,
+    _state = _state.copyWith(
       isImpersonating: false,
       isTenantActive: null,
       paidUntil: null,
-      languageCode: _state.languageCode,
-      preferredCurrency: _state.preferredCurrency,
       tenantTimezone: null,
     );
+    notifyListeners();
+  }
+
+  /// Spuštění náhledu Klientského portálu majitele z CRM (admin/manager, read-only MVP).
+  ///
+  /// Vytvoří audit záznam v [owner_portal_view_sessions]. Vrací true při úspěchu.
+  /// PROČ: Nelze kombinovat s HQ převtělením ([isImpersonating]) – vzájemná exkluze.
+  Future<bool> startOwnerView({
+    required String clientId,
+    required String ownerProfileId,
+    required String displayName,
+  }) async {
+    if (!_state.isAdminOrManager) return false;
+    if (_state.isImpersonating) return false;
+    if (_state.isOwnerViewImpersonating) return false;
+
+    final cid = clientId.trim();
+    final ownerPid = ownerProfileId.trim();
+    final name = displayName.trim();
+    final tenantId = _state.tenantId?.trim();
+    final adminProfileId = _state.profileId?.trim();
+
+    if (cid.isEmpty || ownerPid.isEmpty || tenantId == null || tenantId.isEmpty) {
+      return false;
+    }
+    if (adminProfileId == null || adminProfileId.isEmpty) return false;
+
+    String? sessionId;
+    final ownerViewRepo = _ownerViewSessionsRepository;
+    if (ownerViewRepo != null) {
+      try {
+        sessionId = await ownerViewRepo.startSession(
+          adminProfileId: adminProfileId,
+          viewedOwnerProfileId: ownerPid,
+          clientId: cid,
+          tenantId: tenantId,
+        );
+      } catch (e, st) {
+        AppLogger.error('AuthNotifier: startOwnerView – zápis audit session selhal', e, st);
+        return false;
+      }
+    }
+
+    _ownerViewSessionId = sessionId;
+    _state = _state.copyWith(
+      isOwnerViewImpersonating: true,
+      impersonatedOwnerProfileId: ownerPid,
+      impersonatedOwnerClientId: cid,
+      impersonatedOwnerDisplayName: name.isEmpty ? null : name,
+    );
+    notifyListeners();
+    return true;
+  }
+
+  /// Ukončení náhledu Owner portálu – uzavře audit session a vymaže stav v paměti.
+  Future<void> stopOwnerView() async {
+    if (!_state.isOwnerViewImpersonating) return;
+
+    final sessionId = _ownerViewSessionId;
+    final ownerViewRepo = _ownerViewSessionsRepository;
+    if (sessionId != null &&
+        sessionId.isNotEmpty &&
+        ownerViewRepo != null) {
+      try {
+        await ownerViewRepo.endSession(sessionId);
+      } catch (e, st) {
+        AppLogger.error('AuthNotifier: stopOwnerView – uzavření audit session selhalo', e, st);
+      }
+    }
+
+    _ownerViewSessionId = null;
+    _state = _state.copyWith(clearOwnerViewImpersonation: true);
     notifyListeners();
   }
 
@@ -288,18 +434,7 @@ class AuthNotifier extends ChangeNotifier {
       if (tenantRes != null) {
         paidUntil = _parseOptionalDateTime((tenantRes as Map)['paid_until']);
       }
-      _state = AppAuthState(
-        user: _state.user,
-        role: _state.role,
-        tenantId: _state.tenantId,
-        profileId: _state.profileId,
-        isImpersonating: _state.isImpersonating,
-        isTenantActive: _state.isTenantActive,
-        paidUntil: paidUntil,
-        languageCode: _state.languageCode,
-        preferredCurrency: _state.preferredCurrency,
-        tenantTimezone: _state.tenantTimezone,
-      );
+      _state = _state.copyWith(paidUntil: paidUntil);
       notifyListeners();
     } catch (e, st) {
       AppLogger.error('AuthNotifier: refreshTenantPaymentStatus (paid_until) selhal', e, st);
@@ -361,6 +496,8 @@ class AuthNotifier extends ChangeNotifier {
       _pendingPasswordRecovery = false;
       _isProfileLoading = false;
       _selectedTenantId = null;
+      _activeInterventionId = null;
+      _ownerViewSessionId = null;
       _state = const AppAuthState(
         isImpersonating: false,
         isTenantActive: null,
@@ -642,16 +779,10 @@ class AuthNotifier extends ChangeNotifier {
             } catch (e, st) {
               AppLogger.error('AuthNotifier: načtení tenanta při obnově aktivního převtělení selhalo', e, st);
             }
-            _state = AppAuthState(
-              user: user,
-              role: role,
-              tenantId: tenantIdStr,
-              profileId: profileIdStr,
+            _state = _state.copyWith(
               isImpersonating: true,
               isTenantActive: ia,
               paidUntil: pu,
-              languageCode: languageCodeStr,
-              preferredCurrency: preferredCurrencyStr,
               tenantTimezone: tzImp,
             );
           }
@@ -758,18 +889,7 @@ class AuthNotifier extends ChangeNotifier {
           .update({'language_code': trimmed})
           .eq('auth_id', uid);
     }
-    _state = AppAuthState(
-      user: _state.user,
-      role: _state.role,
-      tenantId: _state.tenantId,
-      profileId: _state.profileId,
-      isImpersonating: _state.isImpersonating,
-      isTenantActive: _state.isTenantActive,
-      paidUntil: _state.paidUntil,
-      languageCode: trimmed,
-      preferredCurrency: _state.preferredCurrency,
-      tenantTimezone: _state.tenantTimezone,
-    );
+    _state = _state.copyWith(languageCode: trimmed);
     notifyListeners();
   }
 
@@ -789,18 +909,7 @@ class AuthNotifier extends ChangeNotifier {
           .update({'preferred_currency': trimmed})
           .eq('auth_id', uid);
     }
-    _state = AppAuthState(
-      user: _state.user,
-      role: _state.role,
-      tenantId: _state.tenantId,
-      profileId: _state.profileId,
-      isImpersonating: _state.isImpersonating,
-      isTenantActive: _state.isTenantActive,
-      paidUntil: _state.paidUntil,
-      languageCode: _state.languageCode,
-      preferredCurrency: trimmed,
-      tenantTimezone: _state.tenantTimezone,
-    );
+    _state = _state.copyWith(preferredCurrency: trimmed);
     notifyListeners();
   }
 
@@ -827,18 +936,7 @@ class AuthNotifier extends ChangeNotifier {
       );
     }
 
-    _state = AppAuthState(
-      user: _state.user,
-      role: _state.role,
-      tenantId: _state.tenantId,
-      profileId: _state.profileId,
-      isImpersonating: _state.isImpersonating,
-      isTenantActive: _state.isTenantActive,
-      paidUntil: _state.paidUntil,
-      languageCode: _state.languageCode,
-      preferredCurrency: _state.preferredCurrency,
-      tenantTimezone: normalized,
-    );
+    _state = _state.copyWith(tenantTimezone: normalized);
     notifyListeners();
 
     final uid = _state.user?.id;

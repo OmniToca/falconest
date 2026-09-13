@@ -18,6 +18,7 @@ import 'package:falconest/features/owner/providers/owner_dashboard_metrics_provi
 import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
 import 'package:falconest/features/owner/providers/owner_reservations_provider.dart';
 import 'package:falconest/features/owner/widgets/owner_portal_ui.dart';
+import 'package:falconest/features/owner/widgets/owner_read_only_gate.dart';
 import 'package:falconest/features/owner/widgets/owner_reservation_detail_sheet.dart';
 
 /// Přehled rezervací majitele – Kanban board podle stavu a možnost přidat rezervaci.
@@ -44,10 +45,12 @@ class _OwnerReservationsScreenState
         title: Text('owner.reservations_title'.tr()),
         surfaceTintColor: Colors.transparent,
         actions: [
-          IconButton(
-            tooltip: 'owner.reservations_block_owner_stay'.tr(),
-            icon: const Icon(Icons.event_busy_outlined),
-            onPressed: () => _showBlockOwnerStayDialog(context, ref),
+          OwnerReadOnlyGate(
+            child: IconButton(
+              tooltip: 'owner.reservations_block_owner_stay'.tr(),
+              icon: const Icon(Icons.event_busy_outlined),
+              onPressed: () => _showBlockOwnerStayDialog(context, ref),
+            ),
           ),
         ],
       ),
@@ -82,16 +85,19 @@ class _OwnerReservationsScreenState
           ),
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showNewReservationDialog(context, ref),
-        icon: const Icon(Icons.add),
-        label: Text('owner.reservations_new'.tr()),
+      floatingActionButton: OwnerReadOnlyGate(
+        child: FloatingActionButton.extended(
+          onPressed: () => _showNewReservationDialog(context, ref),
+          icon: const Icon(Icons.add),
+          label: Text('owner.reservations_new'.tr()),
+        ),
       ),
     );
   }
 
   /// UI: Otevře vycentrovaný dialog s formulářem pro novou rezervaci.
   void _showNewReservationDialog(BuildContext context, WidgetRef ref) {
+    if (isOwnerPortalReadOnly(ref)) return;
     final apartments = ref.read(ownerApartmentsProvider).value ?? [];
     if (apartments.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -147,6 +153,7 @@ class _OwnerReservationsScreenState
     WidgetRef ref,
     OwnerReservation reservation,
   ) {
+    if (isOwnerPortalReadOnly(ref)) return;
     if (reservation.status != 'new') {
       return; // Read-only pro confirmed a pozdější stavy
     }
@@ -201,6 +208,7 @@ class _OwnerReservationsScreenState
 
   /// Jednoduchý dialog „od–do“ pro blokaci termínu (vlastní pobyt); zápis [metadata.is_owner_stay].
   void _showBlockOwnerStayDialog(BuildContext context, WidgetRef ref) {
+    if (isOwnerPortalReadOnly(ref)) return;
     final apartments = ref.read(ownerApartmentsProvider).value ?? [];
     if (apartments.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -242,6 +250,7 @@ class _OwnerReservationsScreenState
     WidgetRef ref,
     OwnerReservation r,
   ) async {
+    if (isOwnerPortalReadOnly(ref)) return;
     if (!r.isOwnerStay) return;
     final ok = await showDialog<bool>(
       context: context,
@@ -590,13 +599,15 @@ class _OwnerKanbanCard extends StatelessWidget {
                 constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
               ),
               if (reservation.isOwnerStay)
-                IconButton(
-                  icon: Icon(Icons.delete_outline, size: 22, color: cs.onSurfaceVariant),
-                  tooltip: 'owner.owner_stay_delete_tooltip'.tr(),
-                  onPressed: () => onDeleteOwnerStay(reservation),
-                  padding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                OwnerReadOnlyGate(
+                  child: IconButton(
+                    icon: Icon(Icons.delete_outline, size: 22, color: cs.onSurfaceVariant),
+                    tooltip: 'owner.owner_stay_delete_tooltip'.tr(),
+                    onPressed: () => onDeleteOwnerStay(reservation),
+                    padding: EdgeInsets.zero,
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                  ),
                 ),
               if (!canEdit && !reservation.isOwnerStay)
                 Padding(

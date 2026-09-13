@@ -1,10 +1,22 @@
+import 'dart:math' as math;
+
 import 'package:falconest/core/services/audit_log_service.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/owner/models/admin_owner_cash_disposition_row.dart';
 import 'package:falconest/features/owner/models/owner_cash_disposition_request.dart';
 import 'package:falconest/features/owner/models/owner_cash_transit_settlement.dart';
 import 'package:falconest/features/owner/repositories/reservation_cash_transit_repository.dart';
+import 'package:falconest/features/owner/services/owner_cash_offset_calculator.dart';
 import 'package:flutter/foundation.dart';
+
+/// Výjimka s [l10nKey] pro chyby zápočtu faktury (Admin `.tr()`).
+class OwnerCashOffsetException implements Exception {
+  const OwnerCashOffsetException(this.l10nKey);
+  final String l10nKey;
+  @override
+  String toString() => l10nKey;
+}
 
 /// Výjimka s [l10nKey] z `assets/translations` pro zobrazení v UI majitele (`.tr()`).
 class OwnerDispositionValidationException implements Exception {
@@ -102,11 +114,6 @@ class OwnerCashDispositionRepository {
       _assertPickupUtcAtLeast48HoursAhead(pickupDate.toUtc());
     }
   }
-
-  static final _allowedOffsetSnapshotPaymentStatuses = {
-    BillingSnapshotOffsetPaymentStatusValues.cashOffset,
-    BillingSnapshotOffsetPaymentStatusValues.partiallyPaid,
-  };
 
   static List<OwnerCashDispositionRequest> _parseRows(dynamic rows) {
     final list = rows is List ? rows : const <dynamic>[];
@@ -249,8 +256,20 @@ profiles!owner_cash_disposition_requests_owner_profile_id_fkey (
     if (match == null) {
       throw StateError('Settlement není v portfoliu majitele nebo neexistuje');
     }
-    if (amount > match.amount + 1e-9) {
-      throw ArgumentError.value(amount, 'amount', 'nesmí přesáhnout uznanou částku settlementu');
+    // PROČ: Po schválení jiné žádosti může na tomto settlementu zbývat méně než plná `amount`.
+    final availableOnSettlement =
+        await ReservationCashTransitRepository.getAvailableAmountForSettlement(
+      tenantId: tid,
+      ownerProfileId: oid,
+      settlementId: sid,
+      currencyCode: match.currency,
+    );
+    if (amount > availableOnSettlement + 1e-9) {
+      throw ArgumentError.value(
+        amount,
+        'amount',
+        'nesmí přesáhnout dostupnou částku na tomto settlementu (po rezervacích z jiných žádostí)',
+      );
     }
 
     final safe = SupabaseService.safeFrom('owner_cash_disposition_requests', tid);
@@ -391,17 +410,174 @@ profiles!owner_cash_disposition_requests_owner_profile_id_fkey (
     await safe.update(payload).eq('id', rid);
   }
 
-  /// Aplikuje částku z žádosti o dispozici (typ **invoice_credit**) na zmražené vyúčtování – zvýší [used_amount],
-  /// případně uzavře žádost, a nastaví [billing_snapshots.payment_status] + [paid_at].
+  /// Přeloží `billing_snapshots.client_id` na `profiles.id` majitele (`clients.profile_id`).
   ///
-  /// PROČ: Částečné umoření bez „černé díry“ v číslech; celá akce podléhá RLS (UPDATE žádosti + snapshotu).
-  /// [newSnapshotPaymentStatus] musí být `cash_offset` (plný zápočet) nebo `partially_paid` (část faktury).
-  static Future<void> applyOffsetToSnapshot({
+  /// PROČ: Ve fakturaci je [BillingGroup.groupKey] = UUID klienta z tabulky `clients`, ale
+  /// žádosti o dispozici ukládají `owner_profile_id` = profil přihlášeného majitele. Bez
+  /// tohoto mapování `findInvoiceCreditRequestWithRemaining` vždy vrátí null (tiché selhání).
+  static Future<String?> resolveOwnerProfileIdForBillingClient({
+    required String tenantId,
+    required String billingClientId,
+  }) async {
+    final tid = tenantId.trim();
+    final cid = billingClientId.trim();
+    if (tid.isEmpty || cid.isEmpty || cid == 'external') {
+      AppLogger.debug(
+        'OwnerCashOffset: resolveOwnerProfileId přeskočeno (tenant=$tid client=$cid)',
+      );
+      return null;
+    }
+
+    try {
+      final safeClients = SupabaseService.safeFrom('clients', tid);
+      final row = await safeClients
+          .select('id, profile_id')
+          .eq('id', cid)
+          .maybeSingle();
+      if (row != null) {
+        final map = Map<String, dynamic>.from(row as Map);
+        final profileId = map['profile_id']?.toString().trim();
+        if (profileId != null && profileId.isNotEmpty) {
+          AppLogger.debug(
+            'OwnerCashOffset: clients.id=$cid → profile_id=$profileId',
+          );
+          return profileId;
+        }
+        AppLogger.debug(
+          'OwnerCashOffset: clients.id=$cid nemá vyplněné profile_id (nelze najít žádost)',
+        );
+        return null;
+      }
+
+      // Záloha: groupKey už může být přímo profiles.id (starší data / ruční vazba).
+      final safeProfiles = SupabaseService.safeFrom('profiles', tid);
+      final prof = await safeProfiles.select('id').eq('id', cid).maybeSingle();
+      if (prof != null) {
+        AppLogger.debug(
+          'OwnerCashOffset: groupKey=$cid odpovídá přímo profiles.id (bez řádku clients)',
+        );
+        return cid;
+      }
+      AppLogger.debug(
+        'OwnerCashOffset: groupKey=$cid není clients.id ani profiles.id v tenantovi $tid',
+      );
+      return null;
+    } catch (e, st) {
+      AppLogger.error('OwnerCashOffset: resolveOwnerProfileId selhalo', e, st);
+      return null;
+    }
+  }
+
+  /// Najde nejnovější schválenou žádost **invoice_credit** majitele s nevyčerpaným objemem.
+  ///
+  /// PROČ: Admin při „Zápočet hotovosti“ na faktuře musí navázat na konkrétní žádost
+  /// a zvýšit `used_amount` (aby „Zbývá k čerpání“ kleslo).
+  static Future<OwnerCashDispositionRequest?> findInvoiceCreditRequestWithRemaining({
+    required String tenantId,
+    required String ownerProfileId,
+  }) async {
+    final tid = tenantId.trim();
+    final oid = ownerProfileId.trim();
+    if (tid.isEmpty || oid.isEmpty) return null;
+
+    final safe = SupabaseService.safeFrom('owner_cash_disposition_requests', tid);
+    final rows = await safe
+        .select()
+        .eq('owner_profile_id', oid)
+        .eq('disposition_type', OwnerCashDispositionTypeValues.invoiceCredit)
+        .inFilter('status', [
+          OwnerCashDispositionStatusValues.approved,
+          OwnerCashDispositionStatusValues.partiallyCompleted,
+        ])
+        .order('created_at', ascending: false);
+
+    const eps = 1e-9;
+    final parsed = _parseRows(rows);
+    AppLogger.debug(
+      'OwnerCashOffset: findByProfile owner_profile_id=$oid '
+      'invoice_credit řádků=${parsed.length}',
+    );
+    for (final raw in parsed) {
+      final remaining = raw.amount - raw.usedAmount;
+      if (remaining > eps) {
+        AppLogger.debug(
+          'OwnerCashOffset: vybrána žádost id=${raw.id} remaining=$remaining '
+          '(amount=${raw.amount} used=${raw.usedAmount})',
+        );
+        return raw;
+      }
+    }
+    AppLogger.debug(
+      'OwnerCashOffset: žádná žádost s remaining>0 pro owner_profile_id=$oid',
+    );
+    return null;
+  }
+
+  /// Stejné jako [findInvoiceCreditRequestWithRemaining], ale vstup je `billing_snapshots.client_id`.
+  static Future<OwnerCashDispositionRequest?> findInvoiceCreditRequestForBillingClient({
+    required String tenantId,
+    required String billingClientId,
+  }) async {
+    final profileId = await resolveOwnerProfileIdForBillingClient(
+      tenantId: tenantId,
+      billingClientId: billingClientId,
+    );
+    if (profileId == null) return null;
+    return findInvoiceCreditRequestWithRemaining(
+      tenantId: tenantId,
+      ownerProfileId: profileId,
+    );
+  }
+
+  /// Sestaví plán zápočtu pro fakturu klienta – sdílený náhled Admin dialogu a [applyOffsetToSnapshot].
+  static Future<OwnerCashOffsetPlan?> buildOffsetPlanForBillingClient({
+    required String tenantId,
+    required String billingClientId,
+    required double invoiceDue,
+    double existingOffsetAmount = 0,
+    String currencyCode = 'EUR',
+  }) async {
+    final profileId = await resolveOwnerProfileIdForBillingClient(
+      tenantId: tenantId,
+      billingClientId: billingClientId,
+    );
+    if (profileId == null) return null;
+
+    final request = await findInvoiceCreditRequestForBillingClient(
+      tenantId: tenantId,
+      billingClientId: billingClientId,
+    );
+    if (request == null) return null;
+
+    final pool = await ReservationCashTransitRepository.getOwnerSettlementPool(
+      tenantId: tenantId,
+      ownerProfileId: profileId,
+      currencyCode: currencyCode,
+    );
+    final requestRemaining = math.max(0.0, request.amount - request.usedAmount);
+
+    return OwnerCashOffsetCalculator.compute(
+      invoiceDue: invoiceDue,
+      ownerPool: pool,
+      requestRemaining: requestRemaining,
+      existingOffsetAmount: existingOffsetAmount,
+    );
+  }
+
+  /// Aplikuje částku z žádosti o dispozici (typ **invoice_credit**) na zmražené vyúčtování – zvýší [used_amount],
+  /// vloží záporný řádek do [owner_cash_transit_settlements] (účetní protipohyb), nastaví snapshot.
+  ///
+  /// PROČ: Částečné umoření bez „černé díry“ v číslech; pool majitele = součet settlementů, proto musí
+  /// zápočet faktury snížit pool zápornou částkou, ne jen `used_amount` u žádosti.
+  /// Stav `cash_offset` / `partially_paid` a částka se odvozují z [OwnerCashOffsetCalculator] – volající je neposílá.
+  static Future<OwnerCashOffsetPlan> applyOffsetToSnapshot({
     required String tenantId,
     required String snapshotId,
     required String requestId,
-    required double amountToApply,
-    required String newSnapshotPaymentStatus,
+    required double invoiceDue,
+    /// Profil dispečera (`profiles.id`) – sloupec `created_by` u protipohybu.
+    required String adminProfileId,
+    String currencyCode = 'EUR',
   }) async {
     final tid = tenantId.trim();
     final sid = snapshotId.trim();
@@ -409,16 +585,18 @@ profiles!owner_cash_disposition_requests_owner_profile_id_fkey (
     if (tid.isEmpty || sid.isEmpty || rid.isEmpty) {
       throw ArgumentError('tenantId, snapshotId a requestId nesmí být prázdné');
     }
-    if (amountToApply <= 0) {
-      throw ArgumentError.value(amountToApply, 'amountToApply', 'musí být kladné');
+    if (invoiceDue <= 0) {
+      throw ArgumentError.value(invoiceDue, 'invoiceDue', 'musí být kladné');
     }
-    if (!_allowedOffsetSnapshotPaymentStatuses.contains(newSnapshotPaymentStatus)) {
-      throw ArgumentError.value(
-        newSnapshotPaymentStatus,
-        'newSnapshotPaymentStatus',
-        'povoleno jen cash_offset nebo partially_paid',
-      );
+    final adminPid = adminProfileId.trim();
+    if (adminPid.isEmpty) {
+      throw ArgumentError('adminProfileId nesmí být prázdné');
     }
+
+    AppLogger.debug(
+      'OwnerCashOffset: applyOffsetToSnapshot start snapshot=$sid request=$rid '
+      'invoiceDue=$invoiceDue tenant=$tid',
+    );
 
     try {
       final safeReq = SupabaseService.safeFrom('owner_cash_disposition_requests', tid);
@@ -445,12 +623,91 @@ profiles!owner_cash_disposition_requests_owner_profile_id_fkey (
       }
 
       final safeSnap = SupabaseService.safeFrom('billing_snapshots', tid);
-      final rawSnap = await safeSnap.select('id').eq('id', sid).maybeSingle();
+      final rawSnap = await safeSnap
+          .select(
+            'id, payment_status, offset_amount, offset_request_id',
+          )
+          .eq('id', sid)
+          .maybeSingle();
       if (rawSnap == null) {
         throw StateError('Billing snapshot nenalezen nebo není v tenantovi');
       }
-
+      final snapMap = Map<String, dynamic>.from(rawSnap);
+      final existingPay =
+          (snapMap['payment_status'] as String?)?.trim().toLowerCase() ?? '';
+      final existingOffset = _readOffsetAmount(snapMap['offset_amount']);
       const eps = 1e-9;
+      final invoiceRemaining = math.max(0.0, invoiceDue - existingOffset);
+
+      // PROČ: Doplňkový zápočet povolen u partially_paid, dokud offset_amount < faktura.
+      // Blokujeme plně uhrazené (paid / cash_offset) nebo když už není co strhnout.
+      if (existingPay == 'paid') {
+        throw const OwnerCashOffsetException(
+          'admin.finance.billing_snapshot_offset_already_settled',
+        );
+      }
+      if (existingPay == BillingSnapshotOffsetPaymentStatusValues.cashOffset ||
+          invoiceRemaining <= eps) {
+        throw const OwnerCashOffsetException(
+          'admin.finance.billing_snapshot_offset_already_settled',
+        );
+      }
+
+      final pool = await ReservationCashTransitRepository.getOwnerSettlementPool(
+        tenantId: tid,
+        ownerProfileId: request.ownerProfileId,
+        currencyCode: currencyCode,
+      );
+      final requestRemaining = math.max(0.0, request.amount - request.usedAmount);
+      final plan = OwnerCashOffsetCalculator.compute(
+        invoiceDue: invoiceDue,
+        ownerPool: pool,
+        requestRemaining: requestRemaining,
+        existingOffsetAmount: existingOffset,
+      );
+
+      if (plan.blocked || plan.amountToApply <= eps) {
+        throw OwnerCashOffsetException(
+          plan.blockReasonL10nKey ??
+              'admin.finance.billing_snapshot_offset_insufficient_pool',
+        );
+      }
+
+      final amountToApply = plan.amountToApply;
+      final newSnapshotPaymentStatus = plan.derivedPaymentStatus;
+
+      AppLogger.debug(
+        'OwnerCashOffset: plán amountToApply=$amountToApply status=$newSnapshotPaymentStatus '
+        'pool=$pool requestRem=$requestRemaining',
+      );
+
+      final safeSettlements = SupabaseService.safeFrom(
+        'owner_cash_transit_settlements',
+        tid,
+      );
+      final rawSourceSettlement = await safeSettlements
+          .select()
+          .eq('id', request.settlementId)
+          .maybeSingle();
+      if (rawSourceSettlement == null) {
+        throw StateError(
+          'Zdrojový settlement žádosti nenalezen (settlement_id=${request.settlementId})',
+        );
+      }
+      final sourceMap = Map<String, dynamic>.from(rawSourceSettlement as Map);
+      final sourceCurrency =
+          (sourceMap['currency'] as String?)?.trim().toUpperCase() ?? 'EUR';
+      final sourceReservationId =
+          sourceMap['reservation_id']?.toString().trim();
+      final sourceApartmentId = sourceMap['apartment_id']?.toString().trim();
+      final sourceTaskId = sourceMap['task_id']?.toString().trim();
+
+      if (pool < amountToApply - eps) {
+        throw const OwnerCashOffsetException(
+          'admin.finance.billing_snapshot_offset_insufficient_pool',
+        );
+      }
+
       final newUsed = request.usedAmount + amountToApply;
       if (newUsed > request.amount + eps) {
         throw ArgumentError(
@@ -472,10 +729,52 @@ profiles!owner_cash_disposition_requests_owner_profile_id_fkey (
         'updated_at': nowIso,
       }).eq('id', rid);
 
+      // Účetní protipohyb: Reálné stržení peněz z hotovostního poolu majitele za uhrazenou fakturu.
+      final offsetNote =
+          'Zápočet podkladu $sid proti žádosti $rid';
+      final offsetPayload = <String, dynamic>{
+        'amount': -amountToApply,
+        'currency': sourceCurrency.isEmpty ? 'EUR' : sourceCurrency,
+        'created_by': adminPid,
+        'note': offsetNote,
+        if (sourceReservationId != null && sourceReservationId.isNotEmpty)
+          'reservation_id': sourceReservationId,
+        if (sourceApartmentId != null && sourceApartmentId.isNotEmpty)
+          'apartment_id': sourceApartmentId,
+        if (sourceTaskId != null && sourceTaskId.isNotEmpty) 'task_id': sourceTaskId,
+      };
+      // Rozšířené instance DB mají sloupec status – označíme vyrovnaný zápočet.
+      if (sourceMap.containsKey('status')) {
+        offsetPayload['status'] = 'settled';
+      }
+      final offsetInsert = await safeSettlements
+          .insert(SupabaseService.safeInsertPayload(tid, offsetPayload))
+          .select('id')
+          .maybeSingle();
+      String? offsetSettlementId;
+      if (offsetInsert != null) {
+        offsetSettlementId =
+            Map<String, dynamic>.from(offsetInsert as Map)['id']?.toString();
+      }
+
+      AppLogger.debug(
+        'OwnerCashOffset: vložen protipohyb settlement id=$offsetSettlementId '
+        'amount=${-amountToApply} $sourceCurrency',
+      );
+
       await safeSnap.update({
         'payment_status': newSnapshotPaymentStatus,
         'paid_at': nowIso,
+        'offset_amount': existingOffset + amountToApply,
+        'offset_request_id': rid,
+        'offset_applied_at': nowIso,
       }).eq('id', sid);
+
+      AppLogger.debug(
+        'OwnerCashOffset: applyOffsetToSnapshot OK used_amount=$newUsed '
+        'requestStatus=$newRequestStatus snapshot=$sid '
+        'offsetTotal=${existingOffset + amountToApply} (+$amountToApply)',
+      );
 
       try {
         await AuditLogService.log(
@@ -488,20 +787,32 @@ profiles!owner_cash_disposition_requests_owner_profile_id_fkey (
             'snapshot_id': sid,
             'request_id': rid,
             'amount_applied': amountToApply,
+            'offset_settlement_id': offsetSettlementId,
+            'offset_settlement_amount': -amountToApply,
             'used_amount_after': newUsed,
             'request_amount': request.amount,
             'request_status_after': newRequestStatus,
             'snapshot_payment_status': newSnapshotPaymentStatus,
+            'snapshot_offset_amount': existingOffset + amountToApply,
+            'snapshot_offset_amount_this_tranche': amountToApply,
+            'invoice_remaining_after': plan.remainingInvoiceDue,
           },
         );
       } catch (auditErr, auditSt) {
         debugPrint('ERROR: AuditLogService po DISPOSITION_OFFSET_APPLIED: $auditErr');
         debugPrint('ERROR: $auditSt');
       }
+
+      return plan;
     } catch (e, st) {
-      debugPrint('ERROR: applyOffsetToSnapshot: $e');
-      debugPrint('ERROR: $st');
+      AppLogger.error('OwnerCashOffset: applyOffsetToSnapshot selhalo', e, st);
       rethrow;
     }
+  }
+
+  static double _readOffsetAmount(dynamic raw) {
+    if (raw == null) return 0;
+    if (raw is num) return raw.toDouble();
+    return double.tryParse(raw.toString()) ?? 0;
   }
 }

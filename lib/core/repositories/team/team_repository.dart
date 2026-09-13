@@ -73,4 +73,23 @@ class TeamRepository {
       );
     }
   }
+
+  /// Minimální sloupce pro mapu `profile_id → display name` u enrich úkolů (P1).
+  static Future<List<Map<String, dynamic>>> getTeamIdNameRows(
+    String tenantId, {
+    required int limit,
+  }) async {
+    if (tenantId.isEmpty) return [];
+
+    final response = await SupabaseService.safeFrom('profiles', tenantId)
+        .select('id, name, first_name, last_name')
+        .isFilter('deleted_at', null)
+        .neq('role', 'super_admin')
+        .order('status')
+        .range(0, limit - 1);
+
+    return List<Map<String, dynamic>>.from(
+      (response as List).map((e) => Map<String, dynamic>.from(e as Map)),
+    );
+  }
 }

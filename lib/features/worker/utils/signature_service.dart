@@ -14,7 +14,7 @@ class SignatureService {
   /// Nahraje PNG podpis do cesty:
   /// `tenant_id/tasks/signatures/{task_id}_signature.png`.
   ///
-  /// Vrací veřejnou URL na nahraný podpis.
+  /// Vrací signed URL (bucket je private – P0 RLS).
   static Future<String> uploadTaskGuestSignature({
     required String tenantId,
     required String taskId,
@@ -29,6 +29,10 @@ class SignatureService {
           path,
           pngBytes,
         );
-    return SupabaseService.client.storage.from(_bucket).getPublicUrl(path);
+    // 10 let – URL se ukládá do metadata úkolu.
+    return SupabaseService.client.storage.from(_bucket).createSignedUrl(
+          path,
+          60 * 60 * 24 * 365 * 10,
+        );
   }
 }

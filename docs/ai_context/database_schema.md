@@ -10,10 +10,21 @@ Hlavní tabulka sloupců níže byla **srovnána 2026-04-09** se živým exporte
 
 **Poslední synchronizace (2026-04-09) oproti předchozí verzi MD:**
 
+- **Doplněno (2026-09-13, P2):** migrace **`20260913132000_p2_automation_dispatch_idle_skip.sql`** – `invoke_automation_dispatch()` nevolá Edge, pokud ve frontě není splatná `pending` položka.
+- **Doplněno (2026-09-13, P1 bezpečnost):** migrace **`20260913130000_p1_rls_role_split_cash_tasks_invitations.sql`** – `deduct_wallet_credits` jen super_admin / admin|manager vlastního tenanta; invitations INSERT/UPDATE admin|manager, DELETE i vlastníci ghost `profile_id` (accept invite); `employee_cash_wallets` INSERT/UPDATE admin|manager nebo vlastní `profile_id`; `employee_cash_transactions` UPDATE jen admin|manager; `tasks` UPDATE admin|manager nebo `is_worker_assigned_to_task`.
+- **Doplněno (2026-09-13, P1 výkon):** migrace **`20260913131000_p1_tasks_composite_indexes.sql`** – indexy **`idx_tasks_tenant_scheduled_start`**, **`idx_tasks_tenant_completed_at`**.
+- **Doplněno (2026-08-28):** migrace **`20260828160000_billing_snapshot_offset_proposals.sql`** – tabulka **`billing_snapshot_offset_proposals`** (Approval Loop doplatku faktury); RPC **`respond_billing_offset_proposal`** (majitel approve/reject, atomický zápočet); interní **`apply_billing_snapshot_offset_core`**, **`_billing_offset_compute_plan`**, **`_billing_offset_owner_pool_sum`**. Partial unique index: max. jeden **`pending_owner`** návrh na **`billing_snapshot_id`**. RLS: admin/manager INSERT + SELECT + UPDATE (zrušení); majitel SELECT only (bez přímého UPDATE).
+- **Doplněno (2026-08-28):** migrace **`20260828140000_billing_snapshots_offset_amount.sql`** – **`billing_snapshots.offset_amount`**, **`offset_request_id`**, **`offset_applied_at`**; validace zápočtu přes **`OwnerCashOffsetCalculator`** + **`applyOffsetToSnapshot`** (pool majitele).
+- **Doplněno (2026-08-28):** migrace **`20260828120000_owner_portal_view_sessions.sql`** – tabulka **`owner_portal_view_sessions`**: audit náhledu Klientského portálu dispečerem (admin/manager) z CRM – sloupce **`admin_profile_id`**, **`viewed_owner_profile_id`**, **`client_id`**, **`tenant_id`**, **`started_at`**, **`ended_at`**, **`created_at`**, **`updated_at`**. **RLS:** **SELECT** pro **super_admin** nebo **admin/manager** tenanta (`is_tenant_admin_or_manager` + **`tenant_id = my_tenant_id()`**); **INSERT** jen admin/manager s **`admin_profile_id`** = volající a validací, že majitel a klient patří do tenanta; **UPDATE** jen vlastní session (uzavření **`ended_at`**); **DELETE** jen **super_admin**. Dart: **`OwnerPortalViewSessionsRepository`** (**`startSession`**, **`endSession`**), provider **`ownerPortalViewSessionsRepositoryProvider`**. MVP: session se neobnovuje po F5.
 - **Doplněno (2026-04-20):** migrace **`20260420150000_update_cash_audit_view.sql`** – přepis VIEW **`public.vw_cash_collection_audit`** pro PostgREST bez FK relationship nad SQL view. Nové denormalizované sloupce ve výstupu: **`task_title`**, **`scheduled_start`**, **`apartment_name`** (JOIN na `tasks` + `apartments` uvnitř view), aby frontend mohl číst **`select('*')** bez vnořených `tasks(...)` / `apartments(...)`.
 - **Doplněno (2026-04-20):** migrace **`20260420130000_cash_audit_view.sql`** – VIEW **`public.vw_cash_collection_audit`** pro audit hotovosti nad **`tasks`** + **`employee_cash_transactions`**. Vrací sloupce **`tenant_id`**, **`task_id`**, **`apartment_id`**, **`expected_cash`**, **`collected_cash`**, **`collected_count`**, **`anomaly_type`** (`missing_cash`, `duplicate_cash`, `amount_mismatch`, `ok`) pro **completed** úkoly s očekávanou hotovostí (`amount_to_collect + transit_amount_to_collect > 0`), včetně odečtu storna **`CASH_COLLECTION_REVERSAL`**.
 - **Doplněno (2026-04-21):** migrace **`20260421120000_owner_reservation_services_rls.sql`** – RLS politika **`reservation_services_property_owner_select`**: role **`property_owner`** smí **SELECT** na **`reservation_services`**, pokud řádek patří k **rezervaci** na apartmánu z **`apartment_owners`** (stejný vzor jako u úkolů). **PROČ:** jinak `my_tenant_id()` u majitele bývá NULL a mapy ceny/plátce z RS v aplikaci nejdou načíst.
 - **Doplněno (2026-04-21):** migrace **`20260421133000_owner_cash_transit_task_settlement.sql`** – tabulka **`owner_cash_transit_settlements`** je rozšířená pro long-term nájem bez rezervace: **`reservation_id`** nově nullable, nové sloupce **`apartment_id`** a **`task_id`** (FK), nové indexy pro apartment/task a upravená owner SELECT RLS politika (vlastník vidí settlement i přes přímý `apartment_id`, nejen přes `reservation_id`).
+- **Doplněno (2026-04-21):** migrace **`20260421140000_employee_cash_handover_allocations.sql`** – nová auditní tabulka **`employee_cash_handover_allocations`** (FIFO rozpad bulk převzetí hotovosti: source_tx → handed_tx + transit podíl) a RPC funkce **`process_worker_cash_handover_fifo`** (SECURITY DEFINER): atomicky provede FIFO alokaci, vloží `HANDED_TO_AGENCY`, alokační řádky, owner settlementy z transit části a sníží `employee_cash_wallets.balance`.
+- **Doplněno (2026-05-23):** migrace **`20260523120000_clients_can_bill_external_tasks.sql`** – sloupec **`clients.can_bill_external_tasks`** (boolean NOT NULL DEFAULT **false**): hybridní B2B partner (typicky majitel) se zobrazí v roletce klienta u úkolu **Externí služba**; fakturace zůstává pod stejným **`clients.id`**. Seed: **ESP House** = **true**.
+- **Doplněno (2026-04-30):** migrace **`20260430140000_tenant_services_name_i18n.sql`** – **`tenant_services.name_i18n`** (**jsonb NOT NULL**, výchozí **`{}`**) — překlady názvu služby v katalogu (stejná očekávaná struktura jako **`tasks.title_i18n`**). Při **INSERT** úkolu s **`service_id`** aplikace zkopíruje neprázdné překlady do **`tasks.title_i18n`** (snapshot), aby historické podklady nezávisely na budoucích úpravách ceníku.
+- **Doplněno (2026-04-30):** migrace **`20260430120000_tasks_title_i18n.sql`** – **`tasks.title_i18n`** (**jsonb NOT NULL**, výchozí **`{}`**) pro uložené překlady názvu úkolu (PDF / vícejazyčné výstupy). Trigger **`tasks_invalidate_title_i18n_on_title_change`** (**BEFORE UPDATE OF** **`title`**, **`custom_title`**) volá **`tasks_invalidate_title_i18n_before_update()`**: při skutečné změně zdrojového titulku nastaví **`title_i18n`** na **`{}`**, aby v DB nezůstaly překlady k předchozímu znění. Detail struktury JSON a sémantiky viz konvence u **`tasks`** níže.
+- **Doplněno (2026-04-21):** migrace **`20260421150000_owner_lifecycle_notifications.sql`** – propojení **`notification_preferences`** (majitel **`owner_task_*` / `owner_cash_*`**) s **`automation_message_queue`** a **`notifications`**: triggery **`tasks_owner_lifecycle_notify`** (přechod **`tasks.status`** na **`in_progress`** / **`completed`**) a **`employee_cash_transactions_owner_notify_on_collect`** (**`INSERT`** **`COLLECTED_FROM_GUEST`**). Jádro **`enqueue_owner_lifecycle_notifications`** (SECURITY DEFINER): pro majitele z **`apartment_owners`** zařadí **`internal_push`** / **`email`** (payload **`internal_push_kind`**: **`owner_task_started`**, **`owner_task_completed`**, **`owner_cash_collected`**) a při zapnutém **web** vloží in-app řádek (**`type`**: stejné názvy). Edge **`automation-dispatch`** musí tyto **`internal_push_kind`** odbavit (FCM **`route`**: **`/owner`**).
 - **Doplněno (2026-04-15):** migrace **`20260415103000_get_invitation_for_accept_rpc.sql`** – funkce **`public.get_invitation_for_accept(p_token text)`** (SECURITY DEFINER, **RETURNS jsonb**): vrátí jeden řádek **`invitations`** jako JSON, pokud `trim(p_token)` je platné UUID a odpovídá **`id`** nebo **`profile_id`**; jinak **NULL**. **`GRANT EXECUTE`** pro **`anon`** a **`authenticated`**. **PROČ:** přímý **SELECT** na **`invitations`** blokuje RLS pro nepřihlášené a pro uživatele mimo tenant pozvánky (viz **`20260319100000`**). Načtení pro obrazovku **`/invite`** řeší klient přes **RPC** (`InviteRepository.fetchInvitationByToken`).
 - **Doplněno (2026-04-14):** migrace **`20260414100000_long_term_rent_pnl_trigger_and_admin_confirm.sql`** – trigger **`tasks_apply_rent_collection_to_pnl`** na **`tasks`** (AFTER UPDATE **status**), funkce **`apply_rent_collection_task_to_pnl()`** (SECURITY DEFINER): při prvním přechodu úkolu na **completed** s **`task_type = rent_collection`**, byt **`rental_mode = long_term`** a **`rent_collection_mode = task`**, upsert **`income`** do **`apartment_investment_pnl_entries`** (částka **`apartments.rent_amount`**, měsíc z **`metadata.rent_cycle_key`** = text za prvním **`:`** jako datum → **`date_trunc('month')`**). **RLS** navíc: politiky **`apartment_investment_pnl_entries_admin_long_term_income_upsert`** a **`apartment_investment_pnl_entries_admin_long_term_income_update`** – **INSERT**/**UPDATE** řádků **`entry_type = income`** pro **super_admin** nebo **admin/manager** tenanta jen u bytu **`long_term`** + **`rent_collection_mode = notification`** (potvrzení přijetí nájmu z admin UI / majitel volá stejný upsert).
 - **Doplněno (2026-04-13):** migrace **`20260413120000_apartment_long_term_rent_due_automation.sql`** – **`apartments`**: **`rent_amount`** (numeric NOT NULL DEFAULT 0), **`rent_due_day`** (int NOT NULL DEFAULT 1, CHECK 1–31), **`rent_collection_mode`** (text NOT NULL DEFAULT **`notification`**, CHECK **`notification`** | **`task`**), **`rent_task_assignee_id`** (uuid, FK **`profiles`**, nullable). Tabulka **`apartment_rent_due_runs`** (idempotence měsíčního běhu: UNIQUE **`apartment_id`**, **`billing_month`**, **`run_kind`**). **`cron_edge_config.rent_monitor_url`**, funkce **`invoke_rent_monitor()`** (POST přes **`_automation_invoke_http_post`**, token **`automation_edge_auth_token`**), pg_cron **`rent-monitor-daily`**. Edge **`rent-monitor`**: den splatnosti v zóně **Europe/Madrid**, notifikace nebo úkol **`rent_collection`**. Drift **`Apartments`** schema **v18**.
@@ -47,6 +58,8 @@ Hlavní tabulka sloupců níže byla **srovnána 2026-04-09** se živým exporte
 - Tabulka **notifications** – sloupec **metadata** (jsonb NOT NULL, výchozí `{}`) pro data UI (např. `task_id` u prokliku) – migrace `20260403240000_notifications_metadata_new_task_web.sql` (2026-04-03).
 - Trigger **`tasks_enqueue_new_assignment_push`** na **tasks** (AFTER INSERT OR UPDATE OF **assigned_to**) volá funkci **`enqueue_internal_push_on_new_task_assignment()`** – multi-channel doručení (fronta **internal_push** / **email**, řádek v **notifications**) podle kanálových přepínačů; typování času v těle zprávy viz sekce *notifications* níže.
 - Konvence **JSONB `tasks.metadata`**: kromě stávajících klíčů (hotovost, odhad minut, …) klient ukládá volitelně **`custom_tags`** — pole `{ "label": string, "color": "#RRGGBB" }` pro vlastní štítky na admin Kanbanu (2026-04).
+- Konvence **JSONB `tasks.title_i18n`** (2026-04-30): očekávaný tvar objektu **`{ "translations": { "cs": "…", "en": "…", "es": "…" }, "source_hash": "<hex>" }`**. Klíč **`translations`** je mapa kódů jazyka (ISO 639-1, v souladu s locale exportu v aplikaci) na přeložený řetězec. Klíč **`source_hash`** je volitelný SHA-256 (hex) kanonického zdrojového textu z **`title`** + **`custom_title`** v době uložení překladů (audit / budoucí kontrola konzistence). Hodnota **`{}`** znamená žádné uložené překlady — UI a exporty mají použít **`title`** / **`custom_title`**. **Invalidace:** při **UPDATE**, který mění **`title`** nebo **`custom_title`**, trigger přepíše **`title_i18n`** na **`{}`** (i kdyby klient ve stejném požadavku poslal nové překlady); kanonický stav určuje Postgres.
+- Konvence **JSONB `tenant_services.name_i18n`** (2026-04-30): stejný tvar jako **`tasks.title_i18n`** (`translations` + volitelně `source_hash` vůči kanonickému **`tenant_services.name`**). **Snapshot:** při vytvoření úkolu s **`service_id`** klient zkopíruje neprázdné překlady do **`tasks.title_i18n`**, aby uzavřené měsíce a PDF nečetly „živý“ ceník po změně názvu služby.
 - **Údržba DB (Fáze 5.2)** – funkce **`public.maintenance_data_cleanup()`** (migrace `20260407220000_maintenance_cleanup_cron.sql`): fyzické mazání řádků v **tenant_message_log** a **audit_logs** starších než **6 měsíců**; fyzické mazání soft-deleted záznamů v **tasks** a **reservations** s **deleted_at** starším než **1 rok**; pg_cron job **`maintenance-data-cleanup-weekly`** (neděle **03:00 UTC**). **VACUUM ANALYZE** pro **apartments**, **tasks**, **clients** kvůli PostGIS/GIST (PostgreSQL neumožňuje VACUUM uvnitř PL/pgSQL funkce) – tři samostatné pg_cron joby **`maintenance-vacuum-geo-apartments`**, **`maintenance-vacuum-geo-tasks`**, **`maintenance-vacuum-geo-clients`** v neděli **04:00–04:02 UTC**; dokumentační funkce **`public.maintenance_vacuum_geo()`** vrací text s odkazem na cron (migrace `20260407221000_postgis_vacuum_cron.sql`).
 
 **Co bylo odstraněno z dokumentace (v DB fyzicky neexistuje):**
@@ -204,6 +217,25 @@ Hlavní tabulka sloupců níže byla **srovnána 2026-04-09** se živým exporte
 | billing_snapshots | payment_status | text | NO |
 | billing_snapshots | paid_at | timestamp with time zone | YES |
 | billing_snapshots | invoice_pdf_url | text | YES |
+| billing_snapshots | offset_amount | numeric | NO |
+| billing_snapshots | offset_request_id | uuid | YES |
+| billing_snapshots | offset_applied_at | timestamp with time zone | YES |
+| billing_snapshot_offset_proposals | id | uuid | NO |
+| billing_snapshot_offset_proposals | tenant_id | uuid | NO |
+| billing_snapshot_offset_proposals | billing_snapshot_id | uuid | NO |
+| billing_snapshot_offset_proposals | owner_profile_id | uuid | NO |
+| billing_snapshot_offset_proposals | settlement_id | uuid | NO |
+| billing_snapshot_offset_proposals | proposed_amount | numeric | NO |
+| billing_snapshot_offset_proposals | applied_amount | numeric | YES |
+| billing_snapshot_offset_proposals | currency | text | NO |
+| billing_snapshot_offset_proposals | status | text | NO |
+| billing_snapshot_offset_proposals | proposed_by_profile_id | uuid | NO |
+| billing_snapshot_offset_proposals | disposition_request_id | uuid | YES |
+| billing_snapshot_offset_proposals | owner_responded_at | timestamp with time zone | YES |
+| billing_snapshot_offset_proposals | owner_rejection_note | text | YES |
+| billing_snapshot_offset_proposals | admin_notes | text | YES |
+| billing_snapshot_offset_proposals | created_at | timestamp with time zone | NO |
+| billing_snapshot_offset_proposals | updated_at | timestamp with time zone | NO |
 | checklist_template_items | id | uuid | NO |
 | checklist_template_items | tenant_id | uuid | NO |
 | checklist_template_items | template_id | uuid | NO |
@@ -237,6 +269,7 @@ Hlavní tabulka sloupců níže byla **srovnána 2026-04-09** se živým exporte
 | clients | deleted_at | timestamp with time zone | YES |
 | clients | profile_id | uuid | YES |
 | clients | agency_id | uuid | YES |
+| clients | can_bill_external_tasks | boolean | NO |
 | clients | language_code | character varying | YES |
 | clients | geo_location | USER-DEFINED | YES |
 | clients | search_vector | tsvector | NO |
@@ -371,6 +404,15 @@ Hlavní tabulka sloupců níže byla **srovnána 2026-04-09** se živým exporte
 | owner_cash_disposition_requests | admin_notes | text | YES |
 | owner_cash_disposition_requests | created_at | timestamp with time zone | NO |
 | owner_cash_disposition_requests | updated_at | timestamp with time zone | NO |
+| owner_portal_view_sessions | id | uuid | NO |
+| owner_portal_view_sessions | admin_profile_id | uuid | NO |
+| owner_portal_view_sessions | viewed_owner_profile_id | uuid | NO |
+| owner_portal_view_sessions | client_id | uuid | NO |
+| owner_portal_view_sessions | tenant_id | uuid | NO |
+| owner_portal_view_sessions | started_at | timestamp with time zone | NO |
+| owner_portal_view_sessions | ended_at | timestamp with time zone | YES |
+| owner_portal_view_sessions | created_at | timestamp with time zone | NO |
+| owner_portal_view_sessions | updated_at | timestamp with time zone | NO |
 | payout_snapshots | id | uuid | NO |
 | payout_snapshots | tenant_id | uuid | NO |
 | payout_snapshots | payout_period | date | NO |
@@ -526,6 +568,7 @@ Hlavní tabulka sloupců níže byla **srovnána 2026-04-09** se živým exporte
 | tasks | client_id | uuid | YES |
 | tasks | custom_location | text | YES |
 | tasks | custom_title | text | YES |
+| tasks | title_i18n | jsonb | NO |
 | tasks | reference_number | text | YES |
 | tasks | assigned_user_ids | ARRAY | NO |
 | tasks | updated_at | timestamp with time zone | YES |
@@ -584,6 +627,7 @@ Hlavní tabulka sloupců níže byla **srovnána 2026-04-09** se živým exporte
 | tenant_services | id | uuid | NO |
 | tenant_services | tenant_id | uuid | NO |
 | tenant_services | name | text | NO |
+| tenant_services | name_i18n | jsonb | NO |
 | tenant_services | description | text | YES |
 | tenant_services | service_type | text | NO |
 | tenant_services | default_price | numeric | YES |
@@ -680,9 +724,15 @@ Pro Realtime streamy a časté filtry na `tenant_id` / `apartment_id` jsou zása
 | tasks | idx_tasks_search | search_vector (GIN) | Full-text nad titulkem, popisem, custom poli, referencí. |
 | reservations | idx_reservations_search | search_vector (GIN) | Full-text nad hostem, telefonem, reference_number, external_uid. |
 | tasks | idx_tasks_tenant_id | tenant_id | Admin Realtime stream – `inFilter('tenant_id', [tenantId])`. Zrychlení výběru úkolů tenanta. |
+| tasks | idx_tasks_tenant_scheduled_start | tenant_id, scheduled_start (partial WHERE deleted_at IS NULL) | P1 (2026-09-13): měsíční Kanban / ops okno / dashboard filtry. Migrace `20260913131000_p1_tasks_composite_indexes.sql`. |
+| tasks | idx_tasks_tenant_completed_at | tenant_id, completed_at (partial WHERE deleted_at IS NULL) | P1: otevřené vs nedávno dokončené úkoly. Migrace `20260913131000_p1_tasks_composite_indexes.sql`. |
 | reservations | idx_reservations_apartment_id | apartment_id | Admin Realtime stream – `inFilter('apartment_id', apartmentIds)`. Zrychlení výběru rezervací dle bytů tenanta. |
 | billing_snapshots | idx_billing_snapshots_tenant_client_period | tenant_id, client_id, billing_period | UNIQUE – jeden snapshot na klienta a měsíc. |
 | billing_snapshots | idx_billing_snapshots_tenant_period | tenant_id, billing_period | Admin přehled uzamčených měsíců. |
+| billing_snapshot_offset_proposals | idx_billing_snapshot_offset_proposals_one_pending | billing_snapshot_id | UNIQUE WHERE status = `pending_owner` – max. jeden aktivní návrh na fakturu. |
+| billing_snapshot_offset_proposals | idx_billing_snapshot_offset_proposals_tenant | tenant_id | Filtry podle tenanta. |
+| billing_snapshot_offset_proposals | idx_billing_snapshot_offset_proposals_owner_status | owner_profile_id, status | Seznam návrhů majitele (Owner portál). |
+| billing_snapshot_offset_proposals | idx_billing_snapshot_offset_proposals_snapshot | billing_snapshot_id | Vazba na podklad fakturace. |
 | task_payouts | idx_task_payouts_tenant_id | tenant_id | RLS a filtrování podle tenanta. |
 | task_payouts | idx_task_payouts_task_id | task_id | Výplaty k úkolu. |
 | task_payouts | idx_task_payouts_profile_id | profile_id | Výplaty pracovníka. |
@@ -701,6 +751,11 @@ Pro Realtime streamy a časté filtry na `tenant_id` / `apartment_id` jsou zása
 | owner_cash_disposition_requests | idx_owner_cash_disposition_requests_owner | owner_profile_id | Seznam žádostí majitele. |
 | owner_cash_disposition_requests | idx_owner_cash_disposition_requests_settlement | settlement_id | Vazba na settlement; součty „zamčených“ částek. |
 | owner_cash_disposition_requests | idx_owner_cash_disposition_requests_status | tenant_id, status | Přehledy podle stavu žádosti. |
+| owner_portal_view_sessions | idx_owner_portal_view_sessions_admin_profile_id | admin_profile_id | Historie náhledů podle dispečera. |
+| owner_portal_view_sessions | idx_owner_portal_view_sessions_viewed_owner_profile_id | viewed_owner_profile_id | Audit – kdo prohlížel portál konkrétního majitele. |
+| owner_portal_view_sessions | idx_owner_portal_view_sessions_tenant_id | tenant_id | RLS a přehledy v rámci agentury. |
+| owner_portal_view_sessions | idx_owner_portal_view_sessions_client_id | client_id | Návrat do CRM kontextu / audit podle klienta. |
+| owner_portal_view_sessions | idx_owner_portal_view_sessions_started_at | started_at DESC | Seřazení historie od nejnovějších. |
 | tenant_ui_preferences | (UNIQUE constraint tenant_ui_preferences_tenant_id_key) | tenant_id | Jedinečnost tenant_id – jeden řádek vzhledu na agenturu (index vzniká z UNIQUE). |
 
 **SQL pro vytvoření (spustit v Supabase SQL Editoru):**
@@ -849,10 +904,23 @@ Modul **Finance** je hlavní modul (zdarma) obsahující **Zaměstnaneckou pokla
 - **transaction_type**: `COLLECTED_FROM_GUEST` (výběr od hosta při Check-in/Transfer), `HANDED_TO_AGENCY` (odevzdání agentuře), `COMPANY_EXPENSE` (firemní výdaj z hotovosti), `FLOAT_ISSUED` (vklad základu od agentury na začátku směny).
 - **note**, **receipt_image_url** – volitelné u firemních výdajů; poznámka a URL fotky účtenky.
 - **amount**: kladné = výběr (zvyšuje balance), záporné = odevzdání (snižuje balance).
-- **task_id** – volitelná vazba na úkol (Check-in, Transfer) pro audit.
-- **apartment_id** – volitelná vazba na apartmán u firemních výdajů (např. materiál do bytu); pro automatické stržení nákladů ve faktuře majitele.
+- **task_id** – volitelná vazba na úkol (Check-in, Transfer, **rent_collection**) pro audit.
+- **apartment_id** – vazba na byt (z úkolu u výběru nájmu / u firemních výdajů).
+- **expected_amount** – plánovaná částka k výběru (z UI dialogu nebo metadat úkolu).
+- **metadata** (jsonb) u **COLLECTED_FROM_GUEST**: při odchylce od plánu klient zapisuje **`expected_amount`**, **`collected_amount`**, **`variance`** (audit trail pro Hlídač hotovosti); sloupec **amount** = skutečně převzatá hotovost do peněženky.
 
 **RLS:** Oba tabulky mají RLS zapnuté; přístup pouze na řádky, kde tenant_id odpovídá tenant_id přihlášeného uživatele (profiles.auth_id = auth.uid()). Super Admin má plný přístup.
+
+**employee_cash_handover_allocations** – auditní FIFO alokace převzetí:
+- Každý řádek popisuje, kolik z jedné transakce `HANDED_TO_AGENCY` bylo alokováno na konkrétní zdroj `COLLECTED_FROM_GUEST`.
+- Klíčové sloupce: `handed_transaction_id`, `source_transaction_id`, `allocated_amount`, `allocated_transit_amount`, volitelně `task_id`, `reservation_id`, `apartment_id`.
+- Použití: přesné účetní párování bulk handoveru + deterministické připsání transit hotovosti majitelům.
+
+**RPC `process_worker_cash_handover_fifo` (20260421140000, deduplikace 20260522100000):**
+- Vstupy: tenant, worker profile, admin profile, celková částka převzetí.
+- Chování: FIFO nad nealokovanými `COLLECTED_FROM_GUEST` transakcemi (fallback pro legacy bez alokačních řádků), vytvoření jedné souhrnné `HANDED_TO_AGENCY` transakce, zápis alokací a owner settlementů z transit podílu.
+- **Deduplikace settlementů (20260522100000):** před INSERT do `owner_cash_transit_settlements` ověří existující řádek v rámci `tenant_id` (priorita: `reservation_id` → `task_id` → `apartment_id` bez rezervace). Pokud už existuje záznam (typicky `auto_handoff`), transit settlement se nevytvoří; alokace v `employee_cash_handover_allocations` zůstává.
+- Výstup: JSON se souhrnem (`handed_transaction_id`, počet alokací, transit total, balance before/after).
 
 **Registr modulů:**
 - **finance** – hlavní modul, zdarma (price_eur = 0), show_in_menu = true.
@@ -929,6 +997,9 @@ Tabulka **billing_snapshots** ukládá při uzamčení měsíce přesná data vy
 - **payment_status** – stav úhrady: **`unpaid`** | **`paid`** | **`cash_offset`** | **`partially_paid`** (CHECK, výchozí **`unpaid`**; migrace `20260410000000` + `20260410010000`).
 - **paid_at** – čas uhrazení nebo zápočtu (nullable).
 - **invoice_pdf_url** – odkaz na nahranou fakturu PDF (nullable).
+- **offset_amount** – částka uhrazená zápočtem z hotovostní zálohy majitele (numeric NOT NULL DEFAULT 0; migrace `20260828140000`).
+- **offset_request_id** – FK na **`owner_cash_disposition_requests`** (nullable).
+- **offset_applied_at** – UTC čas zápisu zápočtu (nullable).
 
 **Unikátní index** `(tenant_id, client_id, billing_period)` – jeden snapshot na klienta a měsíc.
 
@@ -937,6 +1008,46 @@ Tabulka **billing_snapshots** ukládá při uzamčení měsíce přesná data vy
 - **SELECT (Owner):** Majitel (property_owner) vidí POUZE snapshoty, kde `client_id IN (SELECT id FROM clients WHERE profile_id = jeho profil)`.
 - **INSERT:** Pouze Admin (role = 'admin') nebo Super Admin v rámci svého tenant_id.
 - **UPDATE:** Politika **`billing_snapshots_update_admin_manager`** – **admin** / **manager** (nebo super_admin) v rámci **`tenant_id`** řádku; úpravy úhrad, **`invoice_pdf_url`** atd. (migrace `20260410010000`).
+
+---
+
+### Tabulka billing_snapshot_offset_proposals – Approval Loop doplatku ze zálohy
+
+**Účel:** Dispečer navrhne majiteli doplatek **`partially_paid`** faktury z volné hotovostní rezervy. Majitel schválí nebo zamítne přes RPC **`respond_billing_offset_proposal`** – stav návrhu majitel **nemění** přímým UPDATE (RLS).
+
+**Sloupce:**
+- **tenant_id** – agentura (multi-tenant).
+- **billing_snapshot_id** – FK → **`billing_snapshots`** (konkrétní uzamčený podklad).
+- **owner_profile_id** – FK → **`profiles`** (majitel).
+- **settlement_id** – FK → **`owner_cash_transit_settlements`** (zdroj poolu pro novou **`invoice_credit`** žádost).
+- **proposed_amount** – navrhovaná částka doplatku (CHECK > 0).
+- **applied_amount** – skutečně uplatněná částka po schválení (nullable).
+- **currency** – měna (výchozí **`EUR`**).
+- **status** – CHECK: **`pending_owner`** | **`applied`** | **`rejected_by_owner`** | **`cancelled_by_admin`** | **`stale`**.
+- **proposed_by_profile_id** – dispečer, který návrh vytvořil.
+- **disposition_request_id** – FK → **`owner_cash_disposition_requests`** (vytvořená schválená žádost po approve).
+- **owner_responded_at** – čas reakce majitele.
+- **owner_rejection_note** – volitelná poznámka při zamítnutí.
+- **admin_notes** – interní poznámka dispečera.
+- **created_at**, **updated_at** – UTC razítka.
+
+**Indexy:**
+- **`idx_billing_snapshot_offset_proposals_one_pending`** – UNIQUE **`(billing_snapshot_id) WHERE status = 'pending_owner'`**.
+- **`idx_billing_snapshot_offset_proposals_owner_status`**, **`idx_billing_snapshot_offset_proposals_tenant`**, **`idx_billing_snapshot_offset_proposals_snapshot`**.
+
+**RLS (migrace `20260828160000`):**
+- **SELECT staff:** **super_admin** nebo **admin/manager** tenanta (`tenant_id = my_tenant_id()`).
+- **SELECT owner:** **`owner_profile_id`** = profil volajícího **`property_owner`**.
+- **INSERT:** jen **admin/manager** (nebo super_admin); WITH CHECK: snapshot **`partially_paid`**, **`proposed_amount ≤ zbývající doplatek`**, majitel odpovídá **`clients.profile_id`**, settlement patří majiteli.
+- **UPDATE:** jen **admin/manager** – zrušení **`pending_owner` → `cancelled_by_admin`**.
+- **Majitel:** **žádný** INSERT/UPDATE/DELETE – pouze RPC.
+
+**RPC a interní funkce:**
+- **`respond_billing_offset_proposal(p_proposal_id, p_action, p_owner_rejection_note)`** – **SECURITY DEFINER**, **GRANT EXECUTE** pro **`authenticated`**. Akce **`approve`** | **`reject`**. Approve: zamkne návrh + snapshot, ověří pool, vytvoří **`approved` `invoice_credit`** žádost, zavolá **`apply_billing_snapshot_offset_core`**, nastaví návrh na **`applied`**, audit **`BILLING_OFFSET_PROPOSAL_APPROVED`**. Reject: **`rejected_by_owner`**, audit **`BILLING_OFFSET_PROPOSAL_REJECTED`**.
+- **`apply_billing_snapshot_offset_core(...)`** – interní jádro zápočtu (žádost + snapshot + záporný settlement + UPDATE **`billing_snapshots`**); **bez GRANT** pro klienta.
+- **`_billing_offset_compute_plan`**, **`_billing_offset_owner_pool_sum`**, **`_billing_offset_eps`** – pomocné funkce bez veřejného GRANT.
+
+**Audit:** **`audit_logs`**: **`BILLING_OFFSET_PROPOSAL_APPROVED`**, **`BILLING_OFFSET_PROPOSAL_REJECTED`**.
 
 ---
 
@@ -990,7 +1101,7 @@ Systém **tenant_wallets** + **wallet_transactions** slouží pro předplacené 
 
 **Bezpečnost a Race Condition:**
 - Klient (admin, manager) smí **pouze číst** (SELECT) vlastní peněženku a transakce – zákaz INSERT/UPDATE z aplikace!
-- Jakékoli stržení kreditů probíhá **výhradně přes RPC funkci** `deduct_wallet_credits()`, která používá zámek řádku (`FOR UPDATE`) pro ochranu proti souběhu (více dispečerů generuje úkoly současně).
+- Jakékoli stržení kreditů probíhá **výhradně přes RPC funkci** `deduct_wallet_credits()`, která používá zámek řádku (`FOR UPDATE`) pro ochranu proti souběhu (více dispečerů generuje úkoly současně). **P1 (2026-09-13):** funkce navíc vyžaduje **super_admin** nebo **admin/manager** volajícího ve stejném `tenant_id` jako `p_tenant_id` (worker/owner volání vrací `false`).
 - Doplňování kreditů (TOP_UP) provádí Super Admin nebo Stripe webhook přes service_role / SECURITY DEFINER funkci.
 
 **RLS:** Role admin a manager smí pouze SELECT vlastní data; super_admin a service_role mají plná práva. Na tenant_wallets není povolena přímá INSERT/UPDATE pro běžné uživatele.
@@ -1035,13 +1146,20 @@ Supabase Storage používá systémovou tabulku `storage.objects`. RLS politiky 
 
 ### Bucket falconest_media
 
+Bucket pro účtenky, fotky škod, podpisy hostů a další média.
+
+**Multi-tenant cesta:** `tenant_id/modul/soubor` (např. `…/receipts/uuid.jpg`).
+
+**P0 (2026-09-13):** bucket je **private** (`public = false`). Klient po uploadu používá **signed URL** (`createSignedUrl`, TTL 10 let).
+
+**Provozní návod:** `docs/ops/STORAGE_MEDIA.md` (regenerace starých public URL, QA checklist).
+
+**RLS (migrace `20260913120000_storage_falconest_media_private_rls.sql`):**
+- **INSERT / UPDATE / DELETE** – `authenticated`; první složka cesty = `my_tenant_id()` nebo `is_super_admin()`.
+- **SELECT** – stejný tenant scope (žádné veřejné čtení světem).
+
 | Vlastnost | Hodnota |
 |-----------|---------|
-| **Typ** | Public |
-| **Účel** | Ukládání fotek z aplikace – účtenky k firemním výdajům, budoucí hlášení škod |
-| **Struktura cest** | `tenant_id/modul/soubor.jpg` (např. `uuid/expenses/uuid.jpg`) |
-
-**RLS politiky (storage.objects):**
-
-- **INSERT** – povolen pouze pro `authenticated` uživatele; podmínka `bucket_id = 'falconest_media'`. Pouze přihlášení pracovníci či dispečeři mohou nahrávat soubory.
-- **SELECT** – povoleno pro čtení s podmínkou `bucket_id = 'falconest_media'`. Public bucket umožňuje přímé URL (`getPublicUrl`), politika SELECT pokrývá dotazy přes Storage API.
+| **Typ** | **Private** (signed URL) |
+| **Účel** | Účtenky, škody, podpisy hostů, fotodokumentace |
+| **Struktura cest** | `tenant_id/modul/soubor` |

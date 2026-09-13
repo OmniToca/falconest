@@ -3,7 +3,7 @@ import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:falconest/core/widgets/billing_payment_status_chip.dart';
+import 'package:falconest/core/widgets/billing_offset_payment_summary.dart';
 import 'package:falconest/core/theme/app_spacing.dart';
 import 'package:falconest/core/theme/premium_card_decoration.dart';
 import 'package:falconest/core/theme/theme_ext.dart';
@@ -15,11 +15,18 @@ import 'package:falconest/core/services/billing_action_service.dart';
 import 'package:falconest/core/services/billing_export_service.dart';
 import 'package:falconest/core/services/billing_pdf_service.dart';
 import 'package:falconest/core/services/currency_service.dart';
+import 'package:falconest/core/localization/billing_pdf_label_maps.dart';
+import 'package:falconest/core/widgets/billing_pdf_export_language_dialog.dart';
 import 'package:falconest/features/admin/admin_tasks_screen.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/finance_billing_provider.dart';
+import 'package:falconest/features/admin/providers/admin_finance_providers.dart';
 import 'package:falconest/features/admin/providers/finance_repository.dart';
 import 'package:falconest/features/admin/providers/reports_provider.dart';
+import 'package:falconest/core/utils/app_logger.dart';
+import 'package:falconest/features/admin/widgets/billing_offset_proposal_admin_section.dart';
+import 'package:falconest/features/admin/widgets/billing_snapshot_payment_dialog.dart';
+import 'package:falconest/features/owner/repositories/owner_cash_disposition_repository.dart';
 
 /// Dialog podkladů pro fakturaci – měsíční přehled dokončených nevyfakturovaných úkolů.
 ///
@@ -87,12 +94,20 @@ class _FinanceBillingContentState extends ConsumerState<FinanceBillingContent> {
     ).format(DateTime(_selectedMonth.year, _selectedMonth.month, 1));
   }
 
+  /// Export PDF pro jednoho klienta z podkladů fakturace.
+  ///
+  /// **PROČ nejdřív dialog jazyka:** účetní často potřebuje PDF v jiném jazyce než má rozhraní;
+  /// výběr izolujeme od globálního `EasyLocalization`, aby se neměnil jazyk celé aplikace.
   Future<void> _onClientExportPdf(
     BuildContext context,
     BillingGroup group,
   ) async {
     final currency =
         ref.read(currentTenantCurrencyProvider).valueOrNull ?? 'EUR';
+    if (!context.mounted) return;
+    final exportLocale = await showBillingPdfExportLanguageDialog(context);
+    if (exportLocale == null || !context.mounted) return;
+
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -101,50 +116,19 @@ class _FinanceBillingContentState extends ConsumerState<FinanceBillingContent> {
       );
     }
     try {
+      final footerLabels = await buildBillingPdfFooterLabelMap(exportLocale);
+      final payerLabels = await buildBillingPdfPayerLabelMap(exportLocale);
+      final externalName =
+          await billingPdfExternalGroupDisplayName(exportLocale);
+
       await BillingPdfService.generateAndDownloadPdf(
         group,
         DateTime(_selectedMonth.year, _selectedMonth.month, 1),
         currency,
-        externalDisplayName: 'admin.finance.billing_group_external'.tr(),
-        payerLabels: {
-          'owner': 'admin.finance.billing_payer_owner'.tr(),
-          'guest': 'admin.finance.billing_payer_guest'.tr(),
-          'client': 'admin.finance.billing_payer_client'.tr(),
-        },
-        footerLabels: {
-          'report_title': 'admin.finance.billing_pdf_report_title'.tr(),
-          'client_label': 'admin.finance.billing_client_label'.tr(),
-          'guest_label': 'admin.finance.billing_guest_label'.tr(),
-          'reservation_prefix': 'admin.finance.billing_reservation_prefix'.tr(),
-          'standalone_services': 'admin.finance.billing_standalone_services'
-              .tr(),
-          'scheduled_label': 'admin.finance.billing_scheduled_label'.tr(),
-          'completed_label': 'admin.finance.billing_completed_label'.tr(),
-          'date_label': 'admin.finance.billing_date_label'.tr(),
-          'fallback_client_name': 'admin.finance.billing_fallback_client_name'
-              .tr(),
-          'total_turnover': 'admin.finance.billing_total_turnover'.tr(),
-          'paid_by_guests': 'admin.finance.billing_paid_by_guests'.tr(),
-          'expenses_to_reimburse': 'admin.finance.billing_expenses_to_reimburse'
-              .tr(),
-          'expenses_section':
-              'admin.finance.billing_expenses_to_reimburse_section'.tr(),
-          'monthly_management_fee':
-              'admin.finance.billing_monthly_management_fee'.tr(),
-          'task_price_label': 'admin.finance.billing_task_price_label'.tr(),
-          'task_guest_paid_label': 'admin.finance.billing_task_guest_paid_label'
-              .tr(),
-          'task_shortfall_due_label':
-              'admin.finance.billing_task_shortfall_due_label'.tr(),
-          'final_pay': 'admin.finance.billing_final_owner_pay'.tr(),
-          'payer': 'admin.finance.billing_payer'.tr(),
-          'summary_section': 'admin.finance.billing_summary_section'.tr(),
-          'services_breakdown': 'admin.finance.billing_services_breakdown'.tr(),
-          'subtotal_per_reservation':
-              'admin.finance.billing_subtotal_per_reservation'.tr(),
-          'turnover_short': 'admin.finance.billing_turnover_short'.tr(),
-          'guest_paid_short': 'admin.finance.billing_guest_paid_short'.tr(),
-        },
+        exportLocale: exportLocale,
+        externalDisplayName: externalName,
+        payerLabels: payerLabels,
+        footerLabels: footerLabels,
       );
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -397,7 +381,10 @@ class _FinanceBillingContentState extends ConsumerState<FinanceBillingContent> {
     );
   }
 
-  /// Dialog: změna `payment_status` u řádku `billing_snapshots` (viditelné i majiteli).
+  /// Dialog: změna stavu úhrady u řádku `billing_snapshots` (viditelné i majiteli).
+  ///
+  /// PROČ: Menu je dostupné právě u **uzamčeného** měsíce (archiv `billing_snapshots`) –
+  /// zápočet ze zálohy majitele probíhá přes náhledový dialog, ne ruční volbou stavů.
   Future<void> _onEditSnapshotPaymentStatus(
     BuildContext context,
     BillingGroup group,
@@ -408,101 +395,162 @@ class _FinanceBillingContentState extends ConsumerState<FinanceBillingContent> {
         tenantId.isEmpty ||
         snapId == null ||
         snapId.isEmpty) {
-      return;
-    }
-
-    const valid = {'unpaid', 'paid', 'partially_paid', 'cash_offset'};
-    final newStatus = await showDialog<String>(
-      context: context,
-      builder: (ctx) {
-        String selected = group.paymentStatus.trim().toLowerCase();
-        if (!valid.contains(selected)) {
-          selected = 'unpaid';
-        }
-        return StatefulBuilder(
-          builder: (ctx, setSt) {
-            return AlertDialog(
-              title: Text(
-                'admin.finance.billing_snapshot_payment_dialog_title'.tr(),
-              ),
-              content: ConstrainedBox(
-                constraints: const BoxConstraints(minWidth: 280),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      'admin.finance.billing_snapshot_payment_field_label'
-                          .tr(),
-                      style: Theme.of(ctx).textTheme.labelLarge,
-                    ),
-                    const SizedBox(height: 8),
-                    DropdownButton<String>(
-                      value: selected,
-                      isExpanded: true,
-                      items: [
-                        DropdownMenuItem(
-                          value: 'unpaid',
-                          child: Text(
-                            'owner.billing_payment_status_unpaid'.tr(),
-                          ),
-                        ),
-                        DropdownMenuItem(
-                          value: 'paid',
-                          child: Text('owner.billing_payment_status_paid'.tr()),
-                        ),
-                        DropdownMenuItem(
-                          value: 'partially_paid',
-                          child: Text(
-                            'owner.billing_payment_status_partially_paid'.tr(),
-                          ),
-                        ),
-                        DropdownMenuItem(
-                          value: 'cash_offset',
-                          child: Text(
-                            'owner.billing_payment_status_cash_offset'.tr(),
-                          ),
-                        ),
-                      ],
-                      onChanged: (v) {
-                        if (v != null) {
-                          setSt(() => selected = v);
-                        }
-                      },
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(),
-                  child: Text('common.cancel'.tr()),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.of(ctx).pop(selected),
-                  child: Text('common.save'.tr()),
-                ),
-              ],
-            );
-          },
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'admin.finance.billing_snapshot_offset_missing_snapshot'.tr(),
+            ),
+          ),
         );
-      },
-    );
-
-    if (newStatus == null || !context.mounted) {
+      }
       return;
     }
-    final normalizedNew = newStatus.trim().toLowerCase();
-    if (normalizedNew == group.paymentStatus.trim().toLowerCase()) {
+
+    final currency = ref.read(currentTenantCurrencyProvider).valueOrNull ?? 'EUR';
+
+    final dialogResult = await showBillingSnapshotPaymentDialog(
+      context: context,
+      group: group,
+      tenantId: tenantId,
+      currencyCode: currency,
+    );
+    if (dialogResult == null || !context.mounted) return;
+
+    final choice = dialogResult.choice;
+    String normalizedNew;
+    switch (choice) {
+      case BillingSnapshotPaymentChoice.unpaid:
+        normalizedNew = 'unpaid';
+      case BillingSnapshotPaymentChoice.paid:
+        normalizedNew = 'paid';
+      case BillingSnapshotPaymentChoice.applyCashFromDeposit:
+        normalizedNew = 'apply_cash_from_deposit';
+    }
+
+    final isCashOffsetFlow =
+        choice == BillingSnapshotPaymentChoice.applyCashFromDeposit;
+
+    if (!isCashOffsetFlow &&
+        normalizedNew == group.paymentStatus.trim().toLowerCase()) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'admin.finance.billing_snapshot_offset_same_status'.tr(),
+            ),
+          ),
+        );
+      }
       return;
     }
 
     try {
+      if (isCashOffsetFlow && group.groupKey != 'external') {
+        final billingClientId = group.groupKey.trim();
+        final ownerProfileId =
+            await OwnerCashDispositionRepository.resolveOwnerProfileIdForBillingClient(
+          tenantId: tenantId,
+          billingClientId: billingClientId,
+        );
+        if (ownerProfileId == null) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'admin.finance.billing_snapshot_offset_client_not_linked'.tr(),
+                ),
+              ),
+            );
+          }
+          return;
+        }
+
+        final request =
+            await OwnerCashDispositionRepository.findInvoiceCreditRequestForBillingClient(
+          tenantId: tenantId,
+          billingClientId: billingClientId,
+        );
+        if (request == null) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'admin.finance.billing_snapshot_offset_no_request'.tr(),
+                ),
+              ),
+            );
+          }
+          return;
+        }
+
+        final invoiceDue = group.finalToInvoice;
+        if (invoiceDue <= 1e-9) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'admin.finance.billing_snapshot_offset_zero_invoice'.tr(),
+                ),
+              ),
+            );
+          }
+          return;
+        }
+
+        final adminProfileId =
+            ref.read(authNotifierProvider).state.profileId?.trim() ?? '';
+        if (adminProfileId.isEmpty) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'admin.finance.billing_snapshot_update_error'.tr(),
+                ),
+              ),
+            );
+          }
+          return;
+        }
+
+        final plan = await OwnerCashDispositionRepository.applyOffsetToSnapshot(
+          tenantId: tenantId,
+          snapshotId: snapId,
+          requestId: request.id,
+          invoiceDue: invoiceDue,
+          adminProfileId: adminProfileId,
+          currencyCode: currency,
+        );
+        ref.invalidate(adminOwnerCashRequestsProvider);
+
+        _invalidateBillingReport();
+        if (context.mounted) {
+          final msgKey = plan.isPartial
+              ? 'admin.finance.billing_snapshot_offset_success_partial'
+              : 'admin.finance.billing_snapshot_offset_success';
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                msgKey.tr(
+                  namedArgs: {
+                    'applied': plan.amountToApply.toStringAsFixed(2),
+                    'remaining': plan.remainingInvoiceDue.toStringAsFixed(2),
+                    'currency': currency,
+                  },
+                ),
+              ),
+            ),
+          );
+        }
+        return;
+      }
+
       await FinanceRepository.instance.updateSnapshotPaymentStatus(
         tenantId,
         snapId,
         normalizedNew,
       );
+
       _invalidateBillingReport();
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -513,7 +561,18 @@ class _FinanceBillingContentState extends ConsumerState<FinanceBillingContent> {
           ),
         );
       }
-    } catch (_) {
+    } on OwnerCashOffsetException catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.l10nKey.tr())),
+        );
+      }
+    } catch (e, st) {
+      AppLogger.error(
+        'BillingSnapshotPayment: uložení selhalo (RLS / síť / validace)',
+        e,
+        st,
+      );
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -1373,9 +1432,15 @@ class _BillingGroupsList extends StatelessWidget {
                     if (isLocked &&
                         (group.billingSnapshotId ?? '').isNotEmpty) ...[
                       const SizedBox(width: 8),
-                      BillingPaymentStatusChip(
+                      BillingOffsetPaymentSummary(
+                        finalToInvoice: group.finalToInvoice,
+                        offsetAmount: group.offsetAmount,
                         paymentStatus: group.paymentStatus,
+                        currency: currency,
                         compact: true,
+                      ),
+                      BillingOffsetProposalAdminChip(
+                        snapshotId: group.billingSnapshotId!,
                       ),
                     ],
                   ],
@@ -1502,6 +1567,19 @@ class _BillingGroupsList extends StatelessWidget {
 
     final children = <Widget>[];
 
+    if (isLocked && (group.billingSnapshotId ?? '').isNotEmpty) {
+      children.add(
+        BillingOffsetProposalAdminSection(
+          group: group,
+          currency: currency,
+          billingMonth: BillingMonthParam(
+            year: selectedMonth.year,
+            month: selectedMonth.month,
+          ),
+        ),
+      );
+    }
+
     // Měsíční paušál za správu – zobrazen nad sekcí úkolů, pokud je > 0
     if (group.monthlyManagementFee > 0) {
       children.add(
@@ -1578,8 +1656,13 @@ class _BillingGroupsList extends StatelessWidget {
       }
     }
 
-    // B) Samostatné služby (Mimo rezervace)
-    if (tasksWithoutRes.isNotEmpty) {
+    // B) Úkoly mimo rezervaci – služby vázané na apartmán vs. externí služby (apartment_id).
+    final standaloneSplit = splitBillingTasksWithoutReservation(tasksWithoutRes);
+    void addStandaloneSection(
+      String titleKey,
+      List<BillingTaskItem> sectionTasks,
+    ) {
+      if (sectionTasks.isEmpty) return;
       children.add(const Divider(height: 24));
       children.add(
         Padding(
@@ -1587,7 +1670,7 @@ class _BillingGroupsList extends StatelessWidget {
           child: Align(
             alignment: Alignment.centerLeft,
             child: Text(
-              'admin.finance.billing_standalone_services'.tr(),
+              titleKey.tr(),
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
                 fontWeight: FontWeight.w600,
                 color: context.colors.onSurfaceVariant,
@@ -1596,7 +1679,7 @@ class _BillingGroupsList extends StatelessWidget {
           ),
         ),
       );
-      for (final task in tasksWithoutRes) {
+      for (final task in sectionTasks) {
         children.add(
           _BillingTaskTile(
             task: task,
@@ -1610,6 +1693,15 @@ class _BillingGroupsList extends StatelessWidget {
         );
       }
     }
+
+    addStandaloneSection(
+      'admin.finance.billing_apartment_bound_services',
+      standaloneSplit.apartmentBoundServices,
+    );
+    addStandaloneSection(
+      'admin.finance.billing_external_services',
+      standaloneSplit.externalServices,
+    );
 
     // C) Náklady k proplacení – detailní rozpis (datum, popis, částka, účtenka)
     if (group.expenses.isNotEmpty) {

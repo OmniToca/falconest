@@ -2,9 +2,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/auth/owner_view_impersonation_providers.dart';
 import 'package:falconest/core/providers/tenant_currency_provider.dart';
 import 'package:falconest/features/owner/models/owner_cash_disposition_request.dart';
 import 'package:falconest/features/owner/models/owner_cash_transit_settlement.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/owner/repositories/owner_cash_disposition_repository.dart';
 import 'package:falconest/features/owner/repositories/reservation_cash_transit_repository.dart';
 
@@ -14,12 +16,16 @@ import 'package:falconest/features/owner/repositories/reservation_cash_transit_r
 final ownerPortalTabIndexRequestProvider = StateProvider<int?>((ref) => null);
 
 /// Dostupný zůstatek průtokové hotovosti majitele v měně tenanta (EUR/CZK/…).
+///
+/// Výpočet: součet `owner_cash_transit_settlements.amount` minus součet nevyčerpaných
+/// schválených žádostí (`owner_cash_disposition_requests.amount - used_amount`).
+/// Schválení žádosti na 250 EUR tedy neodečte celý settlement 666 EUR, ale jen rezervovanou částku.
 final ownerAvailableBalanceProvider = FutureProvider.autoDispose<double>((
   ref,
 ) async {
   final auth = ref.watch(authNotifierProvider);
   final tenantId = auth.tenantIdForData;
-  final profileId = auth.state.profileId;
+  final profileId = ref.watch(effectiveProfileIdProvider);
   if (tenantId == null ||
       tenantId.isEmpty ||
       profileId == null ||
@@ -29,12 +35,24 @@ final ownerAvailableBalanceProvider = FutureProvider.autoDispose<double>((
   final currency =
       ref.watch(currentTenantCurrencyProvider).valueOrNull ?? 'EUR';
   try {
+    // Diagnostika dvojnásobného „Dostupný zůstatek“ – UI čte tento provider (owner.cash_balance_label).
+    if (kDebugMode) {
+      AppLogger.debug(
+        'OwnerBalanceDebug[ownerAvailableBalanceProvider] start tenantId=$tenantId '
+        'profileId=$profileId currency=$currency (zdroj: Supabase, bez Isar/Drift)',
+      );
+    }
     final v =
         await ReservationCashTransitRepository.getAvailableBalanceForOwner(
           tenantId: tenantId,
           ownerProfileId: profileId,
           currencyCode: currency,
         );
+    if (kDebugMode) {
+      AppLogger.debug(
+        'OwnerBalanceDebug[ownerAvailableBalanceProvider] výsledek pro UI=$v $currency',
+      );
+    }
     if (v.isNaN || v.isInfinite) return 0;
     return v;
   } catch (e, st) {
@@ -49,7 +67,7 @@ final ownerAvailableSettlementsProvider =
     FutureProvider.autoDispose<List<OwnerCashTransitSettlement>>((ref) async {
       final auth = ref.watch(authNotifierProvider);
       final tenantId = auth.tenantIdForData;
-      final profileId = auth.state.profileId;
+      final profileId = ref.watch(effectiveProfileIdProvider);
       if (tenantId == null ||
           tenantId.isEmpty ||
           profileId == null ||
@@ -78,7 +96,7 @@ final ownerCashRequestsProvider =
     FutureProvider.autoDispose<List<OwnerCashDispositionRequest>>((ref) async {
       final auth = ref.watch(authNotifierProvider);
       final tenantId = auth.tenantIdForData;
-      final profileId = auth.state.profileId;
+      final profileId = ref.watch(effectiveProfileIdProvider);
       if (tenantId == null ||
           tenantId.isEmpty ||
           profileId == null ||

@@ -411,7 +411,11 @@ async function queueEntryExists(supabase: ReturnType<typeof createClient>, args:
   return !!data;
 }
 
-serve(async (_req) => {
+serve(async (req) => {
+  const { requireServiceRoleBearer } = await import("../_shared/edge_auth.ts")
+  const denied = requireServiceRoleBearer(req)
+  if (denied) return denied
+
   const supabaseUrl = requireEnv("SUPABASE_URL");
   const serviceRoleKey = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
 

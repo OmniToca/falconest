@@ -547,6 +547,39 @@ final teamFullListProvider = FutureProvider<List<TeamMember>>((ref) async {
   }
 });
 
+/// Lite mapa `profiles.id → jméno` pro enrich Realtime úkolů (P1 výkon).
+///
+/// PROČ: Plný [teamFullListProvider] tahá smlouvy, zóny, last_sign_in… Stream potřebuje
+/// jen jméno řešitele – změna ostatních polí nemá restartovat Realtime subscription.
+final teamNameByProfileIdLiteProvider =
+    FutureProvider<Map<String, String>>((ref) async {
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return {};
+
+  try {
+    final raw = await TeamRepository.getTeamIdNameRows(
+      tenantId,
+      limit: teamFullListProviderLimit,
+    );
+    final map = <String, String>{};
+    for (final e in raw) {
+      final id = e['id']?.toString().trim() ?? '';
+      if (id.isEmpty) continue;
+      final first = (e['first_name'] as String?)?.trim() ?? '';
+      final last = (e['last_name'] as String?)?.trim() ?? '';
+      final combined = '$first $last'.trim();
+      final name = (e['name'] as String?)?.trim() ?? '';
+      map[id] = combined.isNotEmpty
+          ? combined
+          : (name.isNotEmpty ? name : id);
+    }
+    return map;
+  } catch (e, st) {
+    AppLogger.error('teamNameByProfileIdLiteProvider selhal', e, st);
+    return {};
+  }
+});
+
 /// Pravidlo B (Smlouva): true, pokud je člen v daný den v rámci platnosti smlouvy (start_date / end_date).
 /// Sdílená logika s automatickým generátorem – pro ruční dropdown dostupnosti.
 bool _isWithinContractForTask(TeamMember member, DateTime taskDate) {

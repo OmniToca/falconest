@@ -353,6 +353,100 @@ async function dispatchNewTaskAssignedInternalPush(args: {
   };
 }
 
+/** Kanály majitele (Klientský portál) — titulek/tělo z DB triggeru, deep link /owner. */
+const OWNER_LIFECYCLE_PUSH_KINDS = new Set([
+  "owner_task_started",
+  "owner_task_completed",
+  "owner_cash_collected",
+]);
+
+/**
+ * Push pro property_owner: stejný transport jako new_task_assigned (FCM data z payloadu),
+ * ale route směřuje do portálu majitele (/owner).
+ */
+async function dispatchOwnerLifecycleInternalPush(args: {
+  supabase: ReturnType<typeof createClient>;
+  msg: AutomationMessageQueueRow;
+}): Promise<DispatchSendResult> {
+  const p = (args.msg.editable_payload && typeof args.msg.editable_payload === "object")
+    ? args.msg.editable_payload as Record<string, unknown>
+    : {};
+  const title = typeof p["push_title"] === "string" ? p["push_title"].trim() : "";
+  const body = typeof p["push_body"] === "string" ? p["push_body"].trim() : "";
+  const profileId = internalPushProfileIdFromQueue(args.msg);
+  if (!profileId) {
+    throw new Error(
+      "internal_push owner_lifecycle: chybí recipient_contact nebo staff_profile_id / profile_id v editable_payload",
+    );
+  }
+  if (!title || !body) {
+    throw new Error("internal_push owner_lifecycle: chybí push_title nebo push_body v editable_payload");
+  }
+
+  const firebaseProjectId = Deno.env.get("FIREBASE_PROJECT_ID")?.trim();
+  if (!firebaseProjectId) {
+    throw new Error("Chybí FIREBASE_PROJECT_ID v Supabase secrets");
+  }
+  const accessToken = await getFcmAccessTokenForDispatch();
+
+  const { data: devices, error: devErr } = await args.supabase
+    .from("user_devices")
+    .select("fcm_token")
+    .eq("profile_id", profileId)
+    .eq("tenant_id", args.msg.tenant_id);
+
+  if (devErr) throw new Error(`user_devices: ${devErr.message}`);
+
+  const tokens = (devices ?? [])
+    .map((d) => String((d as Record<string, unknown>)["fcm_token"] ?? "").trim())
+    .filter((t) => t.length > 0);
+
+  if (tokens.length === 0) {
+    throw new Error(
+      "internal_push: žádný FCM token v user_devices pro daný profil (aplikace musí zaregistrovat zařízení)",
+    );
+  }
+
+  const kindRaw = p["internal_push_kind"];
+  const kind = typeof kindRaw === "string" ? kindRaw.trim() : "";
+  const taskId = typeof p["task_id"] === "string" ? p["task_id"].trim() : "";
+  const apartmentId = typeof p["apartment_id"] === "string" ? p["apartment_id"].trim() : "";
+  const reservationId = typeof p["reservation_id"] === "string" ? p["reservation_id"].trim() : "";
+  const cashTxId = typeof p["cash_transaction_id"] === "string" ? p["cash_transaction_id"].trim() : "";
+
+  const data: Record<string, string> = {
+    route: "/owner",
+    owner_push_kind: kind,
+  };
+  if (taskId.length > 0) data.task_id = taskId;
+  if (apartmentId.length > 0) data.apartment_id = apartmentId;
+  if (reservationId.length > 0) data.reservation_id = reservationId;
+  if (cashTxId.length > 0) data.cash_transaction_id = cashTxId;
+
+  let okCount = 0;
+  for (const token of tokens) {
+    const ok = await sendFcmInternalPushMessage({
+      projectId: firebaseProjectId,
+      accessToken,
+      fcmToken: token,
+      title,
+      body,
+      data,
+    });
+    if (ok) okCount++;
+  }
+
+  if (okCount === 0) {
+    throw new Error("internal_push: FCM odmítl všechny tokeny (Firebase / expirované tokeny)");
+  }
+
+  return {
+    externalApiId: `fcm_internal:${args.msg.id}:${okCount}/${tokens.length}`,
+    billableUnits: okCount,
+    contentSnapshot: `${title}\n${body}`,
+  };
+}
+
 async function dispatchInternalPushForQueueItem(args: {
   supabase: ReturnType<typeof createClient>;
   msg: AutomationMessageQueueRow;
@@ -363,6 +457,9 @@ async function dispatchInternalPushForQueueItem(args: {
   const kind = typeof p["internal_push_kind"] === "string" ? p["internal_push_kind"].trim() : "";
   if (kind === "new_task_assigned") {
     return await dispatchNewTaskAssignedInternalPush(args);
+  }
+  if (OWNER_LIFECYCLE_PUSH_KINDS.has(kind)) {
+    return await dispatchOwnerLifecycleInternalPush(args);
   }
 
   const firebaseProjectId = Deno.env.get("FIREBASE_PROJECT_ID")?.trim();

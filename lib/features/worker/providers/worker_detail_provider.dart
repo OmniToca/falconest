@@ -4,11 +4,15 @@ import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/providers/connectivity_provider.dart';
 import 'package:falconest/core/repositories/task/task_repository.dart';
 import 'package:falconest/core/repositories/task/task_repository_provider_export.dart';
 import 'package:falconest/features/worker/data/services/worker_sync_service.dart';
 import 'package:falconest/features/worker/providers/worker_dashboard_provider.dart';
 import 'package:falconest/features/worker/providers/worker_sync_state_provider.dart';
+import 'package:falconest/features/worker/providers/worker_sync_state_drift_stub.dart'
+    if (dart.library.io) 'package:falconest/features/worker/providers/worker_sync_state_drift_io.dart'
+    as drift_sync;
 
 /// Re-export WorkerTaskDetail pro konzumenty (Worker UI).
 export 'package:falconest/core/repositories/task/task_repository.dart' show WorkerTaskDetail;
@@ -62,6 +66,7 @@ class WorkerTaskStatusNotifier extends StateNotifier<AsyncValue<void>> {
   /// [mediaUrls] – URL fotek z Supabase Storage (úkoly s requires_photo).
   /// [localPhotoPaths] – při offline cesty k zkopírovaným fotkám (mobil).
   /// [existingMediaUrls] – již nahrané URL při offline flow pro merge v procesoru.
+  /// [flushToServerWhenOnline] – při online krátce počká na push pending změn (mobil).
   Future<void> updateStatus(
     String taskId,
     String status, {
@@ -71,6 +76,7 @@ class WorkerTaskStatusNotifier extends StateNotifier<AsyncValue<void>> {
     List<String>? mediaUrls,
     List<String>? localPhotoPaths,
     List<String>? existingMediaUrls,
+    bool flushToServerWhenOnline = true,
   }) async {
     state = const AsyncValue.loading();
     final tenantId = _ref.read(authNotifierProvider).tenantIdForData;
@@ -99,12 +105,27 @@ class WorkerTaskStatusNotifier extends StateNotifier<AsyncValue<void>> {
 
       _ref.invalidate(workerTaskDetailProvider(taskId));
       _ref.invalidate(workerTasksProvider);
-      state = const AsyncValue.data(null);
 
-      unawaited(WorkerSyncService.pushPendingUpdates(
-        tenantId,
-        onSyncError: _ref.read(workerSyncStateProvider.notifier).reportSyncError,
-      ));
+      final driftRepos = drift_sync.getDriftReposForSync(_ref);
+      final onSyncError =
+          _ref.read(workerSyncStateProvider.notifier).reportSyncError;
+      final isOnline = _ref.read(isOfflineProvider).valueOrNull == false;
+
+      if (flushToServerWhenOnline && isOnline) {
+        await WorkerSyncService.flushPendingUpdatesBestEffort(
+          tenantId,
+          onSyncError: onSyncError,
+          driftRepos: driftRepos,
+        );
+      } else {
+        unawaited(WorkerSyncService.pushPendingUpdates(
+          tenantId,
+          onSyncError: onSyncError,
+          driftRepos: driftRepos,
+        ));
+      }
+
+      state = const AsyncValue.data(null);
     } catch (e, st) {
       state = AsyncValue.error(e, st);
     }

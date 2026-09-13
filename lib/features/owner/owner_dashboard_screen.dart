@@ -2,7 +2,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/auth/owner_view_impersonation_providers.dart';
 import 'package:falconest/core/providers/tenant_currency_provider.dart';
 import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/features/owner/owner_portal_tabs.dart';
@@ -10,6 +10,7 @@ import 'package:falconest/features/owner/providers/owner_apartments_provider.dar
 import 'package:falconest/features/owner/providers/owner_cash_providers.dart';
 import 'package:falconest/features/owner/providers/owner_dashboard_metrics_provider.dart';
 import 'package:falconest/features/owner/widgets/owner_portal_ui.dart';
+import 'package:falconest/features/owner/widgets/owner_read_only_gate.dart';
 import 'package:falconest/features/owner/widgets/owner_report_issue_dialog.dart';
 import 'package:falconest/features/owner/widgets/statistics/owner_cost_breakdown_chart.dart';
 
@@ -24,7 +25,7 @@ class OwnerDashboardScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final apartments = ref.read(ownerApartmentsProvider).value ?? [];
-    final profileId = ref.read(authNotifierProvider).state.profileId ?? '';
+    final profileId = ref.read(effectiveProfileIdProvider) ?? '';
     final metricsAsync = ref.watch(ownerDashboardMetricsProvider);
     final currency = ref.watch(currentTenantCurrencyProvider).valueOrNull ?? 'EUR';
 
@@ -107,18 +108,21 @@ class OwnerDashboardScreen extends ConsumerWidget {
                 const SizedBox(height: 24),
                 const OwnerCostBreakdownDashboardCard(),
                 const SizedBox(height: 28),
-                FilledButton.tonalIcon(
-                  style: FilledButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                    alignment: Alignment.center,
+                OwnerReadOnlyGate(
+                  child: FilledButton.tonalIcon(
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                      alignment: Alignment.center,
+                    ),
+                    onPressed: () => openOwnerReportIssueDialog(
+                      context,
+                      ref: ref,
+                      apartments: apartments,
+                      profileId: profileId,
+                    ),
+                    icon: const Icon(Icons.report_problem_outlined),
+                    label: Text('owner.report_issue_btn'.tr()),
                   ),
-                  onPressed: () => openOwnerReportIssueDialog(
-                    context,
-                    apartments: apartments,
-                    profileId: profileId,
-                  ),
-                  icon: const Icon(Icons.report_problem_outlined),
-                  label: Text('owner.report_issue_btn'.tr()),
                 ),
               ],
             ),

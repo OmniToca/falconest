@@ -8,13 +8,11 @@
 // Volání: POST s JSON payloadem úkolu (tenant_id, apartment_id, description, …).
 // Odpověď: 200 + vložený úkol; při chybě DB 5xx (mutace zůstane ve frontě).
 import "jsr:@supabase/functions-js/edge-runtime.d.ts"
-import { createClient } from "npm:@supabase/supabase-js@2"
 import OpenAI from "https://deno.land/x/openai@v4.24.0/mod.ts"
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-}
+import {
+  edgeCorsHeaders as corsHeaders,
+  requireUserProfile,
+} from "../_shared/edge_auth.ts"
 
 /** Fallback nadpis při výpadku AI – dvojjazyčný. */
 const FALLBACK_TITLE = "Nové hlasové hlášení / Nuevo reporte"
@@ -163,12 +161,15 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")
-    if (!supabaseUrl || !serviceRoleKey) {
+    // P0 bezpečnost: vyžadovat uživatelský JWT – nikdy service_role + důvěra body.tenant_id.
+    const auth = await requireUserProfile(req)
+    if (!auth.ok) return auth.response
+
+    const { client, profile } = auth
+    if (!profile.tenantId) {
       return new Response(
-        JSON.stringify({ error: "Chybí SUPABASE_URL nebo SUPABASE_SERVICE_ROLE_KEY" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        JSON.stringify({ error: "Uživatel nemá přiřazený tenant_id" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       )
     }
 
@@ -180,6 +181,12 @@ Deno.serve(async (req) => {
         JSON.stringify({ error: "Neplatný JSON v těle požadavku" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       )
+    }
+
+    // Vynutit tenant a created_by z autentizovaného profilu (body nelze zneužít).
+    payload.tenant_id = profile.tenantId
+    if (payload.created_by == null || String(payload.created_by).trim() === "") {
+      payload.created_by = profile.id
     }
 
     const description = typeof payload.description === "string" ? payload.description : String(payload.description ?? "")
@@ -207,10 +214,9 @@ Deno.serve(async (req) => {
       payload.description = description
     }
 
-    // INSERT do tasks s Service Role (obejde RLS) – po stejné sanitizaci jako aplikační repository
-    const supabase = createClient(supabaseUrl, serviceRoleKey)
+    // INSERT přes uživatelský klient – RLS na tasks musí projít (worker/owner vlastního tenanta).
     const sanitized = sanitizeTaskInsertPayload(payload as Record<string, unknown>)
-    const { data, error } = await supabase.from("tasks").insert(sanitized).select().single()
+    const { data, error } = await client.from("tasks").insert(sanitized).select().single()
 
     if (error) {
       console.error("process-issue-ai tasks insert error:", error)

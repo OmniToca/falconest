@@ -449,3 +449,24 @@ final apartmentsFullListProvider =
     return [];
   }
 });
+
+/// Lite mapa `apartment_id → name` pro enrich Realtime úkolů (P1 výkon).
+///
+/// PROČ: Plný [apartmentsFullListProvider] tahá geo, check-in časy, nájem… Stream úkolů
+/// potřebuje jen jméno. Při změně detailu bytu se tak nespouští znovu Realtime subscription.
+final apartmentsNameByIdLiteProvider =
+    FutureProvider<Map<String, String>>((ref) async {
+  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
+  if (tenantId == null || tenantId.isEmpty) return {};
+
+  try {
+    final raw = await ApartmentRepository.getApartmentIdNamePairs(
+      tenantId,
+      limit: apartmentsFullListProviderLimit,
+    );
+    return {for (final e in raw) e.$1: e.$2};
+  } catch (e, st) {
+    AppLogger.error('apartmentsNameByIdLiteProvider selhal', e, st);
+    return {};
+  }
+});

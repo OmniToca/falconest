@@ -19,6 +19,27 @@ class EmployeeCashWalletRow {
   final String workerName;
 }
 
+/// Výsledek FIFO bulk převzetí hotovosti z RPC `process_worker_cash_handover_fifo`.
+class CashHandoverFifoResult {
+  const CashHandoverFifoResult({
+    required this.handedTransactionId,
+    required this.receivedTotal,
+    required this.allocationsCount,
+    required this.allocatedTotal,
+    required this.allocatedTransitTotal,
+    required this.walletBalanceBefore,
+    required this.walletBalanceAfter,
+  });
+
+  final String handedTransactionId;
+  final double receivedTotal;
+  final int allocationsCount;
+  final double allocatedTotal;
+  final double allocatedTransitTotal;
+  final double walletBalanceBefore;
+  final double walletBalanceAfter;
+}
+
 /// Repozitář pro Zaměstnaneckou pokladnu (employee_cash_wallets, employee_cash_transactions).
 ///
 /// Slouží k evidování hotovosti vybrané od hostů při úkolech Check-in a Transfer.
@@ -69,16 +90,21 @@ class CashWalletRepository {
       final safeTasks = SupabaseService.safeFrom('tasks', tenantId);
 
       String? resolvedReservationId = reservationId?.trim();
+      String? resolvedApartmentId;
       Map<String, dynamic>? taskMeta;
       try {
         final taskRow = await safeTasks
-            .select('reservation_id, metadata')
+            .select('reservation_id, metadata, apartment_id')
             .eq('id', taskId)
             .maybeSingle();
         if (taskRow != null) {
           final rid = taskRow['reservation_id']?.toString().trim();
           if (rid != null && rid.isNotEmpty) {
             resolvedReservationId ??= rid;
+          }
+          final apt = taskRow['apartment_id']?.toString().trim();
+          if (apt != null && apt.isNotEmpty) {
+            resolvedApartmentId = apt;
           }
           final rawMeta = taskRow['metadata'];
           if (rawMeta is Map<String, dynamic>) {
@@ -90,6 +116,15 @@ class CashWalletRepository {
       } catch (_) {
         // PROČ: Rezervace / metadata jsou vylepšení; výběr hotovosti nesmí spadnout jen kvůli SELECT úkolu.
       }
+
+      final resolvedExpected = _resolveExpectedAmountForCollection(
+        callerExpected: expectedAmount,
+        taskMeta: taskMeta,
+      );
+      final varianceMetadata = _cashCollectionVarianceMetadata(
+        collectedAmount: amount,
+        expectedAmount: resolvedExpected,
+      );
 
       final transitPortion = _transitPortionForCashCollection(amount, taskMeta);
 
@@ -114,7 +149,8 @@ class CashWalletRepository {
         currentBalance = (_toDouble(existing['balance']) ?? 0);
       }
 
-      // (b) Vložení transakce do účetní knihy (expected_amount pro výpočet spropitného; note pro nedoplatek)
+      // Validace a zápis reálně převzaté hotovosti do peněženky zaměstnance včetně logování odchylky od plánu.
+      // [amount] = skutečně převzatá částka z UI; peněženka se navyšuje výhradně o tuto hodnotu.
       final presetTid = presetTransactionId?.trim();
       await safeTx.insert({
         if (presetTid != null && presetTid.isNotEmpty) 'id': presetTid,
@@ -122,11 +158,14 @@ class CashWalletRepository {
         'task_id': taskId,
         if (resolvedReservationId != null && resolvedReservationId.isNotEmpty)
           'reservation_id': resolvedReservationId,
+        if (resolvedApartmentId != null && resolvedApartmentId.isNotEmpty)
+          'apartment_id': resolvedApartmentId,
         'amount': amount,
         if (transitPortion != null && transitPortion > 0)
           'transit_portion': transitPortion,
-        if (expectedAmount != null && expectedAmount > 0)
-          'expected_amount': expectedAmount,
+        if (resolvedExpected != null && resolvedExpected > 0)
+          'expected_amount': resolvedExpected,
+        if (varianceMetadata != null) 'metadata': varianceMetadata,
         if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
         'transaction_type': 'COLLECTED_FROM_GUEST',
         'created_by': profileId,
@@ -145,11 +184,11 @@ class CashWalletRepository {
       // aby případný výpadek notifikací neshodil finanční transakci.
       // Nedoplatek (amount < expected_amount) → varovná notifikace s typem finance_shortfall.
       final isShortfall =
-          expectedAmount != null &&
-          expectedAmount > 0 &&
-          amount < expectedAmount;
+          resolvedExpected != null &&
+          resolvedExpected > 0 &&
+          amount < resolvedExpected;
       if (isShortfall) {
-        final diff = expectedAmount - amount;
+        final diff = resolvedExpected - amount;
         final notePart = (note != null && note.trim().isNotEmpty)
             ? note.trim()
             : '';
@@ -185,6 +224,7 @@ class CashWalletRepository {
             if (expectedAmount != null && expectedAmount > 0)
               'expected_amount': expectedAmount,
             if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
+            // metadata variance doplní recordCashCollection při syncu z úkolu
             if (presetTransactionId != null &&
                 presetTransactionId.trim().isNotEmpty)
               'transaction_id': presetTransactionId.trim(),
@@ -397,6 +437,59 @@ class CashWalletRepository {
     return (handedTxId != null && handedTxId.isNotEmpty) ? handedTxId : null;
   }
 
+  /// FIFO bulk převzetí hotovosti přes RPC v databázi.
+  ///
+  /// PROČ: U částečného/hromadného převzetí musíme částku rozdělit na více source transakcí,
+  /// jinak by se transit část mohla nesprávně připsat jednomu majiteli.
+  Future<CashHandoverFifoResult> receiveCashFromWorkerBulkFifo({
+    required String workerProfileId,
+    required double totalAmountToReceive,
+    required String adminProfileId,
+    required String tenantId,
+  }) async {
+    if (totalAmountToReceive <= 0) {
+      throw ArgumentError.value(
+        totalAmountToReceive,
+        'totalAmountToReceive',
+        'must be positive',
+      );
+    }
+
+    final raw = await SupabaseService.client.rpc(
+      'process_worker_cash_handover_fifo',
+      params: {
+        'p_tenant_id': tenantId,
+        'p_worker_profile_id': workerProfileId,
+        'p_admin_profile_id': adminProfileId,
+        'p_total_amount': totalAmountToReceive,
+      },
+    );
+    if (raw is! Map) {
+      throw StateError('FIFO handover RPC returned invalid payload: $raw');
+    }
+    final map = Map<String, dynamic>.from(raw);
+
+    final handedTxId = (map['handed_transaction_id']?.toString() ?? '').trim();
+    if (handedTxId.isEmpty) {
+      throw StateError(
+        'FIFO handover RPC payload missing handed_transaction_id: $map',
+      );
+    }
+    return CashHandoverFifoResult(
+      handedTransactionId: handedTxId,
+      receivedTotal: _toDouble(map['received_total']) ?? 0,
+      allocationsCount: (() {
+        final v = map['allocations_count'];
+        if (v is int) return v;
+        return int.tryParse(v?.toString() ?? '') ?? 0;
+      })(),
+      allocatedTotal: _toDouble(map['allocated_total']) ?? 0,
+      allocatedTransitTotal: _toDouble(map['allocated_transit_total']) ?? 0,
+      walletBalanceBefore: _toDouble(map['wallet_balance_before']) ?? 0,
+      walletBalanceAfter: _toDouble(map['wallet_balance_after']) ?? 0,
+    );
+  }
+
   /// Vklad základu (float / kasírtaška) – admin zaměstnanci vloží hotovost na začátek směny.
   /// PROČ: Zaměstnanec potřebuje např. 100 EUR na vracení zákazníkům nebo nákupy.
   /// Najde nebo vytvoří peněženku, vloží kladnou transakci FLOAT_ISSUED a zvýší balance.
@@ -604,10 +697,53 @@ class CashWalletRepository {
     );
   }
 
-  double? _toDouble(dynamic v) {
+  static double? _toDouble(dynamic v) {
     if (v == null) return null;
     if (v is num) return v.toDouble();
     return double.tryParse(v.toString());
+  }
+
+  /// Očekávaná částka k výběru: explicitní parametr z UI, jinak metadata úkolu.
+  static double? _resolveExpectedAmountForCollection({
+    double? callerExpected,
+    Map<String, dynamic>? taskMeta,
+  }) {
+    if (callerExpected != null && callerExpected > 0) return callerExpected;
+    return _expectedPlannedAmountFromTaskMetadata(taskMeta);
+  }
+
+  /// Získání dynamické částky k vybrání přímo z úkolu. Zohledňuje případné nedoplatky
+  /// nebo extra poplatky zanesené do JSON metadat (priorita: transit → rent_amount → agentura).
+  static double? _expectedPlannedAmountFromTaskMetadata(
+    Map<String, dynamic>? meta,
+  ) {
+    if (meta == null) return null;
+
+    final transit = _toDouble(meta['transit_amount_to_collect']);
+    if (transit != null && transit > 0) return transit;
+
+    final rent = _toDouble(meta['rent_amount']);
+    if (rent != null && rent > 0) return rent;
+
+    final agency = _toDouble(meta['amount_to_collect']);
+    if (agency != null && agency > 0) return agency;
+
+    return null;
+  }
+
+  /// Audit trail odchylky skutečného výběru od plánu (Hlídač hotovosti / reporty).
+  static Map<String, dynamic>? _cashCollectionVarianceMetadata({
+    required double collectedAmount,
+    required double? expectedAmount,
+  }) {
+    if (expectedAmount == null || expectedAmount <= 0) return null;
+    final variance = collectedAmount - expectedAmount;
+    if (variance.abs() < 0.009) return null;
+    return {
+      'expected_amount': expectedAmount,
+      'collected_amount': collectedAmount,
+      'variance': variance,
+    };
   }
 
   /// Část [collectedAmount], která připadá na průtok majiteli (po alokaci `amount_to_collect` = agentura).

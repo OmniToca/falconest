@@ -18,6 +18,7 @@ class ClientModel {
     this.languageCode,
     this.profileId,
     this.agencyId,
+    this.canBillExternalTasks = false,
     this.createdAt,
     this.deletedAt,
     this.latitude,
@@ -39,6 +40,8 @@ class ClientModel {
   /// Agentura, která nám externího klienta doporučila. Pouze pro client_type = external.
   /// FK na clients.id – self-reference. NULL = klient nebyl doporučen agenturou.
   final String? agencyId;
+  /// Hybridní B2B partner: majitel/agentura, který zároveň objednává externí úkoly (faktura přes stejné clients.id).
+  final bool canBillExternalTasks;
   final DateTime? createdAt;
   final DateTime? deletedAt;
   /// Volitelná geolokace z `geo_location` (PostGIS / GeoJSON).
@@ -76,6 +79,7 @@ class ClientModel {
       agencyId: (json['agency_id'] as String?)?.trim().isNotEmpty == true
           ? (json['agency_id'] as String).trim()
           : null,
+      canBillExternalTasks: json['can_bill_external_tasks'] == true,
       createdAt: parseDateTime(json['created_at']),
       deletedAt: parseDateTime(json['deleted_at']),
       latitude: geoPoint?.latitude,
@@ -95,6 +99,7 @@ class ClientModel {
       if (languageCode != null) 'language_code': languageCode,
       if (profileId != null) 'profile_id': profileId,
       if (agencyId != null) 'agency_id': agencyId,
+      'can_bill_external_tasks': canBillExternalTasks,
       if (createdAt != null) 'created_at': createdAt!.toIso8601String(),
       if (deletedAt != null) 'deleted_at': deletedAt!.toIso8601String(),
       if (geo != null) 'geo_location': geo,
@@ -117,6 +122,7 @@ class ClientModel {
     String? languageCode,
     String? profileId,
     String? agencyId,
+    bool? canBillExternalTasks,
     DateTime? createdAt,
     DateTime? deletedAt,
     Object? latitude = _kClientModelGeoCopyUnset,
@@ -132,6 +138,7 @@ class ClientModel {
       languageCode: languageCode ?? this.languageCode,
       profileId: profileId ?? this.profileId,
       agencyId: agencyId ?? this.agencyId,
+      canBillExternalTasks: canBillExternalTasks ?? this.canBillExternalTasks,
       createdAt: createdAt ?? this.createdAt,
       deletedAt: deletedAt ?? this.deletedAt,
       latitude: identical(latitude, _kClientModelGeoCopyUnset)

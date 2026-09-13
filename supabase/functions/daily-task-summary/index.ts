@@ -122,6 +122,10 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const { requireServiceRoleBearer } = await import("../_shared/edge_auth.ts")
+    const denied = requireServiceRoleBearer(req)
+    if (denied) return denied
+
     const supabaseUrl = Deno.env.get("SUPABASE_URL")
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")
     if (!supabaseUrl || !serviceRoleKey) {

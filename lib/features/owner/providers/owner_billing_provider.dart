@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/auth/owner_view_impersonation_providers.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 
 /// Model pro jeden záznam z tabulky billing_snapshots.
@@ -20,6 +21,9 @@ class BillingSnapshotModel {
     this.paymentStatus = 'unpaid',
     this.paidAt,
     this.invoicePdfUrl,
+    this.offsetAmount = 0,
+    this.offsetRequestId,
+    this.offsetAppliedAt,
   });
 
   final String id;
@@ -34,6 +38,9 @@ class BillingSnapshotModel {
   final String paymentStatus;
   final DateTime? paidAt;
   final String? invoicePdfUrl;
+  final double offsetAmount;
+  final String? offsetRequestId;
+  final DateTime? offsetAppliedAt;
 
   factory BillingSnapshotModel.fromJson(Map<String, dynamic> json) {
     final periodRaw = json['billing_period'];
@@ -66,6 +73,21 @@ class BillingSnapshotModel {
     } else if (paidRaw is String) {
       paidAt = DateTime.tryParse(paidRaw);
     }
+    final offsetRaw = json['offset_amount'];
+    double offsetAmount = 0;
+    if (offsetRaw is num) {
+      offsetAmount = offsetRaw.toDouble();
+    } else if (offsetRaw != null) {
+      offsetAmount = double.tryParse(offsetRaw.toString()) ?? 0;
+    }
+    final offsetReqId = (json['offset_request_id'] as String?)?.trim();
+    final offsetAtRaw = json['offset_applied_at'];
+    DateTime? offsetAppliedAt;
+    if (offsetAtRaw is DateTime) {
+      offsetAppliedAt = offsetAtRaw;
+    } else if (offsetAtRaw is String) {
+      offsetAppliedAt = DateTime.tryParse(offsetAtRaw);
+    }
     return BillingSnapshotModel(
       id: (json['id'] as String?)?.trim() ?? '',
       tenantId: (json['tenant_id'] as String?)?.trim() ?? '',
@@ -77,6 +99,10 @@ class BillingSnapshotModel {
       paymentStatus: paymentStatus,
       paidAt: paidAt,
       invoicePdfUrl: (json['invoice_pdf_url'] as String?)?.trim(),
+      offsetAmount: offsetAmount >= 0 ? offsetAmount : 0,
+      offsetRequestId:
+          offsetReqId != null && offsetReqId.isNotEmpty ? offsetReqId : null,
+      offsetAppliedAt: offsetAppliedAt,
     );
   }
 }
@@ -92,7 +118,7 @@ class BillingSnapshotModel {
 /// [OwnerInvestmentDashboard].
 final ownerBillingSnapshotsProvider =
     FutureProvider<List<BillingSnapshotModel>>((ref) async {
-  final profileId = ref.watch(authNotifierProvider).state.profileId;
+  final profileId = ref.watch(effectiveProfileIdProvider);
   final tenantId = ref.watch(authNotifierProvider).state.tenantId;
   if (profileId == null || profileId.isEmpty || tenantId == null || tenantId.isEmpty) {
     return [];
@@ -121,7 +147,7 @@ final ownerBillingSnapshotsProvider =
   final snapshotsRes = await SupabaseService.client
       .from('billing_snapshots')
       .select(
-        'id, tenant_id, client_id, billing_period, snapshot_data, locked_at, locked_by, payment_status, paid_at, invoice_pdf_url',
+        'id, tenant_id, client_id, billing_period, snapshot_data, locked_at, locked_by, payment_status, paid_at, invoice_pdf_url, offset_amount, offset_request_id, offset_applied_at',
       )
       .inFilter('client_id', clientIds)
       .order('billing_period', ascending: false);

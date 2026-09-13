@@ -4,11 +4,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/auth/owner_view_impersonation_providers.dart';
 import 'package:falconest/features/owner/models/owner_cash_transit_settlement.dart';
 import 'package:falconest/features/owner/providers/owner_cash_providers.dart';
 import 'package:falconest/features/owner/repositories/owner_cash_disposition_repository.dart';
 import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/features/owner/utils/owner_vault_pickup_picker.dart';
+import 'package:falconest/features/owner/widgets/owner_read_only_gate.dart';
 
 /// Modální formulář: majitel zvolí typ dispozice, settlement řádek, částku a poznámku pro agenturu.
 ///
@@ -22,7 +24,8 @@ class OwnerCashDispositionDialog extends ConsumerStatefulWidget {
 }
 
 /// Otevře dialog nad aktuálním kontextem (musí být pod [ProviderScope]).
-Future<void> showOwnerCashDispositionDialog(BuildContext context) {
+Future<void> showOwnerCashDispositionDialog(BuildContext context, WidgetRef ref) {
+  if (isOwnerPortalReadOnly(ref)) return Future.value();
   return showDialog<void>(
     context: context,
     builder: (ctx) => const OwnerCashDispositionDialog(),
@@ -64,7 +67,7 @@ class _OwnerCashDispositionDialogState extends ConsumerState<OwnerCashDispositio
       _amountController.text = '';
       return;
     }
-    _amountController.text = _formatAmount(s.amount);
+    _amountController.text = _formatAmount(s.amountForDisposition);
     _amountErrorKey = null;
   }
 
@@ -73,14 +76,25 @@ class _OwnerCashDispositionDialogState extends ConsumerState<OwnerCashDispositio
     return v.toStringAsFixed(2);
   }
 
-  /// Lidský popis řádku settlementu v dropdownu – **jen termín pobytu**, žádné UUID ani částka v řádku
-  /// (částku má majitel v poli částky pod výběrem).
+  /// Lidský popis řádku settlementu v dropdownu – termín pobytu a volitelně jméno hosta.
+  ///
+  /// Vylepšení UX: Přidání jména hosta k datům pobytu pro lepší orientaci majitele.
   String _settlementDropdownLabel(BuildContext context, OwnerCashTransitSettlement e) {
     final locale = context.locale.toString();
     final start = e.reservationStayStart;
     final end = e.reservationStayEnd;
     if (start != null && end != null) {
       final df = DateFormat('d.M.', locale);
+      final guest = e.guestName?.trim();
+      if (guest != null && guest.isNotEmpty) {
+        return 'owner.cash_disposition_settlement_option_stay_dates_guest'.tr(
+          namedArgs: {
+            'from': df.format(start),
+            'to': df.format(end),
+            'guest': guest,
+          },
+        );
+      }
       return 'owner.cash_disposition_settlement_option_stay_dates_only'.tr(
         namedArgs: {
           'from': df.format(start),
@@ -90,7 +104,7 @@ class _OwnerCashDispositionDialogState extends ConsumerState<OwnerCashDispositio
     }
     return 'owner.cash_disposition_settlement_option_fallback'.tr(
       namedArgs: {
-        'amount': _formatAmount(e.amount),
+        'amount': _formatAmount(e.amountForDisposition),
         'currency': e.currency,
       },
     );
@@ -124,7 +138,7 @@ class _OwnerCashDispositionDialogState extends ConsumerState<OwnerCashDispositio
   Future<void> _submit(double maxAmount) async {
     final auth = ref.read(authNotifierProvider);
     final tenantId = auth.tenantIdForData;
-    final profileId = auth.state.profileId;
+    final profileId = ref.read(effectiveProfileIdProvider);
     final settlement = _selectedSettlement;
 
     if (tenantId == null || tenantId.isEmpty || profileId == null || profileId.isEmpty || settlement == null) {
@@ -236,7 +250,7 @@ class _OwnerCashDispositionDialogState extends ConsumerState<OwnerCashDispositio
               });
             }
 
-            final maxAmount = displayRow.amount;
+            final maxAmount = displayRow.amountForDisposition;
             final cur = displayRow.currency;
 
             return Column(

@@ -20,14 +20,12 @@ final currentMonthReservationsProvider =
     return;
   }
 
-  final apartments = await ref.watch(apartmentsFullListProvider.future);
-  final apartmentIds = apartments.map((a) => a.id).where((id) => id.isNotEmpty).toList();
+  final nameMap = await ref.watch(apartmentsNameByIdLiteProvider.future);
+  final apartmentIds = nameMap.keys.where((id) => id.isNotEmpty).toList();
   if (apartmentIds.isEmpty) {
     yield [];
     return;
   }
-
-  final nameMap = {for (final a in apartments) a.id: a.name};
 
   await for (final rawList in AdminReservationsRepository.instance
       .watchReservationsOverlappingCurrentMonth(apartmentIds, tenantId)) {
@@ -57,14 +55,12 @@ final apartmentStatusContextReservationsProvider =
     return;
   }
 
-  final apartments = await ref.watch(apartmentsFullListProvider.future);
-  final apartmentIds = apartments.map((a) => a.id).where((id) => id.isNotEmpty).toList();
+  final nameMap = await ref.watch(apartmentsNameByIdLiteProvider.future);
+  final apartmentIds = nameMap.keys.where((id) => id.isNotEmpty).toList();
   if (apartmentIds.isEmpty) {
     yield [];
     return;
   }
-
-  final nameMap = {for (final a in apartments) a.id: a.name};
 
   await for (final rawList in AdminReservationsRepository.instance
       .watchReservationsForApartmentStatusContext(apartmentIds, tenantId)) {
@@ -94,14 +90,8 @@ final todayApartmentTasksProvider = StreamProvider<List<TaskRow>>((ref) async* {
     return;
   }
 
-  final apartments = await ref.watch(apartmentsFullListProvider.future);
-  final team = await ref.watch(teamFullListProvider.future);
-  final apartmentById = {for (final a in apartments) a.id: a.name};
-  final nameByProfileId = <String, String>{};
-  for (final m in team) {
-    final id = m.profileId ?? m.id;
-    if (id.isNotEmpty) nameByProfileId[id] = m.name;
-  }
+  final apartmentById = await ref.watch(apartmentsNameByIdLiteProvider.future);
+  final nameByProfileId = await ref.watch(teamNameByProfileIdLiteProvider.future);
 
   await for (final rawList
       in AdminTasksRepository.instance.watchTasksRawForApartmentStatus(tenantId)) {

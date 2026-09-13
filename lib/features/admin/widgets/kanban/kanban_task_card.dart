@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:falconest/core/theme/app_spacing.dart';
 import 'package:falconest/core/theme/premium_card_decoration.dart';
 import 'package:falconest/core/theme/theme_ext.dart';
+import 'package:falconest/core/widgets/falconest_network_image.dart';
 import 'package:falconest/features/admin/models/task_category_model.dart';
 import 'package:falconest/features/admin/models/task_custom_tag.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
@@ -23,10 +24,10 @@ Future<void> _showGuestSignaturePreview(BuildContext context, String url) async 
       title: Text('admin.task_signature_preview'.tr()),
       content: InteractiveViewer(
         maxScale: 4,
-        child: Image.network(
-          url,
+        child: FalconestNetworkImage(
+          imageUrl: url,
           fit: BoxFit.contain,
-          errorBuilder: (context, error, stackTrace) => Text(
+          errorBuilder: (context, url, error) => Text(
             'common.generic_error_user_friendly'.tr(),
             textAlign: TextAlign.center,
           ),

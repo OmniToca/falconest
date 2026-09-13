@@ -40,6 +40,8 @@ class Tasks extends Table {
   DateTimeColumn get lastUpdated => dateTime()();
 
   TextColumn get metadataJson => text().nullable()();
+  /// JSON z `tasks.title_i18n` (jsonb) – uložené překlady názvu pro exporty; prázdné řádky = null.
+  TextColumn get titleI18nJson => text().nullable()();
   /// JSON z `tasks.unassigned_info` (jsonb) jako text – pro offline kontext nepřiřazeného úkolu.
   TextColumn get unassignedInfo => text().nullable()();
   /// UUID služby z `tasks.service_id` – text kvůli jednoduchosti v SQLite.
@@ -427,7 +429,7 @@ class AppDatabase extends _$AppDatabase {
       : super(executor ?? openFalcoNestDriftConnection());
 
   @override
-  int get schemaVersion => 18;
+  int get schemaVersion => 19;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -524,6 +526,10 @@ class AppDatabase extends _$AppDatabase {
             await migrator.addColumn(apartments, apartments.rentDueDay);
             await migrator.addColumn(apartments, apartments.rentCollectionMode);
             await migrator.addColumn(apartments, apartments.rentTaskAssigneeId);
+          }
+          // PROČ v19: parita s Supabase `tasks.title_i18n` (JSONB překlady názvu úkolu).
+          if (from < 19) {
+            await migrator.addColumn(tasks, tasks.titleI18nJson);
           }
         },
       );

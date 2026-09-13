@@ -19,7 +19,7 @@ class BillingActionService {
   /// [snapshot_data] obsahuje:
   /// - client_name, currency – metadata pro PDF.
   /// - total_to_invoice, total_expenses, final_to_invoice – součty.
-  /// - items – pole úkolů (task_id, title, scheduled_start, completed_at,
+  /// - items – pole úkolů (task_id, title, title_i18n, scheduled_start, completed_at,
   ///   charged_price, payer_type, reservation_id, media_urls,
   ///   assigned_to, assigned_user_ids, requires_photo).
   /// Zmražení zaručuje neměnnost – budoucí změny ceníku neovlivní historická vyúčtování.
@@ -59,6 +59,7 @@ class BillingActionService {
         return <String, dynamic>{
           'task_id': t.taskId,
           'title': t.title,
+          if (t.titleI18n != null && t.titleI18n!.isNotEmpty) 'title_i18n': t.titleI18n,
           'scheduled_start': t.scheduledStart?.toUtc().toIso8601String(),
           'completed_at': t.completedAt?.toUtc().toIso8601String(),
           'charged_price': t.chargedPrice,
@@ -73,6 +74,10 @@ class BillingActionService {
           'assigned_to': t.assignedTo,
           'assigned_user_ids': t.assignedUserIds,
           'requires_photo': t.requiresPhoto,
+          if (t.apartmentId != null && t.apartmentId!.trim().isNotEmpty)
+            'apartment_id': t.apartmentId!.trim(),
+          if (t.apartmentName != null && t.apartmentName!.trim().isNotEmpty)
+            'apartment_name': t.apartmentName!.trim(),
         };
       }).toList();
 

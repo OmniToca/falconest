@@ -27,6 +27,8 @@ class TaskModel {
     this.reservationId,
     this.serviceId,
     this.metadata,
+    /// Překlady názvu úkolu z DB (`title_i18n` JSONB) – např. `{ "translations": { "cs": "…" }, "source_hash": "…" }`.
+    this.titleI18n,
     this.createdBy,
     this.deletedAt,
     this.invoicedAt,
@@ -59,6 +61,7 @@ class TaskModel {
   final String? reservationId;
   final String? serviceId;
   final Map<String, dynamic>? metadata;
+  final Map<String, dynamic>? titleI18n;
   final String? createdBy;
   final DateTime? deletedAt;
   final DateTime? invoicedAt;
@@ -125,6 +128,7 @@ class TaskModel {
       reservationId: optString(json['reservation_id']),
       serviceId: optString(json['service_id']),
       metadata: parseMetadata(json['metadata']),
+      titleI18n: parseMetadata(json['title_i18n']),
       createdBy: optString(json['created_by']),
       deletedAt: parseDateTime(json['deleted_at']),
       invoicedAt: parseDateTime(json['invoiced_at']),
@@ -154,6 +158,7 @@ class TaskModel {
       if (reservationId != null) 'reservation_id': reservationId,
       if (serviceId != null) 'service_id': serviceId,
       if (metadata != null && metadata!.isNotEmpty) 'metadata': metadata,
+      if (titleI18n != null && titleI18n!.isNotEmpty) 'title_i18n': titleI18n,
       if (createdBy != null) 'created_by': createdBy,
       if (deletedAt != null) 'deleted_at': deletedAt!.toIso8601String(),
       if (invoicedAt != null) 'invoiced_at': invoicedAt!.toIso8601String(),
@@ -192,6 +197,7 @@ class TaskModel {
     String? reservationId,
     String? serviceId,
     Map<String, dynamic>? metadata,
+    Map<String, dynamic>? titleI18n,
     String? createdBy,
     DateTime? deletedAt,
     DateTime? invoicedAt,
@@ -218,6 +224,7 @@ class TaskModel {
       reservationId: reservationId ?? this.reservationId,
       serviceId: serviceId ?? this.serviceId,
       metadata: metadata ?? this.metadata,
+      titleI18n: titleI18n ?? this.titleI18n,
       createdBy: createdBy ?? this.createdBy,
       deletedAt: deletedAt ?? this.deletedAt,
       invoicedAt: invoicedAt ?? this.invoicedAt,

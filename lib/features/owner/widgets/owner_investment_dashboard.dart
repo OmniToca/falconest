@@ -16,6 +16,7 @@ import 'package:falconest/features/owner/providers/owner_investment_roi_provider
 import 'package:falconest/features/owner/repositories/owner_apartment_investment_metrics_repository.dart';
 import 'package:falconest/features/owner/repositories/owner_apartment_pnl_repository.dart';
 import 'package:falconest/features/owner/widgets/owner_portal_ui.dart';
+import 'package:falconest/features/owner/widgets/owner_read_only_gate.dart';
 
 /// Parsování částky z pole v majitelském portálu (čárka i tečka jako desetinný oddělovač).
 double? ownerPortalParseAmount(String raw) {
@@ -226,25 +227,27 @@ class _DashboardBody extends ConsumerWidget {
           moneyLabel: moneyLabel,
         ),
         const SizedBox(height: 16),
-        FilledButton.icon(
-          onPressed: () async {
-            final saved = await showDialog<bool>(
-              context: context,
-              builder: (ctx) => _OwnerInvestmentEditDialog(
-                apartmentId: apartmentId,
-                initialPurchase: purchase,
-                initialRenovation: renovation,
-                initialMarket: market,
-                currencyCode: currencyCode,
-              ),
-            );
-            if (saved == true && context.mounted) {
-              ref.invalidate(apartmentInvestmentMetricsProvider(apartmentId));
-              ref.invalidate(ownerInvestmentRoiProvider(apartmentId));
-            }
-          },
-          icon: const Icon(Icons.edit_outlined, size: 20),
-          label: Text('owner.investment_edit_values'.tr()),
+        OwnerReadOnlyGate(
+          child: FilledButton.icon(
+            onPressed: () async {
+              final saved = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => _OwnerInvestmentEditDialog(
+                  apartmentId: apartmentId,
+                  initialPurchase: purchase,
+                  initialRenovation: renovation,
+                  initialMarket: market,
+                  currencyCode: currencyCode,
+                ),
+              );
+              if (saved == true && context.mounted) {
+                ref.invalidate(apartmentInvestmentMetricsProvider(apartmentId));
+                ref.invalidate(ownerInvestmentRoiProvider(apartmentId));
+              }
+            },
+            icon: const Icon(Icons.edit_outlined, size: 20),
+            label: Text('owner.investment_edit_values'.tr()),
+          ),
         ),
         const SizedBox(height: 24),
         Text(
@@ -635,15 +638,17 @@ class _OwnerMonthlyPnlBlockState extends ConsumerState<_OwnerMonthlyPnlBlock> {
                     ),
                   )
                 else
-                  FilledButton(
-                    onPressed: _confirmingRent ? null : _confirmLongTermRentPayment,
-                    child: _confirmingRent
-                        ? const SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : Text('owner.investment_long_term_confirm_transfer'.tr()),
+                  OwnerReadOnlyGate(
+                    child: FilledButton(
+                      onPressed: _confirmingRent ? null : _confirmLongTermRentPayment,
+                      child: _confirmingRent
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Text('owner.investment_long_term_confirm_transfer'.tr()),
+                    ),
                   ),
                 const SizedBox(height: 12),
               ],
@@ -666,15 +671,17 @@ class _OwnerMonthlyPnlBlockState extends ConsumerState<_OwnerMonthlyPnlBlock> {
                 ),
               ),
               const SizedBox(height: 14),
-              FilledButton(
-                onPressed: _saving ? null : _saveMonth,
-                child: _saving
-                    ? const SizedBox(
-                        width: 22,
-                        height: 22,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Text('owner.investment_pnl_save_month'.tr()),
+              OwnerReadOnlyGate(
+                child: FilledButton(
+                  onPressed: _saving ? null : _saveMonth,
+                  child: _saving
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Text('owner.investment_pnl_save_month'.tr()),
+                ),
               ),
             ],
           ),
@@ -711,62 +718,323 @@ class _OwnerMonthlyPnlBlockState extends ConsumerState<_OwnerMonthlyPnlBlock> {
             style: context.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: DataTable(
-              headingRowHeight: 40,
-              dataRowMinHeight: 40,
-              dataRowMaxHeight: 48,
-              columns: [
-                DataColumn(label: Text('owner.investment_pnl_col_month'.tr())),
-                DataColumn(
-                  label: Text('owner.investment_pnl_col_income'.tr()),
-                  numeric: true,
-                ),
-                DataColumn(
-                  label: Text('owner.investment_pnl_col_own_expense'.tr()),
-                  numeric: true,
-                ),
-                DataColumn(
-                  label: Text('owner.investment_pnl_col_agency'.tr()),
-                  numeric: true,
-                ),
-              ],
-              rows: [
-                for (final s in widget.summaries)
-                  DataRow(
-                    cells: [
-                      DataCell(
-                        Text(
-                          DateFormat.yMMM(context.locale.toString()).format(s.month),
-                        ),
-                      ),
-                      DataCell(
-                        Align(
-                          alignment: Alignment.centerRight,
-                          child: Text(widget.moneyLabel(s.ownerIncome)),
-                        ),
-                      ),
-                      DataCell(
-                        Align(
-                          alignment: Alignment.centerRight,
-                          child: Text(widget.moneyLabel(s.ownerExpense)),
-                        ),
-                      ),
-                      DataCell(
-                        Align(
-                          alignment: Alignment.centerRight,
-                          child: Text(widget.moneyLabel(s.agencyCosts)),
-                        ),
-                      ),
-                    ],
-                  ),
-              ],
+          _OwnerPnlHistoryTable(
+            summaries: widget.summaries,
+            moneyLabel: widget.moneyLabel,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// Historie měsíčního P&L – responzivní šířky sloupců (nájem má nejvíc místa).
+class _OwnerPnlHistoryTable extends StatelessWidget {
+  const _OwnerPnlHistoryTable({
+    required this.summaries,
+    required this.moneyLabel,
+  });
+
+  final List<MonthlyPnlSummary> summaries;
+  final String Function(double) moneyLabel;
+
+  // Úprava šířky sloupců pro lepší čitelnost detailů nájmu.
+  static const int _flexMonth = 2;
+  static const int _flexIncome = 3;
+  static const int _flexExpense = 1;
+  static const int _flexAgency = 1;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = context.textTheme;
+    final headerStyle = theme.labelMedium?.copyWith(fontWeight: FontWeight.w600);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _PnlTableRow(
+          flexMonth: _flexMonth,
+          flexIncome: _flexIncome,
+          flexExpense: _flexExpense,
+          flexAgency: _flexAgency,
+          month: Text('owner.investment_pnl_col_month'.tr(), style: headerStyle),
+          income: Text(
+            'owner.investment_pnl_col_income'.tr(),
+            style: headerStyle,
+            textAlign: TextAlign.right,
+          ),
+          expense: Text(
+            'owner.investment_pnl_col_own_expense'.tr(),
+            style: headerStyle,
+            textAlign: TextAlign.right,
+          ),
+          agency: Text(
+            'owner.investment_pnl_col_agency'.tr(),
+            style: headerStyle,
+            textAlign: TextAlign.right,
+          ),
+        ),
+        const Divider(height: 20),
+        for (var i = 0; i < summaries.length; i++) ...[
+          if (i > 0) const Divider(height: 1),
+          _PnlTableRow(
+            flexMonth: _flexMonth,
+            flexIncome: _flexIncome,
+            flexExpense: _flexExpense,
+            flexAgency: _flexAgency,
+            minHeight: 56,
+            month: Text(
+              DateFormat.yMMM(context.locale.toString()).format(summaries[i].month),
+              style: theme.bodyMedium,
+            ),
+            income: _OwnerRentIncomeCell(
+              incomeAmount: summaries[i].ownerIncome,
+              moneyLabel: moneyLabel,
+              rentDepositAmount: summaries[i].rentDepositAmount,
+              plannedCollectionDate: summaries[i].rentPlannedCollectionDate,
+              actualCollectionDate: summaries[i].rentActualCollectionDate,
+              rentBalanceDifference: summaries[i].rentBalanceDifference,
+              rentCoveredFromPreviousPool: summaries[i].rentCoveredFromPreviousPool,
+            ),
+            expense: Text(
+              moneyLabel(summaries[i].ownerExpense),
+              style: theme.bodyMedium,
+              textAlign: TextAlign.right,
+            ),
+            agency: Text(
+              moneyLabel(summaries[i].agencyCosts),
+              style: theme.bodyMedium,
+              textAlign: TextAlign.right,
             ),
           ),
         ],
       ],
     );
+  }
+}
+
+class _PnlTableRow extends StatelessWidget {
+  const _PnlTableRow({
+    required this.flexMonth,
+    required this.flexIncome,
+    required this.flexExpense,
+    required this.flexAgency,
+    required this.month,
+    required this.income,
+    required this.expense,
+    required this.agency,
+    this.minHeight,
+  });
+
+  final int flexMonth;
+  final int flexIncome;
+  final int flexExpense;
+  final int flexAgency;
+  final Widget month;
+  final Widget income;
+  final Widget expense;
+  final Widget agency;
+  final double? minHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(minHeight: minHeight ?? 40),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(flex: flexMonth, child: month),
+          const SizedBox(width: 8),
+          Expanded(
+            flex: flexIncome,
+            child: Align(alignment: Alignment.centerLeft, child: income),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            flex: flexExpense,
+            child: Align(alignment: Alignment.centerRight, child: expense),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            flex: flexAgency,
+            child: Align(alignment: Alignment.centerRight, child: agency),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Sloupec „Příjmy z nájmů“ – částka, datum výběru a stav bilance nájemníka.
+class _OwnerRentIncomeCell extends StatelessWidget {
+  const _OwnerRentIncomeCell({
+    required this.incomeAmount,
+    required this.moneyLabel,
+    this.rentDepositAmount,
+    this.plannedCollectionDate,
+    this.actualCollectionDate,
+    this.rentBalanceDifference,
+    this.rentCoveredFromPreviousPool = false,
+  });
+
+  final double incomeAmount;
+  final String Function(double) moneyLabel;
+
+  /// Kauce z P&L (`description` obsahuje „Kauce“) – jen informativní, mimo bilanci nájmu.
+  final double? rentDepositAmount;
+  final DateTime? plannedCollectionDate;
+  final DateTime? actualCollectionDate;
+  final double? rentBalanceDifference;
+
+  /// FIFO alokoval na měsíc více, než fyzicky přišlo v kalendářním měsíci výběru.
+  final bool rentCoveredFromPreviousPool;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = context.textTheme;
+    final balance = rentBalanceDifference;
+    final timelineLabel = _rentCollectionTimelineLabel(context);
+    final muted = context.colors.onSurfaceVariant.withValues(alpha: 0.85);
+    final deposit = rentDepositAmount;
+
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          moneyLabel(incomeAmount),
+          style: theme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+        ),
+        if (deposit != null && deposit > 0) ...[
+          const SizedBox(height: 3),
+          Text(
+            'owner.pnl_deposit_label'.tr(
+              namedArgs: {'amount': moneyLabel(deposit)},
+            ),
+            style: theme.bodySmall?.copyWith(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: muted,
+            ),
+          ),
+        ],
+        if (timelineLabel != null) ...[
+          const SizedBox(height: 4),
+          timelineLabel,
+        ],
+        if (balance != null) ...[
+          const SizedBox(height: 3),
+          Text(
+            _rentBalanceLabel(balance, moneyLabel),
+            style: theme.labelSmall?.copyWith(
+              fontSize: 11,
+              color: _rentBalanceColor(Theme.of(context).colorScheme, balance),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+        if (rentCoveredFromPreviousPool) ...[
+          const SizedBox(height: 2),
+          Text(
+            'owner.pnl_covered_from_previous'.tr(),
+            style: theme.bodySmall?.copyWith(
+              fontSize: 11,
+              fontStyle: FontStyle.italic,
+              color: muted,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget? _rentCollectionTimelineLabel(BuildContext context) {
+    final locale = context.locale.toString();
+    final nowYear = DateTime.now().year;
+    String fmt(DateTime d) {
+      final local = d.toLocal();
+      if (local.year == nowYear) {
+        return DateFormat('d.M.', locale).format(local);
+      }
+      return DateFormat('d.M.y', locale).format(local);
+    }
+
+    const metaStyle = TextStyle(fontSize: 11);
+    final muted = context.colors.onSurfaceVariant.withValues(alpha: 0.85);
+
+    Widget line(IconData icon, String text) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 12, color: muted),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                text,
+                style: metaStyle.copyWith(color: muted),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final lines = <Widget>[];
+    if (plannedCollectionDate != null) {
+      lines.add(
+        line(
+          Icons.event_outlined,
+          'owner.pnl_planned_date'.tr(
+            namedArgs: {'date': fmt(plannedCollectionDate!)},
+          ),
+        ),
+      );
+    }
+    if (actualCollectionDate != null) {
+      lines.add(
+        line(
+          Icons.check_circle_outline,
+          'owner.pnl_collected_date'.tr(
+            namedArgs: {'date': fmt(actualCollectionDate!)},
+          ),
+        ),
+      );
+    } else if (plannedCollectionDate != null) {
+      lines.add(
+        line(
+          Icons.hourglass_empty_outlined,
+          'owner.pnl_not_collected_yet'.tr(),
+        ),
+      );
+    }
+
+    if (lines.isEmpty) return null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: lines,
+    );
+  }
+
+  static Color _rentBalanceColor(ColorScheme cs, double balance) {
+    if (balance.abs() < 0.009) return Colors.green.shade700;
+    if (balance < 0) return cs.error;
+    return Colors.blue.shade700;
+  }
+
+  static String _rentBalanceLabel(double balance, String Function(double) moneyLabel) {
+    if (balance.abs() < 0.009) {
+      return 'owner.pnl_rent_paid_ok'.tr();
+    }
+    if (balance < 0) {
+      return 'owner.pnl_rent_debt'.tr(namedArgs: {'amount': moneyLabel(-balance)});
+    }
+    return 'owner.pnl_rent_surplus'.tr(namedArgs: {'amount': moneyLabel(balance)});
   }
 }
 

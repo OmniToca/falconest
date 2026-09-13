@@ -1,6 +1,6 @@
 import 'package:easy_localization/easy_localization.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -9,6 +9,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:falconest/core/theme/app_spacing.dart';
 import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/core/widgets/app_empty_state.dart';
+import 'package:falconest/core/widgets/export_i18n_editor_dialog.dart';
+import 'package:falconest/core/widgets/falconest_network_image.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/core/utils/geo_json_point.dart';
@@ -29,6 +31,7 @@ import 'package:falconest/features/admin/providers/apartment_services_options_pr
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/checklist_templates_list_provider.dart';
 import 'package:falconest/features/admin/providers/clients_provider.dart';
+import 'package:falconest/features/admin/widgets/task_external_client_picker.dart';
 import 'package:falconest/features/admin/premium_upsell_dialog.dart';
 import 'package:falconest/features/admin/providers/module_provider.dart';
 import 'package:falconest/features/admin/providers/settlements_provider.dart';
@@ -39,6 +42,8 @@ import 'package:falconest/features/admin/providers/finance_cash_provider.dart';
 import 'package:falconest/features/calendar/providers/planning_calendar_provider.dart';
 import 'package:falconest/features/admin/widgets/admin_entity_cross_links.dart';
 import 'package:falconest/features/admin/models/task_custom_tag.dart';
+import 'package:falconest/features/admin/models/task_form_draft.dart';
+import 'package:falconest/features/admin/widgets/task_draft_from_text_dialog.dart';
 import 'package:falconest/features/admin/widgets/task_checklist_instance_editor_section.dart';
 import 'package:falconest/features/admin/widgets/task_audit_history_section.dart';
 import 'package:falconest/features/admin/widgets/task_custom_tags_editor.dart';
@@ -166,6 +171,7 @@ class AdminTasksScreen extends ConsumerStatefulWidget {
     String? initialReservationId,
     String? initialReservationInfo,
     String? initialClientId,
+    TaskFormDraft? aiPrefill,
   }) {
     showDialog<void>(
       context: context,
@@ -182,6 +188,7 @@ class AdminTasksScreen extends ConsumerStatefulWidget {
         initialReservationId: initialReservationId,
         initialReservationInfo: initialReservationInfo,
         initialClientId: initialClientId,
+        aiPrefill: aiPrefill,
       ),
     );
   }
@@ -451,19 +458,46 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
 
   Future<void> _runGenerateSmartTasks() async {
     setState(() => _isGenerating = true);
+    final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     try {
       final notifier = ref.read(adminTasksProvider.notifier);
-      final count1 = await notifier.generateSmartTasks(
-        getEstimateHoursText: (h) =>
-            'admin.task_estimate_time_hours'.tr(namedArgs: {'hours': '$h'}),
-        getEstimate1HourText: () => 'admin.task_estimate_time_1_hour'.tr(),
-        getEstimateMinutesText: (m) =>
-            'admin.task_estimate_minutes'.tr(namedArgs: {'minutes': '$m'}),
-      );
-      final count2 = await notifier.generateScheduledTasks(
-        getEstimateMinutesText: (m) =>
-            'admin.task_estimate_minutes'.tr(namedArgs: {'minutes': '$m'}),
-      );
+      // PROČ: Dva samostatné try — v logu hned poznáme, zda spadl smart generátor (rezervace) nebo scheduled (údržba).
+      int count1 = 0;
+      try {
+        count1 = await notifier.generateSmartTasks(
+          getEstimateHoursText: (h) =>
+              'admin.task_estimate_time_hours'.tr(namedArgs: {'hours': '$h'}),
+          getEstimate1HourText: () => 'admin.task_estimate_time_1_hour'.tr(),
+          getEstimateMinutesText: (m) =>
+              'admin.task_estimate_minutes'.tr(namedArgs: {'minutes': '$m'}),
+          getGuestUnknownLabel: () => 'admin.dashboard_guest_unknown'.tr(),
+        );
+      } catch (e, st) {
+        AppLogger.error(
+          'AdminTasksScreen: Generovat návrhy — generateSmartTasks selhalo '
+          '(tenantId=$tenantId, web=$kIsWeb)',
+          e,
+          st,
+        );
+        rethrow;
+      }
+      int count2 = 0;
+      try {
+        count2 = await notifier.generateScheduledTasks(
+          getEstimateMinutesText: (m) =>
+              'admin.task_estimate_minutes'.tr(namedArgs: {'minutes': '$m'}),
+          getScheduledMaintenanceSuffix: () =>
+              'admin.task_title_scheduled_maintenance'.tr(),
+        );
+      } catch (e, st) {
+        AppLogger.error(
+          'AdminTasksScreen: Generovat návrhy — generateScheduledTasks selhalo '
+          '(tenantId=$tenantId, web=$kIsWeb)',
+          e,
+          st,
+        );
+        rethrow;
+      }
       final totalCount = count1 + count2;
       if (!mounted) return;
       ref.invalidate(adminTasksProvider);
@@ -483,7 +517,15 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
           behavior: SnackBarBehavior.floating,
         ),
       );
-    } catch (e) {
+    } catch (e, st) {
+      // PROČ: Uživatel vidí jen obecný snackbar; skutečná příčina (PostgREST RLS, chybějící sloupec, timeout)
+      // musí být v konzoli pro podporu a QA — viz AppLogger (debugPrint).
+      AppLogger.error(
+        'AdminTasksScreen: Generovat návrhy (max 50) — celý tok selhal '
+        '(tenantId=$tenantId, web=$kIsWeb, error=${e.runtimeType}: $e)',
+        e,
+        st,
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -672,6 +714,7 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
                       _searchController.text.trim().toLowerCase();
                 },
                 onAdd: () => _showAddDialog(context, ref),
+                onAddFromText: () => _showAddFromTextDialog(context, ref),
                 onGenerate: _runGenerateSmartTasks,
                 isGenerating: _isGenerating,
                 automaticTasksActive: automaticTasksActive,
@@ -776,6 +819,16 @@ class _AdminTasksScreenState extends ConsumerState<AdminTasksScreen> {
 
   void _showAddDialog(BuildContext context, WidgetRef ref) {
     AdminTasksScreen.showAddTaskDialog(context, ref);
+  }
+
+  /// Human-in-the-loop: AI předvyplní formulář z WhatsApp textu; uložení a validace zůstává ruční.
+  Future<void> _showAddFromTextDialog(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    final draft = await TaskDraftFromTextDialog.show(context);
+    if (!context.mounted || draft == null) return;
+    AdminTasksScreen.showAddTaskDialog(context, ref, aiPrefill: draft);
   }
 
   void _showEditDialog(BuildContext context, WidgetRef ref, TaskRow task) {
@@ -888,6 +941,7 @@ class _TopActionBar extends StatelessWidget {
     required this.searchController,
     required this.onSearchChanged,
     required this.onAdd,
+    required this.onAddFromText,
     required this.onGenerate,
     required this.isGenerating,
     required this.automaticTasksActive,
@@ -899,6 +953,7 @@ class _TopActionBar extends StatelessWidget {
   final TextEditingController searchController;
   final VoidCallback onSearchChanged;
   final VoidCallback onAdd;
+  final VoidCallback onAddFromText;
   final Future<void> Function() onGenerate;
   final bool isGenerating;
 
@@ -963,6 +1018,12 @@ class _TopActionBar extends StatelessWidget {
             automaticTasksActive: automaticTasksActive,
             onGenerate: onGenerate,
             onPremiumLockedTap: onPremiumLockedTap,
+          ),
+          SizedBox(width: AppSpacing.sm),
+          OutlinedButton.icon(
+            onPressed: onAddFromText,
+            icon: const Icon(Icons.content_paste_go, size: 20),
+            label: Text('admin.task_draft_from_text'.tr()),
           ),
           SizedBox(width: AppSpacing.sm),
           FilledButton.icon(
@@ -1341,6 +1402,7 @@ class _AddTaskDialog extends ConsumerStatefulWidget {
     this.initialReservationId,
     this.initialReservationInfo,
     this.initialClientId,
+    this.aiPrefill,
   });
 
   final WidgetRef ref;
@@ -1357,6 +1419,9 @@ class _AddTaskDialog extends ConsumerStatefulWidget {
 
   /// Z kontextu Detailu klienta – předvybrání klienta u externí služby.
   final String? initialClientId;
+
+  /// Návrh z AI parsování WhatsApp textu – pouze předvyplnění, ukládá dispečer ručně.
+  final TaskFormDraft? aiPrefill;
 
   @override
   ConsumerState<_AddTaskDialog> createState() => _AddTaskDialogState();
@@ -1596,6 +1661,45 @@ class _ClientAddressQuickSelect extends ConsumerWidget {
 /// Typ úkolu: vázáno na apartmán (výchozí) nebo externí služba bez bytu.
 enum _TaskFormMode { apartmentBound, externalService }
 
+/// Varovný pruh po AI prefill – upozorní dispečera na nejisté párování apartmánu.
+class _AiPrefillHintBanner extends StatelessWidget {
+  const _AiPrefillHintBanner({required this.draft});
+
+  final TaskFormDraft draft;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: AppSpacing.md),
+      padding: const EdgeInsets.all(AppSpacing.sm),
+      decoration: BoxDecoration(
+        color: context.customColors.warningSubtle,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: context.customColors.warning),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.info_outline,
+            size: 20,
+            color: context.customColors.warning,
+          ),
+          SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Text(
+              draft.hasLowConfidenceApartmentMatch
+                  ? 'admin.task_draft_form_review_apartment'.tr()
+                  : 'admin.task_draft_form_review_generic'.tr(),
+              style: context.textTheme.bodySmall,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
   final _formKey = GlobalKey<FormState>();
   final _titleController = TextEditingController();
@@ -1642,6 +1746,103 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
       _taskMode = _TaskFormMode.externalService;
       _selectedClientId = widget.initialClientId;
     }
+    // AI prefill až po prvním frame – controllery a setState jsou připravené.
+    if (widget.aiPrefill != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _applyAiPrefill(widget.aiPrefill!);
+      });
+    }
+  }
+
+  /// Aplikuje [TaskFormDraft] do lokálního stavu formuláře – neukládá do DB.
+  ///
+  /// PROČ post-frame: [manualTaskServicePriceProvider] listener reaguje na apartmán/službu;
+  /// controllery musí být nastaveny v jednom setState cyklu. WhatsApp cena má přednost
+  /// před katalogem – proto [_aiOverridePrice] + dodatečný delay přepisu.
+  void _applyAiPrefill(TaskFormDraft draft) {
+    setState(() {
+      switch (draft.taskMode) {
+        case TaskFormDraftMode.apartmentBound:
+          _taskMode = _TaskFormMode.apartmentBound;
+          break;
+        case TaskFormDraftMode.externalService:
+          _taskMode = _TaskFormMode.externalService;
+          break;
+        case TaskFormDraftMode.unknown:
+          break;
+      }
+
+      final title = draft.title?.trim();
+      if (title != null && title.isNotEmpty) {
+        _titleController.text = title;
+      }
+
+      final desc = draft.description?.trim();
+      if (desc != null && desc.isNotEmpty) {
+        _descriptionController.text = desc;
+      }
+
+      if (draft.scheduledStart != null) {
+        // Wall-clock z AI (11:15) – nikdy nevolat toLocal() na UTC (posun +1/+2h).
+        final dt = draft.scheduledStart!;
+        final wall = DateTime(dt.year, dt.month, dt.day, dt.hour, dt.minute);
+        _scheduledStartController.text = _formatDateTime(wall);
+      }
+
+      if (draft.durationMinutes != null && draft.durationMinutes! > 0) {
+        _durationMinutesController.text = '${draft.durationMinutes}';
+      }
+
+      final aptId = draft.apartmentId?.trim();
+      if (aptId != null && aptId.isNotEmpty) {
+        _selectedApartmentId = aptId;
+      }
+
+      final clientId = draft.clientId?.trim();
+      if (clientId != null && clientId.isNotEmpty) {
+        _selectedClientId = clientId;
+      }
+
+      // PROČ: Bez spárovaného serviceId nesmíme auto-vybrat první položku katalogu
+      // (typicky „Základní úklid“) – u transferů/letiště by to bylo špatně.
+      final serviceId = draft.serviceId?.trim();
+      if (serviceId != null && serviceId.isNotEmpty) {
+        _selectedServiceId = serviceId;
+      } else {
+        _selectedServiceId = null;
+      }
+
+      final loc = draft.customLocationHint?.trim();
+      if (loc != null && loc.isNotEmpty) {
+        _customLocationController.text = loc;
+      }
+
+      if (draft.isCashPayment != null) {
+        _staffCollectsCash = draft.isCashPayment!;
+      }
+
+      if (draft.price != null && draft.price! > 0) {
+        _aiOverridePrice = draft.price;
+        final formatted = draft.price!.toStringAsFixed(2);
+        _priceController.text = formatted;
+        _servicePriceController.text = formatted;
+      }
+    });
+
+    // Katalogový listener může doběhnout až po setState – WhatsApp cena přepíše default.
+    if (draft.price != null && draft.price! > 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Future<void>.delayed(const Duration(milliseconds: 400), () {
+          if (!mounted) return;
+          final formatted = draft.price!.toStringAsFixed(2);
+          setState(() {
+            _aiOverridePrice = draft.price;
+            _priceController.text = formatted;
+            _servicePriceController.text = formatted;
+          });
+        });
+      });
+    }
   }
 
   String? _selectedAssignedTo;
@@ -1654,6 +1855,9 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
 
   /// Způsob platby u externí služby: true = vybere personál v hotovosti, false = faktura/zaplaceno předem.
   bool _staffCollectsCash = false;
+
+  /// Cena z AI/WhatsApp – má přednost před auto-fillem z [manualTaskServicePriceProvider].
+  double? _aiOverridePrice;
   String _status = _systemStatuses.first;
   bool _isSaving = false;
   /// Probíhá geokódování textu lokace (externí úkol) přes Nominatim.
@@ -1664,6 +1868,9 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
 
   /// Volitelná šablona checklistu – po uložení se zkopíruje do instance úkolu (null = bez checklistu).
   String? _selectedChecklistTemplateId;
+
+  /// Ruční překlady titulku pro PDF (`title_i18n`); po potvrzení dialogu se pošlou v INSERTu (blokuje přepsání snapshotem z katalogu i když je mapa prázdná).
+  Map<String, dynamic>? _titleI18nDraft;
 
   @override
   void dispose() {
@@ -1845,13 +2052,16 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
       // PROČ: Jednotný odhad pro reporty a mobilní odpočet – musí odpovídat skutečnému intervalu v DB.
       metadata['estimated_minutes'] = durationMinutes;
 
-      // PROČ: Externí služba – metadata.amount_to_collect. Mobilní aplikace zobrazí personálu
-      // částku k vybrání. Pokud dispečer zvolil „Faktura/Zaplaceno předem“, amount_to_collect nenastavujeme.
-      if (isExternal && _staffCollectsCash) {
+      // PROČ: Externí služba – hotovost u personálu (amount_to_collect) + vždy service_price pro fakturaci.
+      if (isExternal) {
         final priceStr = _priceController.text.trim();
         final price = double.tryParse(priceStr);
+        // Zápis manuálně zadané ceny pro externí službu do metadat kvůli fakturaci.
         if (price != null && price > 0) {
-          metadata['amount_to_collect'] = price;
+          metadata['service_price'] = price;
+          if (_staffCollectsCash) {
+            metadata['amount_to_collect'] = price;
+          }
         }
       }
 
@@ -1939,6 +2149,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
         if (service != null) 'service_id': service.id,
         'metadata': metadata,
         if (mediaUrls.isNotEmpty) 'media_urls': mediaUrls,
+        if (_titleI18nDraft != null) 'title_i18n': _titleI18nDraft,
       };
       if (isExternal) {
         final g = GeoJsonPoint.tryParseSmartGpsText(_externalGpsController.text);
@@ -2010,6 +2221,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
     final catalogAsync = ref.watch(tenantServicesProvider);
 
     // Historical pricing – auto-fill ceny při výběru bytu a služby. Provider reaguje na oba parametry.
+    // PROČ: WhatsApp/AI cena (_aiOverridePrice) má přednost před katalogem.
     ref.listen(
       manualTaskServicePriceProvider((
         _selectedApartmentId ?? '',
@@ -2018,6 +2230,12 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
       (prev, next) {
         next.whenData((price) {
           if (!mounted) return;
+          if (_aiOverridePrice != null && _aiOverridePrice! > 0) {
+            final formatted = _aiOverridePrice!.toStringAsFixed(2);
+            _servicePriceController.text = formatted;
+            _priceController.text = formatted;
+            return;
+          }
           if (price != null && price > 0) {
             _servicePriceController.text = price.toStringAsFixed(2);
           }
@@ -2035,6 +2253,10 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              if (widget.aiPrefill != null &&
+                  (widget.aiPrefill!.hasLowConfidenceApartmentMatch ||
+                      widget.aiPrefill!.warnings.isNotEmpty))
+                _AiPrefillHintBanner(draft: widget.aiPrefill!),
               _AddTaskContextBar(
                 apartmentsAsync: apartmentsAsync,
                 selectedApartmentId: _selectedApartmentId,
@@ -2073,6 +2295,19 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                   prefixIcon: const Icon(Icons.label_outline),
                   labelText: 'admin.task_field_title'.tr(),
                   border: OutlineInputBorder(),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.translate_outlined),
+                    tooltip: 'export_i18n.tooltip_edit'.tr(),
+                    onPressed: () async {
+                      final next = await ExportI18nEditorDialog.show(
+                        context,
+                        initial: _titleI18nDraft,
+                      );
+                      if (next != null && mounted) {
+                        setState(() => _titleI18nDraft = next);
+                      }
+                    },
+                  ),
                 ),
                 validator: (v) {
                   if (v == null || v.trim().isEmpty) {
@@ -2158,15 +2393,23 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
               const SizedBox(height: 12),
               catalogAsync.when(
                 data: (catalog) {
+                  // PROČ: U externí služby (AI i ručně) nesmí auto-výběr první položky
+                  // (typicky úklid) přepsat transfer/letiště – dispečer vybere službu sám.
+                  final allowEmptyService =
+                      _taskMode == _TaskFormMode.externalService ||
+                      widget.aiPrefill != null;
                   // PROČ: Výběr služby (ne jen typu) umožňuje předat requires_photo do metadata.
                   final items = _buildServiceDropdownItems(
                     catalog,
                     _selectedServiceId,
+                    includeNone: allowEmptyService,
                   );
                   final validValue =
                       items.any((i) => i.value == _selectedServiceId)
                       ? _selectedServiceId
-                      : (items.isNotEmpty ? items.first.value : null);
+                      : (allowEmptyService
+                          ? null
+                          : (items.isNotEmpty ? items.first.value : null));
                   if (validValue != _selectedServiceId) {
                     WidgetsBinding.instance.addPostFrameCallback(
                       (_) => setState(() => _selectedServiceId = validValue),
@@ -2256,6 +2499,13 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                   children: [
                     apartmentsAsync.when(
                       data: (apartments) {
+                        // Case-insensitive abecední řazení apartmánů pro lepší orientaci v roletce.
+                        final sortedApartments = List<ApartmentRow>.from(apartments)
+                          ..sort(
+                            (a, b) => a.name
+                                .toLowerCase()
+                                .compareTo(b.name.toLowerCase()),
+                          );
                         return DropdownButtonFormField<String?>(
                           initialValue: _selectedApartmentId,
                           decoration: InputDecoration(
@@ -2271,7 +2521,7 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                                     .tr(),
                               ),
                             ),
-                            ...apartments.map(
+                            ...sortedApartments.map(
                               (a) => DropdownMenuItem<String?>(
                                 value: a.id,
                                 child: Text(a.name),
@@ -2306,70 +2556,10 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                   ],
                 ),
               if (_taskMode == _TaskFormMode.externalService) ...[
-                ref
-                    .watch(clientsFullListProvider)
-                    .when(
-                      data: (allClients) {
-                        // PROČ: Externí služba – zobrazujeme POUZE agency a external. Majitelé
-                        // nemají smysl u úkolu bez bytu (fakturace jde na klienta, ne na majitele).
-                        final clients = allClients.where((c) {
-                          final t = c.clientType?.toLowerCase() ?? '';
-                          return t == 'agency' || t == 'external';
-                        }).toList();
-                        if (clients.isEmpty) {
-                          return Padding(
-                            padding: const EdgeInsets.all(AppSpacing.sm),
-                            child: Text(
-                              'tasks.no_clients_hint'.tr(),
-                              style: context.textTheme.bodyMedium?.copyWith(
-                                color: context.customColors.warning,
-                              ),
-                            ),
-                          );
-                        }
-                        final validValue =
-                            clients.any((c) => c.id == _selectedClientId)
-                            ? _selectedClientId
-                            : null;
-                        if (validValue != _selectedClientId) {
-                          WidgetsBinding.instance.addPostFrameCallback(
-                            (_) =>
-                                setState(() => _selectedClientId = validValue),
-                          );
-                        }
-                        return DropdownButtonFormField<String?>(
-                          initialValue: validValue,
-                          decoration: InputDecoration(
-                            prefixIcon: const Icon(Icons.person),
-                            labelText: 'tasks.form_client'.tr(),
-                            border: OutlineInputBorder(),
-                          ),
-                          items: [
-                            DropdownMenuItem<String?>(
-                              value: null,
-                              child: Text(
-                                'tasks.validation_client_required'.tr(),
-                              ),
-                            ),
-                            ...clients.map(
-                              (c) => DropdownMenuItem<String?>(
-                                value: c.id,
-                                child: Text(c.name),
-                              ),
-                            ),
-                          ],
-                          onChanged: (v) =>
-                              setState(() => _selectedClientId = v),
-                          validator: (v) => (v == null || v.isEmpty)
-                              ? 'tasks.validation_client_required'.tr()
-                              : null,
-                        );
-                      },
-                      loading: () => const LinearProgressIndicator(),
-                      error: (e, _) => Text(
-                        'common.generic_error_user_friendly'.tr(),
-                      ),
-                    ),
+                TaskExternalClientPicker(
+                  selectedClientId: _selectedClientId,
+                  onChanged: (id) => setState(() => _selectedClientId = id),
+                ),
                 const SizedBox(height: 12),
                 _TaskAddressQuickSelectWrapper(
                   selectedClientId: _selectedClientId,
@@ -2568,6 +2758,11 @@ class _AddTaskDialogState extends ConsumerState<_AddTaskDialog> {
                     seenValues.add(value);
                     unique.add(m);
                   }
+                  // Case-insensitive abecední řazení personálu pro lepší orientaci v roletce.
+                  unique.sort(
+                    (a, b) =>
+                        a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+                  );
                   // PROČ stejná logika jako v Edit dialogu: sjednocení UX – v roletce „Přiřadit osobě“ zobrazujeme i pracovní pozice (role).
                   final pendingLabel = 'admin.team_status_pending'.tr();
                   final items = <DropdownMenuItem<String?>>[
@@ -3234,8 +3429,8 @@ class _TaskMediaSection extends StatelessWidget {
                       WalletDetailModal.showReceiptDialog(context, url),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(8),
-                    child: Image.network(
-                      url,
+                    child: FalconestNetworkImage(
+                      imageUrl: url,
                       width: 100,
                       height: 100,
                       fit: BoxFit.cover,
@@ -3325,6 +3520,9 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
   _taskChecklistEditorKey =
       GlobalKey<TaskChecklistInstanceEditorSectionState>();
 
+  /// Ruční úprava `title_i18n`; `null` = nepřepisovat při UPDATE (ponechat DB), jinak nová mapa včetně `{}`.
+  Map<String, dynamic>? _titleI18nDraft;
+
   /// Externí úkol = bez apartment_id (apartmentId prázdné).
   bool get _isExternal => widget.task.apartmentId.trim().isEmpty;
 
@@ -3362,11 +3560,24 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
     _status = normalizeToSystemStatus(t.status);
     _lastCommunicationTemplateIdUi = t.lastCommunicationTemplateId;
     _lastCommunicationAtUi = t.lastCommunicationAt;
-    // amount_to_collect v metadata znamená, že personál vybírá hotovost.
+    // amount_to_collect = hotovost u personálu; service_price = částka k fakturaci (sdílené UI pole).
     final amt = t.metadata?['amount_to_collect'];
-    _staffCollectsCash = amt != null && (amt is num && amt > 0);
+    final svcPrice = t.metadata?['service_price'];
+    final payerType = (t.metadata?['payer_type'] as String?)?.trim().toLowerCase();
+    _staffCollectsCash =
+        payerType == 'guest' || (amt != null && amt is num && amt > 0);
+    double? priceForField;
+    if (_staffCollectsCash && amt is num && amt > 0) {
+      priceForField = amt.toDouble();
+    } else if (svcPrice is num && svcPrice > 0) {
+      priceForField = svcPrice.toDouble();
+    } else if (svcPrice != null) {
+      priceForField = double.tryParse(svcPrice.toString());
+    }
     _priceController = TextEditingController(
-      text: _staffCollectsCash && amt is num ? amt.toString() : '',
+      text: priceForField != null && priceForField > 0
+          ? priceForField.toString()
+          : '',
     );
     // PROČ: Číslo letu z metadat – řidič získá proklik na FlightRadar24.
     final fn = t.metadata?['flight_number'];
@@ -3563,16 +3774,19 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
         mergedMetadata.remove('requires_photo');
       }
 
-      // PROČ: Externí úkol – metadata.amount_to_collect. Při Faktura/Zaplaceno předem amount_to_collect nenastavujeme.
+      // PROČ: Externí úkol – service_price pro fakturaci; amount_to_collect jen při výběru hotovosti.
       if (_isExternal) {
-        if (_staffCollectsCash) {
-          final price = double.tryParse(_priceController.text.trim());
-          if (price != null && price > 0) {
+        final price = double.tryParse(_priceController.text.trim());
+        // Zápis manuálně zadané ceny pro externí službu do metadat kvůli fakturaci.
+        if (price != null && price > 0) {
+          mergedMetadata['service_price'] = price;
+          if (_staffCollectsCash) {
             mergedMetadata['amount_to_collect'] = price;
           } else {
             mergedMetadata.remove('amount_to_collect');
           }
         } else {
+          mergedMetadata.remove('service_price');
           mergedMetadata.remove('amount_to_collect');
         }
       }
@@ -3723,6 +3937,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
         'metadata': mergedMetadata,
         'service_id': service?.id,
         'media_urls': mediaUrls,
+        if (_titleI18nDraft != null) 'title_i18n': _titleI18nDraft,
       };
       if (_isExternal) {
         final g = GeoJsonPoint.tryParseSmartGpsText(_externalGpsController.text);
@@ -4103,6 +4318,21 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                   prefixIcon: const Icon(Icons.label_outline),
                   labelText: 'admin.task_field_title'.tr(),
                   border: OutlineInputBorder(),
+                  suffixIcon: isReadOnly
+                      ? null
+                      : IconButton(
+                          icon: const Icon(Icons.translate_outlined),
+                          tooltip: 'export_i18n.tooltip_edit'.tr(),
+                          onPressed: () async {
+                            final next = await ExportI18nEditorDialog.show(
+                              context,
+                              initial: _titleI18nDraft ?? widget.task.titleI18n,
+                            );
+                            if (next != null && mounted) {
+                              setState(() => _titleI18nDraft = next);
+                            }
+                          },
+                        ),
                 ),
                 validator: (v) {
                   if (v == null || v.trim().isEmpty) {
@@ -4240,10 +4470,19 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
               if (!_isExternal)
                 apartmentsAsync.when(
                   data: (apartments) {
+                    // Case-insensitive abecední řazení apartmánů pro lepší orientaci v roletce.
+                    final sortedApartments = List<ApartmentRow>.from(apartments)
+                      ..sort(
+                        (a, b) => a.name
+                            .toLowerCase()
+                            .compareTo(b.name.toLowerCase()),
+                      );
                     final validId =
-                        apartments.any((a) => a.id == _selectedApartmentId)
+                        sortedApartments.any((a) => a.id == _selectedApartmentId)
                         ? _selectedApartmentId
-                        : (apartments.isNotEmpty ? apartments.first.id : null);
+                        : (sortedApartments.isNotEmpty
+                              ? sortedApartments.first.id
+                              : null);
                     return DropdownButtonFormField<String?>(
                       initialValue: validId,
                       decoration: InputDecoration(
@@ -4258,7 +4497,7 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                             'admin.validation_apartment_required_short'.tr(),
                           ),
                         ),
-                        ...apartments.map(
+                        ...sortedApartments.map(
                           (a) => DropdownMenuItem<String?>(
                             value: a.id,
                             child: Text(a.name),
@@ -4278,85 +4517,12 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                   error: (e, st) => Text('admin.apartments_load_error'.tr()),
                 ),
               if (_isExternal) ...[
-                ref
-                    .watch(clientsFullListProvider)
-                    .when(
-                      data: (allClients) {
-                        // PROČ: Externí úkol – zobrazujeme POUZE agency a external (stejná logika jako Add Task).
-                        final clients = allClients.where((c) {
-                          final t = c.clientType?.toLowerCase() ?? '';
-                          return t == 'agency' || t == 'external';
-                        }).toList();
-                        if (clients.isEmpty) {
-                          return Padding(
-                            padding: const EdgeInsets.all(AppSpacing.sm),
-                            child: Text(
-                              'tasks.no_clients_hint'.tr(),
-                              style: context.textTheme.bodyMedium?.copyWith(
-                                color: context.customColors.warning,
-                              ),
-                            ),
-                          );
-                        }
-                        // Sirotčí klient: aktuální ID není v seznamu (smazaný klient) – nepřepisujeme na null,
-                        // aby dropdown zobrazil položku „Neplatný klient (ID: …)“ a uživatel mohl vybrat nového.
-                        final isOrphan =
-                            _selectedClientId != null &&
-                            _selectedClientId!.trim().isNotEmpty &&
-                            !clients.any((c) => c.id == _selectedClientId);
-                        final dropdownValue = isOrphan
-                            ? _selectedClientId
-                            : (clients.any((c) => c.id == _selectedClientId)
-                                  ? _selectedClientId
-                                  : null);
-                        final orphanShortId =
-                            _selectedClientId != null &&
-                                _selectedClientId!.length > 8
-                            ? _selectedClientId!.substring(0, 8)
-                            : (_selectedClientId ?? '');
-                        return DropdownButtonFormField<String?>(
-                          initialValue: dropdownValue,
-                          decoration: InputDecoration(
-                            prefixIcon: const Icon(Icons.person),
-                            labelText: 'tasks.form_client'.tr(),
-                            border: OutlineInputBorder(),
-                          ),
-                          items: [
-                            DropdownMenuItem<String?>(
-                              value: null,
-                              child: Text(
-                                'tasks.validation_client_required'.tr(),
-                              ),
-                            ),
-                            if (isOrphan)
-                              DropdownMenuItem<String?>(
-                                value: _selectedClientId,
-                                child: Text(
-                                  'tasks.client_orphan_label'.tr(
-                                    namedArgs: {'id': orphanShortId},
-                                  ),
-                                ),
-                              ),
-                            ...clients.map(
-                              (c) => DropdownMenuItem<String?>(
-                                value: c.id,
-                                child: Text(c.name),
-                              ),
-                            ),
-                          ],
-                          onChanged: isReassignEnabled
-                              ? (v) => setState(() => _selectedClientId = v)
-                              : null,
-                          validator: (v) => (v == null || v.isEmpty)
-                              ? 'tasks.validation_client_required'.tr()
-                              : null,
-                        );
-                      },
-                      loading: () => const LinearProgressIndicator(),
-                      error: (e, _) => Text(
-                        'common.generic_error_user_friendly'.tr(),
-                      ),
-                    ),
+                TaskExternalClientPicker(
+                  selectedClientId: _selectedClientId,
+                  onChanged: (id) => setState(() => _selectedClientId = id),
+                  enabled: isReassignEnabled,
+                  allowOrphanLabel: true,
+                ),
                 const SizedBox(height: 12),
                 _TaskAddressQuickSelectWrapper(
                   selectedClientId: _selectedClientId,
@@ -4570,7 +4736,13 @@ class _EditTaskDialogState extends ConsumerState<_EditTaskDialog> {
                       child: Text('admin.tasks_assign_nobody'.tr()),
                     ),
                   );
-                  for (final m in staffMembers) {
+                  // Case-insensitive abecední řazení personálu pro lepší orientaci v roletce.
+                  final sortedStaffMembers = List<TeamMember>.from(staffMembers)
+                    ..sort(
+                      (a, b) =>
+                          a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+                    );
+                  for (final m in sortedStaffMembers) {
                     addProfileItem(
                       m.dropdownId,
                       m.name,

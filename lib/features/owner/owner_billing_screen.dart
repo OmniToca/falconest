@@ -4,21 +4,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/auth/owner_view_impersonation_providers.dart';
 import 'package:falconest/core/providers/tenant_currency_provider.dart';
+import 'package:falconest/core/localization/billing_pdf_label_maps.dart';
 import 'package:falconest/core/services/billing_pdf_service.dart';
+import 'package:falconest/core/widgets/billing_pdf_export_language_dialog.dart';
 import 'package:falconest/core/theme/premium_card_decoration.dart';
 import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/features/admin/providers/finance_billing_provider.dart';
 import 'package:falconest/features/owner/models/owner_cash_disposition_request.dart';
 import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
-import 'package:falconest/core/widgets/billing_payment_status_chip.dart';
+import 'package:falconest/core/widgets/billing_offset_payment_summary.dart';
 import 'package:falconest/features/owner/providers/owner_billing_provider.dart';
 import 'package:falconest/features/owner/providers/owner_cash_providers.dart';
 import 'package:falconest/features/owner/providers/owner_company_expenses_provider.dart';
 import 'package:falconest/features/owner/providers/owner_dashboard_metrics_provider.dart';
 import 'package:falconest/features/owner/repositories/owner_cash_disposition_repository.dart';
 import 'package:falconest/features/owner/utils/owner_vault_pickup_picker.dart';
+import 'package:falconest/features/owner/widgets/billing_offset_proposal_owner_card.dart';
 import 'package:falconest/features/owner/widgets/owner_cash_disposition_dialog.dart';
+import 'package:falconest/features/owner/widgets/owner_read_only_gate.dart';
 import 'package:falconest/features/owner/widgets/owner_portal_ui.dart';
 
 /// Otevře uložené PDF faktury z cloudu (Supabase Storage URL v [invoice_pdf_url]).
@@ -130,53 +135,37 @@ class OwnerBillingScreen extends ConsumerWidget {
     );
   }
 
+  /// On-demand PDF ze snapshotu v Klientské zóně — stejný renderer jako v adminu, včetně výběru jazyka exportu.
+  ///
+  /// **PROČ sdílený dialog + mapy řetězců:** majitel i dispečink musí dostat konzistentní PDF; jazyk exportu je nezávislý na locale UI.
   Future<void> _onDownloadPdf(
     BuildContext context,
     WidgetRef ref,
     BillingSnapshotModel snapshot,
   ) async {
+    if (!context.mounted) return;
+    final exportLocale = await showBillingPdfExportLanguageDialog(context);
+    if (exportLocale == null || !context.mounted) return;
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('owner.billing_pdf_generating'.tr())),
     );
     try {
       final group = BillingGroup.fromSnapshot(snapshot.snapshotData, snapshot.clientId);
       final currency = (snapshot.snapshotData['currency'] as String?) ?? 'EUR';
+      final footerLabels = await buildBillingPdfFooterLabelMap(exportLocale);
+      final payerLabels = await buildBillingPdfPayerLabelMap(exportLocale);
+      final externalName =
+          await billingPdfExternalGroupDisplayName(exportLocale);
+
       await BillingPdfService.generateAndDownloadPdf(
         group,
         snapshot.billingPeriod,
         currency,
-        externalDisplayName: 'admin.finance.billing_group_external'.tr(),
-        payerLabels: {
-          'owner': 'admin.finance.billing_payer_owner'.tr(),
-          'guest': 'admin.finance.billing_payer_guest'.tr(),
-          'client': 'admin.finance.billing_payer_client'.tr(),
-        },
-        footerLabels: {
-          'report_title': 'admin.finance.billing_pdf_report_title'.tr(),
-          'client_label': 'admin.finance.billing_client_label'.tr(),
-          'guest_label': 'admin.finance.billing_guest_label'.tr(),
-          'reservation_prefix': 'admin.finance.billing_reservation_prefix'.tr(),
-          'standalone_services': 'admin.finance.billing_standalone_services'.tr(),
-          'scheduled_label': 'admin.finance.billing_scheduled_label'.tr(),
-          'completed_label': 'admin.finance.billing_completed_label'.tr(),
-          'date_label': 'admin.finance.billing_date_label'.tr(),
-          'fallback_client_name': 'admin.finance.billing_fallback_client_name'.tr(),
-          'total_turnover': 'admin.finance.billing_total_turnover'.tr(),
-          'paid_by_guests': 'admin.finance.billing_paid_by_guests'.tr(),
-          'expenses_to_reimburse': 'admin.finance.billing_expenses_to_reimburse'.tr(),
-          'expenses_section': 'admin.finance.billing_expenses_to_reimburse_section'.tr(),
-          'monthly_management_fee': 'admin.finance.billing_monthly_management_fee'.tr(),
-          'task_price_label': 'admin.finance.billing_task_price_label'.tr(),
-          'task_guest_paid_label': 'admin.finance.billing_task_guest_paid_label'.tr(),
-          'task_shortfall_due_label': 'admin.finance.billing_task_shortfall_due_label'.tr(),
-          'final_pay': 'admin.finance.billing_final_owner_pay'.tr(),
-          'payer': 'admin.finance.billing_payer'.tr(),
-          'summary_section': 'admin.finance.billing_summary_section'.tr(),
-          'services_breakdown': 'admin.finance.billing_services_breakdown'.tr(),
-          'subtotal_per_reservation': 'admin.finance.billing_subtotal_per_reservation'.tr(),
-          'turnover_short': 'admin.finance.billing_turnover_short'.tr(),
-          'guest_paid_short': 'admin.finance.billing_guest_paid_short'.tr(),
-        },
+        exportLocale: exportLocale,
+        externalDisplayName: externalName,
+        payerLabels: payerLabels,
+        footerLabels: footerLabels,
       );
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -241,11 +230,49 @@ class _OwnerCashDispositionSection extends ConsumerWidget {
               ),
               const SizedBox(height: 8),
               balanceAsync.when(
-                data: (b) => Text(
-                  '${b.toStringAsFixed(2)} $currency',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
+                data: (b) => Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      '${b.toStringAsFixed(2)} $currency',
+                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                    ),
+                    if (b <= 1e-9) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: context.colors.errorContainer.withValues(alpha: 0.45),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: context.colors.error.withValues(alpha: 0.35),
+                          ),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              Icons.info_outline,
+                              size: 18,
+                              color: context.colors.error,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'owner.cash_balance_depleted_warning'.tr(),
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: context.colors.onErrorContainer,
+                                      height: 1.35,
+                                    ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
+                    ],
+                  ],
                 ),
                 loading: () => const Padding(
                   padding: EdgeInsets.symmetric(vertical: 8),
@@ -263,10 +290,12 @@ class _OwnerCashDispositionSection extends ConsumerWidget {
                 ),
               ),
               const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: () => showOwnerCashDispositionDialog(context),
-                icon: const Icon(Icons.payments_outlined),
-                label: Text('owner.cash_request_new_btn'.tr()),
+              OwnerReadOnlyGate(
+                child: FilledButton.icon(
+                  onPressed: () => showOwnerCashDispositionDialog(context, ref),
+                  icon: const Icon(Icons.payments_outlined),
+                  label: Text('owner.cash_request_new_btn'.tr()),
+                ),
               ),
             ],
           ),
@@ -424,10 +453,11 @@ class _OwnerCashRequestTile extends ConsumerWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               if (showEditPickup)
-                IconButton(
-                  tooltip: 'owner.cash_request_edit_pickup_tooltip'.tr(),
-                  icon: const Icon(Icons.edit_calendar_outlined),
-                  onPressed: () async {
+                OwnerReadOnlyGate(
+                  child: IconButton(
+                    tooltip: 'owner.cash_request_edit_pickup_tooltip'.tr(),
+                    icon: const Icon(Icons.edit_calendar_outlined),
+                    onPressed: () async {
                     final utc = await pickOwnerVaultPickupDateTime(
                       context,
                       initialUtc: request.pickupDate,
@@ -435,7 +465,7 @@ class _OwnerCashRequestTile extends ConsumerWidget {
                     if (utc == null || !context.mounted) return;
                     final auth = ref.read(authNotifierProvider);
                     final tid = auth.tenantIdForData;
-                    final pid = auth.state.profileId;
+                    final pid = ref.read(effectiveProfileIdProvider);
                     if (tid == null || tid.isEmpty || pid == null || pid.isEmpty) return;
                     try {
                       await OwnerCashDispositionRepository.updateOwnerRequestPickupDate(
@@ -464,6 +494,7 @@ class _OwnerCashRequestTile extends ConsumerWidget {
                       }
                     }
                   },
+                  ),
                 ),
               Chip(
                 label: Text(statusLabel),
@@ -597,10 +628,11 @@ class _OwnerCompanyExpensesSection extends ConsumerWidget {
                         label: Text('owner.company_expense_approved'.tr()),
                         visualDensity: VisualDensity.compact,
                       )
-                    : FilledButton.tonal(
-                        onPressed: tenantId == null || tenantId.isEmpty
-                            ? null
-                            : () async {
+                    : OwnerReadOnlyGate(
+                        child: FilledButton.tonal(
+                          onPressed: tenantId == null || tenantId.isEmpty
+                              ? null
+                              : () async {
                                 try {
                                   await ownerApproveCompanyExpense(
                                     tenantId: tenantId,
@@ -625,9 +657,10 @@ class _OwnerCompanyExpensesSection extends ConsumerWidget {
                                       ),
                                     );
                                   }
-                                }
-                              },
-                        child: Text('owner.company_expense_confirm'.tr()),
+                              }
+                            },
+                          child: Text('owner.company_expense_confirm'.tr()),
+                        ),
                       ),
               ),
             ),
@@ -694,7 +727,16 @@ class _SnapshotCard extends StatelessWidget {
                             ),
                       ),
                       const SizedBox(height: 10),
-                      BillingPaymentStatusChip(paymentStatus: snapshot.paymentStatus),
+                      BillingOffsetPaymentSummary(
+                        finalToInvoice: finalToInvoice,
+                        offsetAmount: snapshot.offsetAmount,
+                        paymentStatus: snapshot.paymentStatus,
+                        currency: currency,
+                      ),
+                      BillingOffsetProposalOwnerCard(
+                        snapshotId: snapshot.id,
+                        currency: currency,
+                      ),
                       if (hasStoredInvoice) ...[
                         const SizedBox(height: 6),
                         Text(

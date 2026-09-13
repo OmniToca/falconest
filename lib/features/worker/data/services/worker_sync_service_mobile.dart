@@ -3,6 +3,7 @@
 /// Isar byl kompletně odstraněn – nestabilní na iOS ("Collection id is invalid").
 /// Všechna data pro Worker UI jsou nyní v relační SQLite databázi.
 library;
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:easy_localization/easy_localization.dart';
@@ -49,7 +50,7 @@ class WorkerSyncService {
 
       // PROČ: Worker vidí úkol, pokud je v assigned_to NEBO v assigned_user_ids.
       final tasksData = await SupabaseService.safeFrom('tasks', tenantId)
-          .select('id, tenant_id, apartment_id, client_id, custom_location, custom_title, reference_number, reservation_id, assigned_to, assigned_user_ids, title, description, task_type, scheduled_start, due_date, unassigned_info, service_id, status, photo_url, metadata, media_urls, started_at, completed_at, invoiced_at')
+          .select('id, tenant_id, apartment_id, client_id, custom_location, custom_title, reference_number, reservation_id, assigned_to, assigned_user_ids, title, title_i18n, description, task_type, scheduled_start, due_date, unassigned_info, service_id, status, photo_url, metadata, media_urls, started_at, completed_at, invoiced_at')
           .or('assigned_to.eq.$workerId,assigned_user_ids.cs.{$workerId}')
           .neq('status', 'pending')
           .isFilter('deleted_at', null)
@@ -183,7 +184,7 @@ class WorkerSyncService {
 
   /// Stejný výběr sloupců jako hlavní worker sync úkolů – pro doplnění řádků jen kvůli JOIN ve výdělcích.
   static const String _payoutRelatedTasksSelect =
-      'id, tenant_id, apartment_id, client_id, custom_location, custom_title, reference_number, reservation_id, assigned_to, assigned_user_ids, title, description, task_type, scheduled_start, due_date, unassigned_info, service_id, status, photo_url, metadata, media_urls, started_at, completed_at, invoiced_at';
+      'id, tenant_id, apartment_id, client_id, custom_location, custom_title, reference_number, reservation_id, assigned_to, assigned_user_ids, title, title_i18n, description, task_type, scheduled_start, due_date, unassigned_info, service_id, status, photo_url, metadata, media_urls, started_at, completed_at, invoiced_at';
 
   /// Doplní do Driftu úkoly odkazované z výplat/provizí, které nejsou v hlavním okně syncu (dokončené / mimo rozsah).
   ///
@@ -868,6 +869,37 @@ class WorkerSyncService {
     final pendingTasks = await driftRepos.task.getPendingTasks(tenantId);
     final pendingRes = await driftRepos.reservation.getPendingReservations(tenantId);
     return pendingTasks.length + pendingRes.length;
+  }
+
+  /// Best-effort odeslání pending změn – vhodné před přechodem appky na pozadí
+  /// nebo po kritické mutaci (dokončení úkolu), dokud je síť dostupná.
+  ///
+  /// PROČ timeout: OS může proces uspat dřív, než doběhne Smart Merge; pending v Drift
+  /// zůstává a sync se zopakuje při dalším otevření nebo pull-to-refresh.
+  static Future<void> flushPendingUpdatesBestEffort(
+    String tenantId, {
+    void Function(String)? onSyncError,
+    DriftSyncRepos? driftRepos,
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    if (tenantId.isEmpty) return;
+    try {
+      await pushPendingUpdates(
+        tenantId,
+        onSyncError: onSyncError,
+        driftRepos: driftRepos,
+      ).timeout(timeout);
+    } on TimeoutException {
+      debugPrint(
+        'WorkerSyncService: flushPendingUpdatesBestEffort timeout – pending zůstává v Drift',
+      );
+    } catch (e, st) {
+      AppLogger.error(
+        'WorkerSyncService: flushPendingUpdatesBestEffort selhal',
+        e,
+        st,
+      );
+    }
   }
 
   static Map<String, dynamic>? _parseMetadataForSync(String raw) {

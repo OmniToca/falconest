@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/models/cash_transaction_ui_model.dart';
 import 'package:falconest/core/theme/theme_ext.dart';
+import 'package:falconest/core/widgets/falconest_network_image.dart';
 import 'package:falconest/core/services/currency_service.dart';
 import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
 import 'package:falconest/features/admin/admin_layout.dart';
@@ -16,7 +17,6 @@ import 'package:falconest/features/admin/providers/admin_tasks_repository.dart';
 import 'package:falconest/features/admin/providers/admin_team_provider.dart';
 import 'package:falconest/features/admin/providers/apartments_provider.dart';
 import 'package:falconest/features/admin/providers/finance_cash_provider.dart';
-import 'package:falconest/features/owner/repositories/reservation_cash_transit_repository.dart';
 import 'package:falconest/features/admin/providers/finance_tab_provider.dart';
 
 /// Prémiový modální dialog detailu peněženky zaměstnance.
@@ -120,25 +120,11 @@ class WalletDetailModal {
                 panEnabled: true,
                 minScale: 0.5,
                 maxScale: 4.0,
-                child: Image.network(
-                  url,
+                child: FalconestNetworkImage(
+                  imageUrl: url,
                   fit: BoxFit.contain,
-                  loadingBuilder: (context, child, loadingProgress) {
-                    if (loadingProgress == null) return child;
-                    return SizedBox(
-                      height: 200,
-                      child: Center(
-                        child: CircularProgressIndicator(
-                          value: loadingProgress.expectedTotalBytes != null
-                              ? loadingProgress.cumulativeBytesLoaded /
-                                    loadingProgress.expectedTotalBytes!
-                              : null,
-                        ),
-                      ),
-                    );
-                  },
                   errorBuilder: (_, _, _) => const Center(
-                    child: Icon(Icons.broken_image_outlined, size: 64),
+                    child: Icon(Icons.broken_image_outlined, size: 48),
                   ),
                 ),
               ),
@@ -627,38 +613,6 @@ class _WalletDetailModalContentState
   }
 }
 
-/// Rezervace z aktuálního období peněženky (od posledního HANDED) pro volitelnou vazbu při převzetí.
-List<({String id, String label})> _receiveCashReservationOptions(
-  List<CashTransactionUIModel> transactions,
-) {
-  final split = _WalletDetailModalContentState._splitByLastHandover(
-    transactions,
-  );
-  final byId = <String, String>{};
-  for (final t in split.current) {
-    if ((t.transactionType ?? '') != 'COLLECTED_FROM_GUEST') continue;
-    final rawAmt = t.raw['amount'];
-    final amount = rawAmt is num
-        ? rawAmt.toDouble()
-        : double.tryParse(rawAmt?.toString() ?? '');
-    if (amount == null || amount <= 0) continue;
-    final rid = t.reservationId;
-    if (rid == null || rid.isEmpty) continue;
-    final parts = <String>[
-      if (t.apartmentName != null && t.apartmentName!.isNotEmpty)
-        t.apartmentName!,
-      if (t.guestName != null && t.guestName!.isNotEmpty) t.guestName!,
-    ];
-    final label = parts.isEmpty
-        ? (rid.length >= 8 ? rid.substring(0, 8) : rid)
-        : parts.join(' · ');
-    byId[rid] = label;
-  }
-  final out = byId.entries.map((e) => (id: e.key, label: e.value)).toList();
-  out.sort((a, b) => a.label.toLowerCase().compareTo(b.label.toLowerCase()));
-  return out;
-}
-
 /// Dialog pro převzetí hotovosti – částečný nebo celý výběr s validací a loading stavem.
 class _ReceiveCashDialog extends ConsumerStatefulWidget {
   const _ReceiveCashDialog({
@@ -678,10 +632,7 @@ class _ReceiveCashDialog extends ConsumerStatefulWidget {
 class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
   late final TextEditingController _amountController;
   String? _amountError;
-  String? _reservationError;
   bool _isLoading = false;
-  String? _reservationId;
-  bool _userPickedReservation = false;
 
   @override
   void initState() {
@@ -702,26 +653,13 @@ class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
     return double.tryParse(normalized);
   }
 
-  /// Určí, zda aktuální „batch“ od posledního handoveru obsahuje průtokovou hotovost majitele.
-  ///
-  /// PROČ: Pokud ano, dispečer MUSÍ vybrat rezervaci, jinak by se HANDED transakce neměla jak
-  /// spárovat do `owner_cash_transit_settlements` a vznikl by účetní sirotek.
-  bool _hasTransitCashInCurrentBatch(List<CashTransactionUIModel> txList) {
-    final split = _WalletDetailModalContentState._splitByLastHandover(txList);
-    for (final t in split.current) {
-      if ((t.transactionType ?? '') != 'COLLECTED_FROM_GUEST') continue;
-      final transitRaw = t.raw['transit_portion'];
-      final transit = transitRaw is num
-          ? transitRaw.toDouble()
-          : double.tryParse(transitRaw?.toString() ?? '');
-      if (transit != null && transit > 0) return true;
-    }
-    return false;
-  }
-
   Future<void> _submit() async {
+    // ignore: avoid_print
+    print('--- SUBMIT STARTED ---');
     final amount = _parseAmount(_amountController.text);
     if (amount == null || amount <= 0 || amount > widget.row.balance) {
+      // ignore: avoid_print
+      print('--- SUBMIT STOPPED: INVALID AMOUNT ---');
       setState(() {
         _amountError = 'admin.finance.receive_amount_error_invalid'.tr();
       });
@@ -738,113 +676,58 @@ class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
         tenantId.isEmpty ||
         adminProfileId == null ||
         adminProfileId.isEmpty) {
+      // ignore: avoid_print
+      print('--- SUBMIT STOPPED: MISSING TENANT/ADMIN ---');
       if (mounted) {
         setState(() => _isLoading = false);
-        ScaffoldMessenger.of(widget.parentContext).showSnackBar(
-          SnackBar(content: Text('admin.finance.receive_error_missing'.tr())),
+        final bar = SnackBar(
+          content: Text('admin.finance.receive_error_missing'.tr()),
+          backgroundColor: const Color(0xFFB00020),
+          behavior: SnackBarBehavior.floating,
         );
+        final shownOnParent = widget.parentContext.mounted
+            ? ScaffoldMessenger.maybeOf(widget.parentContext)?.showSnackBar(bar) != null
+            : false;
+        if (!shownOnParent) {
+          ScaffoldMessenger.maybeOf(context)?.showSnackBar(bar);
+        }
       }
       return;
     }
 
-    String? ridForSubmit = _reservationId;
-    String? sourceTaskIdForSubmit;
-    final txList = ref.read(walletTransactionsProvider(widget.row.id)).value;
-    var mustSelectReservation = false;
-    if (txList != null) {
-      final opts = _receiveCashReservationOptions(txList);
-      mustSelectReservation = _hasTransitCashInCurrentBatch(txList);
-      if (ridForSubmit != null && !opts.any((o) => o.id == ridForSubmit)) {
-        ridForSubmit = null;
-      }
-      if (ridForSubmit == null || ridForSubmit.trim().isEmpty) {
-        final split = _WalletDetailModalContentState._splitByLastHandover(txList);
-        for (final t in split.current) {
-          if ((t.transactionType ?? '') != 'COLLECTED_FROM_GUEST') continue;
-          final transitRaw = t.raw['transit_portion'];
-          final transit = transitRaw is num
-              ? transitRaw.toDouble()
-              : double.tryParse(transitRaw?.toString() ?? '');
-          final taskId = t.taskId?.trim();
-          if (transit != null &&
-              transit > 0 &&
-              taskId != null &&
-              taskId.isNotEmpty) {
-            // PROČ: U dlouhodobého nájmu nemusí existovat reservation_id. Přeneseme task_id,
-            // aby Fáze C uměla dohledat apartment_id a připsat hotovost správnému majiteli.
-            sourceTaskIdForSubmit = taskId;
-            break;
-          }
-        }
-      }
-    }
-    if (mustSelectReservation &&
-        (ridForSubmit == null || ridForSubmit.trim().isEmpty)) {
-      setState(() {
-        _isLoading = false;
-        _reservationError =
-            'admin.finance.receive_reservation_required_for_transit'.tr();
-      });
-      return;
-    }
-    final rid = ridForSubmit?.trim();
-    // DOČASNÝ DEBUG (požadavek incidentu): ověření průchodu vybrané rezervace do handover flow.
-    // ignore: avoid_print
-    print('Vybraná rezervace: ${rid ?? ''}');
     try {
-      final handedTxId = await CashWalletRepository.instance
-          .receiveCashFromWorker(
-            walletId: widget.row.id,
-            workerProfileId: widget.row.profileId,
-            amountToClear: amount,
-            adminProfileId: adminProfileId,
-            tenantId: tenantId,
-            reservationId: (rid != null && rid.isNotEmpty) ? rid : null,
-            sourceTaskId: sourceTaskIdForSubmit,
-          );
-      // PROČ: Samotné HANDED_TO_AGENCY nestačí – majitelův zůstatek v portálu čte `owner_cash_transit_settlements`.
-      // Po převzetí s vazbou na rezervaci doplníme uznaný podíl (transit) až do výše předané částky.
-      var syncSuccess = true;
-      if (handedTxId != null && handedTxId.isNotEmpty) {
-        syncSuccess =
-            await ReservationCashTransitRepository.syncOwnerSettlementAfterHandedToAgency(
-              tenantId: tenantId,
-              reservationId: (rid != null && rid.isNotEmpty) ? rid : null,
-              sourceTaskId: sourceTaskIdForSubmit,
-              adminProfileId: adminProfileId,
-              workerProfileId: widget.row.profileId,
-              handedAmountPositive: amount,
-              handedTransactionId: handedTxId,
-            );
-      }
+      // ignore: avoid_print
+      print('--- CALLING REPOSITORY ---');
+      final result = await CashWalletRepository.instance.receiveCashFromWorkerBulkFifo(
+        workerProfileId: widget.row.profileId,
+        totalAmountToReceive: amount,
+        adminProfileId: adminProfileId,
+        tenantId: tenantId,
+      );
+      // ignore: avoid_print
+      print('--- REPOSITORY CALL DONE ---');
       ref.invalidate(employeeCashWalletsProvider);
       ref.invalidate(walletTransactionsProvider(widget.row.id));
-      if (rid != null && rid.isNotEmpty) {
-        ref.invalidate(reservationCashTransitProvider(rid));
-      }
-      // Jakmile je hotovost účetně převzata, modal se vždy zavře; případné párování řešíme následně přes snack.
+      // Jakmile je hotovost účetně převzata, modal se zavře; snackbar zobrazíme bezpečně přes dostupný messenger.
       if (!mounted) return;
-      if (!widget.parentContext.mounted) return;
       Navigator.of(context).pop();
-      if (syncSuccess) {
-        ScaffoldMessenger.of(widget.parentContext).showSnackBar(
-          SnackBar(
-            content: Text('admin.finance.receive_success'.tr()),
-            backgroundColor: context.customColors.success,
-            behavior: SnackBarBehavior.floating,
+      final bar = SnackBar(
+        content: Text(
+          'admin.finance.receive_success_fifo'.tr(
+            namedArgs: {
+              'amount': result.receivedTotal.toStringAsFixed(2),
+              'allocations': result.allocationsCount.toString(),
+            },
           ),
-        );
-      } else {
-        ScaffoldMessenger.of(widget.parentContext).showSnackBar(
-          SnackBar(
-            content: Text(
-              'admin.finance.receive_transit_pairing_failed'.tr(),
-              style: const TextStyle(color: Colors.white),
-            ),
-            backgroundColor: const Color(0xFFB00020),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        ),
+        backgroundColor: context.customColors.success,
+        behavior: SnackBarBehavior.floating,
+      );
+      final shownOnParent = widget.parentContext.mounted
+          ? ScaffoldMessenger.maybeOf(widget.parentContext)?.showSnackBar(bar) != null
+          : false;
+      if (!shownOnParent) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(bar);
       }
     } catch (e, st) {
       // INCIDENT LOG: výrazný výpis runtime chyby se stacktrace (RLS, null, schema mismatch).
@@ -856,39 +739,31 @@ class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
       print(st);
       // ignore: avoid_print
       print('=== TRANSIT CASH HANDOVER ERROR END ===');
-      if (mounted) {
-        setState(() => _isLoading = false);
-        if (widget.parentContext.mounted) {
-          ScaffoldMessenger.of(widget.parentContext).showSnackBar(
-            SnackBar(content: Text('admin.finance.receive_error'.tr())),
-          );
-        }
+      if (mounted) setState(() => _isLoading = false);
+      final errorMessage = e.toString().trim().isEmpty
+          ? 'Unknown error during cash handover'
+          : e.toString().trim();
+      final bar = SnackBar(
+        content: Text(
+          errorMessage,
+          style: const TextStyle(color: Colors.white),
+        ),
+        backgroundColor: const Color(0xFFB00020),
+        behavior: SnackBarBehavior.floating,
+      );
+      // PROČ: Při pádu modalu může být parent context nedostupný; zkoušíme oba kontexty,
+      // aby uživatel vždy dostal okamžitý feedback a nezůstal v tichém selhání.
+      final shownOnParent = widget.parentContext.mounted
+          ? ScaffoldMessenger.maybeOf(widget.parentContext)?.showSnackBar(bar) != null
+          : false;
+      if (!shownOnParent && mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(bar);
       }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final txAsync = ref.watch(walletTransactionsProvider(widget.row.id));
-    final options = txAsync.maybeWhen(
-      data: _receiveCashReservationOptions,
-      orElse: () => <({String id, String label})>[],
-    );
-
-    final reservationDropdownValue =
-        _reservationId != null && options.any((o) => o.id == _reservationId)
-        ? _reservationId
-        : null;
-
-    if (!_userPickedReservation && options.length == 1) {
-      final only = options.single.id;
-      if (_reservationId != only) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) setState(() => _reservationId = only);
-        });
-      }
-    }
-
     return AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       title: Text('admin.finance.receive_confirm_title'.tr()),
@@ -919,49 +794,6 @@ class _ReceiveCashDialogState extends ConsumerState<_ReceiveCashDialog> {
               ),
               onChanged: (_) => setState(() => _amountError = null),
             ),
-            if (options.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Text(
-                'admin.finance.receive_reservation_label'.tr(),
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'admin.finance.receive_reservation_hint'.tr(),
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 8),
-              DropdownButtonFormField<String?>(
-                // Controlled selection; `initialValue` does not follow stream/async updates.
-                // ignore: deprecated_member_use
-                value: reservationDropdownValue,
-                decoration: InputDecoration(
-                  border: const OutlineInputBorder(),
-                  errorText: _reservationError,
-                ),
-                items: [
-                  DropdownMenuItem<String?>(
-                    value: null,
-                    child: Text('admin.finance.receive_reservation_none'.tr()),
-                  ),
-                  ...options.map(
-                    (o) => DropdownMenuItem<String?>(
-                      value: o.id,
-                      child: Text(o.label),
-                    ),
-                  ),
-                ],
-                onChanged: _isLoading
-                    ? null
-                    : (v) => setState(() {
-                        _userPickedReservation = true;
-                        _reservationId = v;
-                        _reservationError = null;
-                      }),
-              ),
-            ],
           ],
         ),
       ),
@@ -1410,8 +1242,8 @@ class _TransactionTile extends StatelessWidget {
             onTap: onReceiptTap,
             child: ClipRRect(
               borderRadius: BorderRadius.circular(6),
-              child: Image.network(
-                receiptUrl,
+              child: FalconestNetworkImage(
+                imageUrl: receiptUrl,
                 width: 40,
                 height: 40,
                 fit: BoxFit.cover,

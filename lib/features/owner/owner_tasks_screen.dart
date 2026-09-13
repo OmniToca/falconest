@@ -2,12 +2,13 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/auth/owner_view_impersonation_providers.dart';
 import 'package:falconest/features/admin/models/task_category_model.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/admin/providers/task_categories_provider.dart';
 import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
 import 'package:falconest/features/owner/providers/owner_tasks_provider.dart';
+import 'package:falconest/features/owner/widgets/owner_read_only_gate.dart';
 import 'package:falconest/features/owner/widgets/owner_report_issue_dialog.dart';
 import 'package:falconest/features/owner/widgets/owner_task_card.dart';
 import 'package:falconest/features/owner/widgets/owner_task_detail_dialog.dart';
@@ -23,7 +24,7 @@ class OwnerTasksScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final categoriesByCode = ref.watch(taskCategoriesProvider).valueOrNull ?? {};
     final apartments = ref.read(ownerApartmentsProvider).valueOrNull ?? [];
-    final profileId = ref.read(authNotifierProvider).state.profileId ?? '';
+    final profileId = ref.read(effectiveProfileIdProvider) ?? '';
 
     return DefaultTabController(
       length: 2,
@@ -53,18 +54,21 @@ class OwnerTasksScreen extends ConsumerWidget {
         ),
         floatingActionButton: apartments.isEmpty
             ? null
-            : FloatingActionButton.extended(
-                onPressed: () => openOwnerReportIssueDialog(
-                  context,
-                  apartments: apartments,
-                  profileId: profileId,
-                  onSuccess: () {
-                    ref.invalidate(ownerTasksProvider);
-                    ref.invalidate(ownerTaskHistoryProvider);
-                  },
+            : OwnerReadOnlyGate(
+                child: FloatingActionButton.extended(
+                  onPressed: () => openOwnerReportIssueDialog(
+                    context,
+                    ref: ref,
+                    apartments: apartments,
+                    profileId: profileId,
+                    onSuccess: () {
+                      ref.invalidate(ownerTasksProvider);
+                      ref.invalidate(ownerTaskHistoryProvider);
+                    },
+                  ),
+                  icon: const Icon(Icons.report_problem_outlined),
+                  label: Text('owner.report_issue_btn'.tr()),
                 ),
-                icon: const Icon(Icons.report_problem_outlined),
-                label: Text('owner.report_issue_btn'.tr()),
               ),
       ),
     );

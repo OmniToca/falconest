@@ -18,6 +18,7 @@ import 'package:falconest/features/worker/providers/worker_sync_state_provider.d
 import 'package:falconest/features/worker/utils/worker_google_maps_uri.dart';
 import 'package:falconest/features/worker/providers/worker_motivation_stats_provider.dart';
 import 'package:falconest/features/worker/widgets/statistics/worker_motivation_card.dart';
+import 'package:falconest/features/worker/utils/worker_task_dashboard_grouper.dart';
 import 'package:falconest/features/worker/widgets/sync_status_banner.dart';
 
 const _primaryBlue = Color(0xFF1565C0);
@@ -28,7 +29,8 @@ const double _kWorkerHighCashBalanceThreshold = 500;
 /// Hlavní obrazovka Worker App – "Moje Práce".
 ///
 /// Zobrazuje seznam úkolů přiřazených aktuálnímu uživateli, seskupených podle
-/// data (Dnes, Zítra, Později). Pull-to-Refresh, velké karty vhodné pro mobil.
+/// kalendářních sekcí (Po termínu, Dnes, Zítra, Později) a chronologicky seřazených.
+/// Pull-to-Refresh, velké karty vhodné pro mobil.
 class WorkerDashboardScreen extends ConsumerStatefulWidget {
   const WorkerDashboardScreen({super.key});
 
@@ -477,27 +479,18 @@ class _WorkerDrawer extends ConsumerWidget {
   }
 }
 
-enum _DateGroup { today, tomorrow, later }
-
-String _dateGroupLabel(_DateGroup g) {
-  switch (g) {
-    case _DateGroup.today:
+/// Lokalizovaný název kalendářní sekce na nástěnce.
+String _dateBucketLabel(WorkerTaskDateBucket bucket) {
+  switch (bucket) {
+    case WorkerTaskDateBucket.overdue:
+      return 'worker.overdue'.tr();
+    case WorkerTaskDateBucket.today:
       return 'worker.today'.tr();
-    case _DateGroup.tomorrow:
+    case WorkerTaskDateBucket.tomorrow:
       return 'worker.tomorrow'.tr();
-    case _DateGroup.later:
+    case WorkerTaskDateBucket.later:
       return 'worker.later'.tr();
   }
-}
-
-_DateGroup _getDateGroup(DateTime taskDate) {
-  final now = DateTime.now();
-  final today = DateTime(now.year, now.month, now.day);
-  final taskDay = DateTime(taskDate.year, taskDate.month, taskDate.day);
-  final diff = taskDay.difference(today).inDays;
-  if (diff == 0) return _DateGroup.today;
-  if (diff == 1) return _DateGroup.tomorrow;
-  return _DateGroup.later;
 }
 
 class _TaskList extends ConsumerWidget {
@@ -505,72 +498,55 @@ class _TaskList extends ConsumerWidget {
 
   final List<WorkerTask> tasks;
 
+  /// Výchozí chronologický režim – změna na [WorkerTaskListLayoutMode.byLocationThenTime]
+  /// obnoví seskupování podle adresy bez úpravy provideru.
+  static const _layoutMode = WorkerTaskListLayoutMode.chronological;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final grouped = <_DateGroup, List<WorkerTask>>{
-      _DateGroup.today: [],
-      _DateGroup.tomorrow: [],
-      _DateGroup.later: [],
-    };
-    for (final t in tasks) {
-      final g = _getDateGroup(t.scheduledStart);
-      grouped[g]!.add(t);
-    }
+    final sections = groupWorkerTasksForDashboard(
+      tasks,
+      layoutMode: _layoutMode,
+    );
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         const WorkerMotivationDashboardCard(),
-        for (final g in [_DateGroup.today, _DateGroup.tomorrow, _DateGroup.later])
-          if (grouped[g]!.isNotEmpty) ...[
-            Padding(
-              padding: const EdgeInsets.only(top: 16, bottom: 8),
-              child: Text(
-                _dateGroupLabel(g),
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: _primaryBlue,
-                    ),
-              ),
+        for (final section in sections) ...[
+          Padding(
+            padding: const EdgeInsets.only(top: 16, bottom: 8),
+            child: Text(
+              _dateBucketLabel(section.bucket),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: section.bucket == WorkerTaskDateBucket.overdue
+                        ? Colors.red.shade700
+                        : _primaryBlue,
+                  ),
             ),
-            ..._buildLocationGroupedCards(grouped[g]!),
-          ],
+          ),
+          if (_layoutMode == WorkerTaskListLayoutMode.chronological)
+            for (final t in section.tasks)
+              _TaskCard(task: t)
+          else
+            ..._buildLocationGroupedCardsFromSection(section),
+        ],
       ],
     );
   }
 }
 
-/// Klíč seskupení: stejný byt (`apartment_id`) nebo stejná zobrazená adresa (externí úkoly).
-///
-/// PROČ: Pracovník vidí u jedné budovy jednu hlavičku; izolované úkoly (`solo:`) zůstávají bez skupiny.
-String _locationGroupKey(WorkerTask t) {
-  final apt = t.apartmentId.trim();
-  if (apt.isNotEmpty) return 'apt:$apt';
-  final addr = t.displayAddress.trim();
-  if (addr.isNotEmpty) return 'addr:${addr.toLowerCase()}';
-  return 'solo:${t.id}';
-}
-
-/// V rámci dne seřadí úkoly časem, seskupí podle [_locationGroupKey], hlavička jen pokud je ve skupině > 1.
-List<Widget> _buildLocationGroupedCards(List<WorkerTask> dayTasks) {
-  final sorted = [...dayTasks]..sort((a, b) => a.scheduledStart.compareTo(b.scheduledStart));
-  final keysOrder = <String>[];
-  final map = <String, List<WorkerTask>>{};
-  for (final t in sorted) {
-    final k = _locationGroupKey(t);
-    if (!map.containsKey(k)) {
-      keysOrder.add(k);
-      map[k] = [];
-    }
-    map[k]!.add(t);
-  }
+/// Vykreslí sekci v režimu [WorkerTaskListLayoutMode.byLocationThenTime].
+List<Widget> _buildLocationGroupedCardsFromSection(
+  WorkerTaskDashboardSection section,
+) {
   final out = <Widget>[];
-  for (final k in keysOrder) {
-    final list = map[k]!;
-    if (list.length > 1) {
-      out.add(_AddressGroupHeader(tasks: list));
+  for (final group in section.locationGroups) {
+    if (group.tasks.length > 1) {
+      out.add(_AddressGroupHeader(tasks: group.tasks));
     }
-    for (final t in list) {
+    for (final t in group.tasks) {
       out.add(_TaskCard(task: t));
     }
   }

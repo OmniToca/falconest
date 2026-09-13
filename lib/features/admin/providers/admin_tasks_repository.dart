@@ -45,6 +45,21 @@ class AdminTasksRepository {
   /// po reconnectu – hodnotu držíme vysoko, aby velcí klienti neztráceli data jako u 500.
   static const int _streamPostgrestSafetyLimit = 15000;
 
+  /// Úzká projekce sloupců pro admin seznamy / Realtime initialFetch (P1 výkon).
+  ///
+  /// PROČ: `select()` tahá i `geo_location`, `search_vector`, velké JSON – zbytečný egress.
+  /// `metadata` + `media_urls` zůstávají (Kanban cash/tagy, počet fotek). Detail úkolu
+  /// dál používá plný `select()` přes [fetchTaskById].
+  static const String taskListSelectColumns =
+      'id, tenant_id, apartment_id, client_id, reservation_id, service_id, '
+      'reference_number, title, description, status, task_type, '
+      'due_date, scheduled_start, assigned_to, assigned_user_ids, '
+      'custom_title, custom_location, metadata, media_urls, title_i18n, '
+      'deleted_at, invoiced_at, unassigned_info, created_by, created_at, '
+      'started_at, completed_at, '
+      'last_communication_template_id, last_communication_template_context, '
+      'last_communication_at';
+
   /// Realtime stream úkolů pro daného tenanta.
   ///
   /// PROČ: Úvodní [initialFetch] používá časové okno v SQL (`or` na completed_at). Streamová
@@ -84,7 +99,7 @@ class AdminTasksRepository {
       stream: stream,
       initialFetch: () async {
         final res = await safeTasks
-            .select()
+            .select(taskListSelectColumns)
             .isFilter('deleted_at', null)
             .isFilter('invoiced_at', null)
             .or(orCompleted)
@@ -141,10 +156,76 @@ class AdminTasksRepository {
       stream: stream,
       initialFetch: () async {
         final res = await safeTasks
-            .select()
+            .select(taskListSelectColumns)
             .isFilter('deleted_at', null)
             .gte('scheduled_start', startIso)
             .lt('scheduled_start', endIso)
+            .order('scheduled_start', ascending: false);
+        final list = (res as List).cast<Map<String, dynamic>>();
+        return filterAndSort(list);
+      },
+    );
+  }
+
+  /// Kanonické ops okno: dnes −7 dní → konec příštího měsíce (UTC hranice z lokálního kalendáře).
+  ///
+  /// PROČ (P1): Nástěnka (aktuální + příští měsíc) a vytížení personálu (−7/+14) sdílejí jeden
+  /// Realtime kanál místo dvou plných dumpů až 15k řádků. Derived providery filtrují v paměti.
+  static (DateTime fromUtc, DateTime toUtc) opsWindowBoundsUtc() {
+    final now = DateTime.now();
+    final fromLocal =
+        DateTime(now.year, now.month, now.day).subtract(const Duration(days: 7));
+    final nextMonth =
+        now.month == 12 ? DateTime(now.year + 1, 1, 1) : DateTime(now.year, now.month + 1, 1);
+    final toLocal = DateTime(nextMonth.year, nextMonth.month + 1, 0, 23, 59, 59, 999);
+    return (fromLocal.toUtc(), toLocal.toUtc());
+  }
+
+  /// Jeden Realtime stream pro Nástěnku + vytížení týmu (viz [opsWindowBoundsUtc]).
+  Stream<List<Map<String, dynamic>>> watchTasksRawForOpsWindow(String tenantId) {
+    if (tenantId.isEmpty) return Stream.value([]);
+
+    List<Map<String, dynamic>> filterAndSort(List<Map<String, dynamic>> rows) {
+      final (fromUtc, toUtc) = opsWindowBoundsUtc();
+      final filtered = rows.where((r) {
+        if (r['deleted_at'] != null || r['invoiced_at'] != null) return false;
+        final s = r['scheduled_start'] ?? r['due_date'];
+        if (s == null) return false;
+        final dt = DateTime.tryParse(s.toString());
+        if (dt == null) return true;
+        final utc = dt.toUtc();
+        return !utc.isBefore(fromUtc) && !utc.isAfter(toUtc);
+      }).toList();
+      filtered.sort((a, b) {
+        final aVal = a['due_date'] ?? a['scheduled_start'] ?? '';
+        final bVal = b['due_date'] ?? b['scheduled_start'] ?? '';
+        return aVal.toString().compareTo(bVal.toString());
+      });
+      return filtered;
+    }
+
+    final safeTasks = SupabaseService.safeFrom('tasks', tenantId);
+    final stream = resilientSupabaseStream<List<Map<String, dynamic>>>(
+      streamBuilder: () => safeTasks
+          .stream(primaryKey: ['id'])
+          .order('scheduled_start', ascending: false)
+          .limit(_streamPostgrestSafetyLimit)
+          .map((List<Map<String, dynamic>> rows) => filterAndSort(rows)),
+      debugLabel: 'AdminTasksRepository.watchTasksRawForOpsWindow',
+    );
+
+    return _streamWithInitialFetch(
+      stream: stream,
+      initialFetch: () async {
+        final (fromUtc, toUtc) = opsWindowBoundsUtc();
+        final fromIso = fromUtc.toIso8601String();
+        final toIso = toUtc.toIso8601String();
+        final res = await safeTasks
+            .select(taskListSelectColumns)
+            .isFilter('deleted_at', null)
+            .isFilter('invoiced_at', null)
+            .gte('scheduled_start', fromIso)
+            .lte('scheduled_start', toIso)
             .order('scheduled_start', ascending: false);
         final list = (res as List).cast<Map<String, dynamic>>();
         return filterAndSort(list);
@@ -201,7 +282,7 @@ class AdminTasksRepository {
       stream: stream,
       initialFetch: () async {
         final res = await safeTasks
-            .select()
+            .select(taskListSelectColumns)
             .isFilter('deleted_at', null)
             .isFilter('invoiced_at', null)
             .gte('scheduled_start', fromIso)
@@ -270,7 +351,7 @@ class AdminTasksRepository {
       stream: stream,
       initialFetch: () async {
         final res = await safeTasks
-            .select()
+            .select(taskListSelectColumns)
             .isFilter('deleted_at', null)
             .isFilter('invoiced_at', null)
             .or(orCompleted)
@@ -285,7 +366,7 @@ class AdminTasksRepository {
   ///
   /// PROČ: Dispečer pracuje v lokálním kalendáři; stejné okno použijeme v SQL i při filtrování streamu.
   /// Při každém průchodu filtru znovu voláme [DateTime.now()], aby se okno po půlnoci posunulo bez nové subscription.
-  static (DateTime startUtc, DateTime endUtc) _teamWorkloadWindowBoundsUtc() {
+  static (DateTime startUtc, DateTime endUtc) teamWorkloadWindowBoundsUtc() {
     final now = DateTime.now();
     final startLocal =
         DateTime(now.year, now.month, now.day).subtract(const Duration(days: 7));
@@ -299,12 +380,15 @@ class AdminTasksRepository {
   /// PROČ: Karty personálu nesmí záviset na [selectedTaskMonthProvider] ze záložky Úkoly – jinak by se
   /// metriky měnily při přepnutí měsíce. Úzké okno (~21 dní) výrazně omezí počet řádků oproti celému měsíci.
   /// Initial fetch spojí dva dotazy (scheduled_start a due_date), aby neunikly úkoly s termínem jen v jednom sloupci.
+  ///
+  /// Poznámka P1: UI preferuje derived filtr z [watchTasksRawForOpsWindow]; tato metoda zůstává
+  /// pro případné izolované použití / zpětnou kompatibilitu.
   Stream<List<Map<String, dynamic>>> watchTasksRawForTeamWorkloadWindow(String tenantId) {
     if (tenantId.isEmpty) return Stream.value([]);
 
     bool isInWorkloadWindow(Map<String, dynamic> r) {
       if (r['deleted_at'] != null || r['invoiced_at'] != null) return false;
-      final (startUtc, endUtc) = _teamWorkloadWindowBoundsUtc();
+      final (startUtc, endUtc) = teamWorkloadWindowBoundsUtc();
       final s = r['scheduled_start'] ?? r['due_date'];
       if (s == null) return false;
       final dt = DateTime.tryParse(s.toString());
@@ -336,13 +420,13 @@ class AdminTasksRepository {
     return _streamWithInitialFetch(
       stream: stream,
       initialFetch: () async {
-        final (startUtc, endUtc) = _teamWorkloadWindowBoundsUtc();
+        final (startUtc, endUtc) = teamWorkloadWindowBoundsUtc();
         final startIso = startUtc.toIso8601String();
         final endIso = endUtc.toIso8601String();
 
         Future<List<Map<String, dynamic>>> loadByColumn(String column) async {
           final res = await safeTasks
-              .select()
+              .select(taskListSelectColumns)
               .isFilter('deleted_at', null)
               .isFilter('invoiced_at', null)
               .gte(column, startIso)
@@ -370,7 +454,7 @@ class AdminTasksRepository {
     if (tenantId.isEmpty || reservationId.isEmpty) return [];
     try {
       final res = await SupabaseService.safeFrom('tasks', tenantId)
-          .select()
+          .select(taskListSelectColumns)
           .eq('reservation_id', reservationId)
           .isFilter('deleted_at', null)
           .order('scheduled_start', ascending: true);

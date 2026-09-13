@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
 
@@ -27,6 +28,7 @@ import 'package:falconest/features/admin/providers/apartment_services_repository
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_isolate_workers.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_repository.dart';
+import 'package:falconest/features/admin/providers/admin_task_status_timestamps.dart';
 import 'package:falconest/features/admin/providers/reservation_services_repository.dart';
 import 'package:falconest/features/admin/repositories/checklist_template_repository.dart';
 import 'package:falconest/features/admin/providers/task_assignment_engine.dart';
@@ -34,11 +36,201 @@ import 'package:falconest/features/admin/models/task_custom_tag.dart';
 import 'package:falconest/features/admin/providers/task_categories_provider.dart';
 import 'package:falconest/core/repositories/task/supabase_task_insert_repository.dart';
 import 'package:falconest/core/repositories/task/task_insert_sanitizer.dart';
+import 'package:falconest/core/tasks/task_title_i18n_snapshot.dart';
 import 'package:falconest/features/calendar/providers/planning_calendar_provider.dart';
 import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
 
 /// Sentinel pro [TaskRow.copyWith]: `null` jako hodnota znamená vymazat souřadnice, ne „ponechat staré“.
 const Object _kTaskRowGeoCopyUnset = Object();
+
+/// Sentinel pro [TaskRow.copyWith]: umožní vynulovat `startedAt` / `completedAt` při návratu statusu na Zadáno.
+const Object _kTaskRowDateCopyUnset = Object();
+
+/// Zaloguje selhání generátoru úkolů včetně PostgREST kódu (RLS, chybějící sloupec, timeout dotazu).
+///
+/// PROČ: UI ukazuje jen obecný snackbar; bez tohoto logu nelze v produkci rozlišit Supabase vs. Dart vs. Isolate.
+void _logTaskGeneratorFailure(
+  String phase,
+  Object e,
+  StackTrace st, {
+  String? tenantId,
+  Map<String, Object?>? extra,
+}) {
+  final buf = StringBuffer('AdminTasksNotifier.generateProposals: $phase');
+  if (tenantId != null && tenantId.isNotEmpty) {
+    buf.write(' tenantId=$tenantId');
+  }
+  if (extra != null) {
+    for (final entry in extra.entries) {
+      buf.write(' ${entry.key}=${entry.value}');
+    }
+  }
+  if (e is PostgrestException) {
+    buf.write(' postgrestCode=${e.code}');
+    buf.write(' postgrestMessage=${e.message}');
+    final details = e.details?.toString().trim();
+    if (details != null && details.isNotEmpty) {
+      buf.write(' details=$details');
+    }
+    final hint = e.hint?.toString().trim();
+    if (hint != null && hint.isNotEmpty) {
+      buf.write(' hint=$hint');
+    }
+  } else if (e is TimeoutException) {
+    buf.write(' timeout=true');
+  }
+  AppLogger.error(buf.toString(), e, st);
+}
+
+/// Převod [TaskRow] na mapu pro scheduled generátor (stejný tvar jako PostgREST řádek).
+Map<String, dynamic> _taskRowToScheduledGeneratorMap(TaskRow row) {
+  return {
+    'id': row.id,
+    'apartment_id': row.apartmentId,
+    'service_id': row.serviceId,
+    'status': row.status,
+    'title': row.title,
+    'due_date': row.dueDate.toUtc().toIso8601String(),
+    'scheduled_start': (row.scheduledStart ?? row.dueDate).toUtc().toIso8601String(),
+    if (row.completedAt != null)
+      'completed_at': row.completedAt!.toUtc().toIso8601String(),
+    if (row.assignedTo != null && row.assignedTo!.isNotEmpty)
+      'assigned_to': row.assignedTo,
+  };
+}
+
+/// Přepíše vybraná pole lokální kopie přes řádek ze Supabase (zachová ostatní sloupce pro kolizní engine).
+Map<String, dynamic> _overlayScheduledTaskFields(
+  Map<String, dynamic> fromSupabase,
+  Map<String, dynamic> fromLocal,
+) {
+  final out = Map<String, dynamic>.from(fromSupabase);
+  for (final key in [
+    'status',
+    'due_date',
+    'scheduled_start',
+    'completed_at',
+    'title',
+    'assigned_to',
+  ]) {
+    if (fromLocal.containsKey(key) && fromLocal[key] != null) {
+      out[key] = fromLocal[key];
+    }
+  }
+  return out;
+}
+
+/// Sloučí SELECT z `tasks` s [adminTasksStreamProvider] — offline/optimistic dokončení může být novější než DB snapshot.
+///
+/// PROČ: Generátor scheduled úkolů dříve četl jen Supabase. Úkol dokončený v aplikaci (fronta mutací)
+/// může mít v UI status `completed`, zatímco SELECT ještě ukazuje `in_progress` → falešný „aktivní“ štít
+/// nebo špatná kotva data dalšího výskytu.
+List<Map<String, dynamic>> _mergeTasksForScheduledGenerator({
+  required List<Map<String, dynamic>> fromSupabase,
+  required List<TaskRow> localTasks,
+}) {
+  final byId = <String, Map<String, dynamic>>{};
+  for (final m in fromSupabase) {
+    final id = m['id']?.toString().trim();
+    if (id == null || id.isEmpty) continue;
+    byId[id] = Map<String, dynamic>.from(m);
+  }
+  for (final row in localTasks) {
+    final id = row.id.trim();
+    if (id.isEmpty) continue;
+    final localMap = _taskRowToScheduledGeneratorMap(row);
+    final existing = byId[id];
+    if (existing == null) {
+      byId[id] = localMap;
+      continue;
+    }
+    final localCompleted = _isCompletedStatus(row.status);
+    // PROČ: Přepisujeme jen pokud je úkol lokálně dokončený — nikdy nesnižujeme completed ze Supabase na aktivní.
+    if (localCompleted) {
+      byId[id] = _overlayScheduledTaskFields(existing, localMap);
+    }
+  }
+  return byId.values.toList();
+}
+
+/// Bezpečné porovnání byt+služba (trim UUID) — bez výjimky při null apartment_id.
+bool _scheduledTaskMatchesPair(
+  Map<String, dynamic> taskMap,
+  String apartmentId,
+  String serviceId,
+) {
+  final apt = (taskMap['apartment_id']?.toString() ?? '').trim();
+  final svc = (taskMap['service_id']?.toString() ?? '').trim();
+  return apt == apartmentId && svc == serviceId;
+}
+
+/// Kotva pro další scheduled výskyt: priorita [completed_at], pak due_date, pak scheduled_start.
+///
+/// PROČ: Komentář u generátoru slibuje interval od dokončení; bez completed_at by se po rychlém dokončení
+/// počítalo od plánovaného konce (due_date), což může dát minulé nextDate nebo nekonzistentní chování.
+DateTime? _scheduledAnchorFromTaskMap(Map<String, dynamic> taskMap) {
+  final completedAt = parseTaskDateTime(taskMap['completed_at']);
+  if (completedAt != null) return completedAt;
+  return parseTaskDateTime(taskMap['due_date']) ??
+      parseTaskDateTime(taskMap['scheduled_start']);
+}
+
+/// Vrátí nejpozdější kotvu mezi dokončenými úkoly dané dvojice byt+služba; při prázdném vstupu null.
+DateTime? _latestScheduledAnchorFromCompletedTasks(
+  List<Map<String, dynamic>> completedForPair,
+) {
+  DateTime? latest;
+  for (final t in completedForPair) {
+    final anchor = _scheduledAnchorFromTaskMap(t);
+    if (anchor == null) continue;
+    if (latest == null || anchor.isAfter(latest)) {
+      latest = anchor;
+    }
+  }
+  return latest;
+}
+
+/// Log selhání jedné scheduled služby (byt+služba) — batch pokračuje u další položky.
+void _logScheduledServiceRowFailure({
+  required String phase,
+  required Object error,
+  required StackTrace stackTrace,
+  required String tenantId,
+  required String apartmentId,
+  required String serviceId,
+  String? serviceName,
+  String? scheduleInterval,
+  Map<String, dynamic>? lastCompletedTask,
+  DateTime? baseDate,
+  DateTime? nextDate,
+}) {
+  final lastId = lastCompletedTask?['id']?.toString();
+  final lastTitle = lastCompletedTask?['title']?.toString();
+  final lastStatus = lastCompletedTask?['status']?.toString();
+  final lastCompletedAt = lastCompletedTask?['completed_at'];
+  final lastDue = lastCompletedTask?['due_date'];
+  final lastSched = lastCompletedTask?['scheduled_start'];
+  _logTaskGeneratorFailure(
+    'scheduled/$phase',
+    error,
+    stackTrace,
+    tenantId: tenantId,
+    extra: {
+      'apartmentId': apartmentId,
+      'serviceId': serviceId,
+      'serviceName': ?serviceName,
+      'scheduleInterval': ?scheduleInterval,
+      'lastTaskId': ?lastId,
+      'lastTaskTitle': ?lastTitle,
+      'lastTaskStatus': ?lastStatus,
+      'lastTaskCompletedAt': lastCompletedAt ?? 'null',
+      'lastTaskDueDate': lastDue ?? 'null',
+      'lastTaskScheduledStart': lastSched ?? 'null',
+      'baseDate': baseDate?.toIso8601String() ?? 'null',
+      'nextDate': nextDate?.toIso8601String() ?? 'null',
+    },
+  );
+}
 
 /// Návrh změny přiřazení/času úkolu z přepočtu personálu – dispečer může vybrat, které změny potvrdit.
 ///
@@ -109,6 +301,8 @@ class TaskRow {
     this.reservationGuestCount,
     this.createdAt,
     this.metadata,
+    /// Překlady názvu z `tasks.title_i18n` (PDF / budoucí vícejazyčné zobrazení).
+    this.titleI18n,
     this.mediaUrls = const [],
     this.invoicedAt,
     this.unassignedInfo,
@@ -126,6 +320,9 @@ class TaskRow {
 
   /// Flexibilní data pro UI (např. částka k vybrání, poznámky z rezervace, číslo letu).
   final Map<String, dynamic>? metadata;
+
+  /// JSONB `title_i18n` z Postgresu – mapa `translations` + volitelný `source_hash`.
+  final Map<String, dynamic>? titleI18n;
 
   final String id;
   final String apartmentId;
@@ -249,6 +446,7 @@ class TaskRow {
         return s.isEmpty ? null : s;
       }(),
       metadata: _parseMetadata(json['metadata']),
+      titleI18n: _parseMetadata(json['title_i18n']),
       mediaUrls: _parseMediaUrls(json['media_urls']),
       invoicedAt: _parseOptionalDateTime(json['invoiced_at']),
       unassignedInfo: _parseUnassignedInfo(json['unassigned_info']),
@@ -408,6 +606,7 @@ class TaskRow {
       reservationGuestCount: reservationGuestCount,
       createdAt: TaskRow._parseOptionalDateTime(row['created_at']),
       metadata: task.metadata,
+      titleI18n: task.titleI18n,
       mediaUrls: task.mediaUrls,
       invoicedAt: task.invoicedAt,
       unassignedInfo: task.unassignedInfo,
@@ -450,7 +649,7 @@ class TaskRow {
       if (clientId != null && clientId!.isNotEmpty) 'client_id': clientId,
       if (customTitle != null && customTitle!.isNotEmpty) 'custom_title': customTitle,
       if (customLocation != null && customLocation!.isNotEmpty) 'custom_location': customLocation,
-      if (geoForRow != null) 'geo_location': geoForRow,
+      'geo_location': ?geoForRow,
       'assigned_to': assignedTo?.isEmpty ?? true ? null : assignedTo,
       if (assignedUserIds.isNotEmpty) 'assigned_user_ids': assignedUserIds,
       'title': title,
@@ -462,6 +661,9 @@ class TaskRow {
     };
     // Fallback na prázdný JSON objekt, protože DB sloupec metadata má NOT NULL constraint.
     map['metadata'] = metadata ?? {};
+    if (titleI18n != null && titleI18n!.isNotEmpty) {
+      map['title_i18n'] = titleI18n;
+    }
     if (invoicedAt != null) map['invoiced_at'] = invoicedAt!.toUtc().toIso8601String();
     if (unassignedInfo != null && unassignedInfo!.isNotEmpty) map['unassigned_info'] = unassignedInfo;
     return map;
@@ -498,6 +700,7 @@ class TaskRow {
     int? reservationGuestCount,
     DateTime? createdAt,
     Map<String, dynamic>? metadata,
+    Map<String, dynamic>? titleI18n,
     List<String>? mediaUrls,
     DateTime? invoicedAt,
     Map<String, dynamic>? unassignedInfo,
@@ -505,8 +708,8 @@ class TaskRow {
     String? lastCommunicationTemplateId,
     String? lastCommunicationTemplateContext,
     DateTime? lastCommunicationAt,
-    DateTime? startedAt,
-    DateTime? completedAt,
+    Object? startedAt = _kTaskRowDateCopyUnset,
+    Object? completedAt = _kTaskRowDateCopyUnset,
   }) {
     return TaskRow(
       id: id ?? this.id,
@@ -540,6 +743,7 @@ class TaskRow {
       reservationGuestCount: reservationGuestCount ?? this.reservationGuestCount,
       createdAt: createdAt ?? this.createdAt,
       metadata: metadata ?? this.metadata,
+      titleI18n: titleI18n ?? this.titleI18n,
       mediaUrls: mediaUrls ?? this.mediaUrls,
       invoicedAt: invoicedAt ?? this.invoicedAt,
       unassignedInfo: unassignedInfo ?? this.unassignedInfo,
@@ -547,8 +751,12 @@ class TaskRow {
       lastCommunicationTemplateId: lastCommunicationTemplateId ?? this.lastCommunicationTemplateId,
       lastCommunicationTemplateContext: lastCommunicationTemplateContext ?? this.lastCommunicationTemplateContext,
       lastCommunicationAt: lastCommunicationAt ?? this.lastCommunicationAt,
-      startedAt: startedAt ?? this.startedAt,
-      completedAt: completedAt ?? this.completedAt,
+      startedAt: identical(startedAt, _kTaskRowDateCopyUnset)
+          ? this.startedAt
+          : startedAt as DateTime?,
+      completedAt: identical(completedAt, _kTaskRowDateCopyUnset)
+          ? this.completedAt
+          : completedAt as DateTime?,
     );
   }
 }
@@ -571,6 +779,8 @@ class _ServiceTrigger {
     this.isMandatory = false,
     this.requiresPhotoFromApartment,
     this.checklistTemplateId,
+    /// Snapshot překladů z [tenant_services.name_i18n] pro vložení do `tasks.title_i18n` u smart úkolů.
+    this.titleI18nForTask,
   });
   final String serviceName;
   final String? requiredRole;
@@ -585,6 +795,9 @@ class _ServiceTrigger {
   final bool? requiresPhotoFromApartment;
   /// Šablona checklistu pro tuto službu u bytu (apartment_services.checklist_template_id).
   final String? checklistTemplateId;
+
+  /// Kopie `name_i18n` z katalogu v době sestavení kandidáta — izolát ji přenese do INSERT řádku úkolu.
+  final Map<String, dynamic>? titleI18nForTask;
 }
 
 /// Kandidát úkolu pro Smart Planner – drží data potřebná pro řazení a následné přiřazení.
@@ -678,7 +891,7 @@ Map<String, dynamic> _smartTaskCandidateToIsolateMap(_SmartTaskCandidate c) {
   final rs = c.reservationService;
   return <String, dynamic>{
     'reservation': _reservationRowToSmartGenMap(c.reservation as ReservationRow),
-    'service': <String, dynamic>{
+      'service': <String, dynamic>{
       'serviceName': svc.serviceName,
       'requiredRole': svc.requiredRole,
       'serviceType': svc.serviceType,
@@ -687,6 +900,8 @@ Map<String, dynamic> _smartTaskCandidateToIsolateMap(_SmartTaskCandidate c) {
       'serviceId': svc.serviceId,
       'apartmentServiceId': svc.apartmentServiceId,
       'checklistTemplateId': svc.checklistTemplateId,
+      if (svc.titleI18nForTask != null && svc.titleI18nForTask!.isNotEmpty)
+        'titleI18nForTask': svc.titleI18nForTask,
     },
     'taskDate': c.taskDate.toIso8601String(),
     'effectiveTaskType': c.effectiveTaskType,
@@ -757,6 +972,8 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
     String Function(int hours)? getEstimateHoursText,
     String Function()? getEstimate1HourText,
     String Function(int minutes)? getEstimateMinutesText,
+    /// Fallback jména hosta — musí jít z UI (.tr()), ne z Notifieru bez kontextu.
+    String Function()? getGuestUnknownLabel,
   }) async {
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     if (tenantId == null || tenantId.isEmpty) return 0;
@@ -866,6 +1083,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
               isMandatory: isMandatory,
               requiresPhotoFromApartment: requiresPhotoFromApartment,
               checklistTemplateId: checklistTpl,
+              titleI18nForTask: snapshotTaskTitleI18nFromTenantService(service),
             ),
           );
     }
@@ -875,7 +1093,20 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
     const int maxReservationsPerRun = 500;
     final reservationsLimited = reservations.take(maxReservationsPerRun).toList();
     final reservationIds = reservationsLimited.map((r) => r.id).where((id) => id.isNotEmpty).toList();
-    final reservationServicesByRes = await fetchByReservationIds(reservationIds, tenantId);
+    Map<String, List<ReservationServiceRow>> reservationServicesByRes;
+    try {
+      reservationServicesByRes = await fetchByReservationIds(reservationIds, tenantId);
+    } catch (e, st) {
+      // PROČ: Dotaz .inFilter na stovky reservation_id může timeoutnout (10 s) nebo spadnout na RLS — bez logu je to „tichá“ chyba v UI.
+      _logTaskGeneratorFailure(
+        'načtení reservation_services (fáze 2)',
+        e,
+        st,
+        tenantId: tenantId,
+        extra: {'reservationCount': reservationIds.length},
+      );
+      rethrow;
+    }
 
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
@@ -892,7 +1123,10 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
       if (checkOutDt.isBefore(today)) continue;
       if (apartmentById[r.apartmentId] == null) continue;
 
-      final guestName = (r.guestName ?? '').trim().isEmpty ? 'admin.dashboard_guest_unknown'.tr() : r.guestName!;
+      final guestUnknown =
+          getGuestUnknownLabel?.call() ?? 'admin.dashboard_guest_unknown'.tr();
+      final guestName =
+          (r.guestName ?? '').trim().isEmpty ? guestUnknown : r.guestName!;
       final apartmentServicesList = (servicesByApartment[r.apartmentId] ?? [])
           .toList()
           ..sort((a, b) => _getServicePriority(a.serviceType).compareTo(_getServicePriority(b.serviceType)));
@@ -1021,7 +1255,23 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
       apartmentFallback: apartmentFallback,
       candidateMaps: candidateMaps,
     );
-    final phaseCResult = await _runSmartGenerationPhaseCAsync(phaseCPack);
+    final SmartGenPhaseCResult phaseCResult;
+    try {
+      phaseCResult = await _runSmartGenerationPhaseCAsync(phaseCPack);
+    } catch (e, st) {
+      // PROČ: Na mobilu běží fáze C v Isolate — selhání serializace nebo engine je jiná třída chyb než PostgREST INSERT.
+      _logTaskGeneratorFailure(
+        'fáze C (přiřazení personálu / kolize)',
+        e,
+        st,
+        tenantId: tenantId,
+        extra: {
+          'candidateCount': candidates.length,
+          'kIsWeb': kIsWeb,
+        },
+      );
+      rethrow;
+    }
     final toInsert = phaseCResult.toInsert;
     final checklistTemplateIdsForBatch = phaseCResult.checklistTemplateIds;
     // Lokalizovaný popis odhadu minut musí zůstat na hlavním vláknu (EasyLocalization / kontext UI).
@@ -1048,7 +1298,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
         }
       }
       return toInsert.length;
-    } catch (e) {
+    } catch (e, st) {
       // PROČ: Pokud selže odeslání na server kvůli chybějícímu internetu,
       // zachráníme data do lokální fronty. NetworkSyncWatcher je později odešle.
       if (isNetworkError(e)) {
@@ -1094,12 +1344,23 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
             'reservation_id': p['reservation_id'],
             'service_id': p['service_id'],
             'metadata': p['metadata'] ?? {},
+            if (p['title_i18n'] != null) 'title_i18n': p['title_i18n'],
           };
           newRows.add(TaskRow.fromJson(map));
         }
         state = AsyncValue.data([...current, ...newRows]);
         return toInsert.length;
       }
+      _logTaskGeneratorFailure(
+        'INSERT dávky úkolů (createTasksBatch)',
+        e,
+        st,
+        tenantId: tenantId,
+        extra: {
+          'batchSize': toInsert.length,
+          'hasTitleI18n': toInsert.any((p) => p.containsKey('title_i18n')),
+        },
+      );
       rethrow;
     }
   }
@@ -1114,6 +1375,8 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
   /// v `toInsert`). Metadata nesou cenu/plátce/foto stejně jako u úkolů z rezervací, aby byl downstream (worker, fakturace) konzistentní.
   Future<int> generateScheduledTasks({
     String Function(int minutes)? getEstimateMinutesText,
+    /// Přípona titulku scheduled úkolu — lokalizace z UI (.tr()).
+    String Function()? getScheduledMaintenanceSuffix,
   }) async {
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     if (tenantId == null || tenantId.isEmpty) return 0;
@@ -1144,7 +1407,18 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
     final tasksRaw = await SupabaseService.safeFrom('tasks', tenantId)
         .select()
         .isFilter('deleted_at', null);
-    final tasksList = (tasksRaw as List).cast<Map<String, dynamic>>();
+    // PROČ: .cast<Map>() hodí výjimku při neočekávaném typu v odpovědi — raději bezpečně přemapovat.
+    final fromSupabase = <Map<String, dynamic>>[];
+    for (final raw in tasksRaw as List) {
+      if (raw is Map) {
+        fromSupabase.add(Map<String, dynamic>.from(raw));
+      }
+    }
+    final localTasks = ref.read(adminTasksStreamProvider).valueOrNull ?? [];
+    final tasksList = _mergeTasksForScheduledGenerator(
+      fromSupabase: fromSupabase,
+      localTasks: localTasks,
+    );
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     // Anti-amnézie: jedna sdílená reference toInsert; po každém volání engine ihned .add(...).
@@ -1160,186 +1434,257 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
       final apartmentId = (row['apartment_id'] as String?)?.trim() ?? '';
       final serviceId = (row['service_id'] as String?)?.trim() ?? '';
       final scheduleInterval = (row['schedule_interval'] as String?)?.trim() ?? '';
-      if (apartmentId.isEmpty || serviceId.isEmpty || scheduleInterval.isEmpty) continue;
+      if (apartmentId.isEmpty || serviceId.isEmpty || scheduleInterval.isEmpty) {
+        continue;
+      }
 
       final service = catalogById[serviceId];
       if (service == null) continue;
 
-      // --- OCHRANNÝ ŠTÍT: Nepřidat úkol, pokud už existuje aktivní (pending/assigned/in_progress) pro apartment+service ---
-      // PROČ: Bez toho by každé spuštění generátoru poslalo další stejný údržbový úkol dřív, než ten předchozí skončí.
-      const activeStatuses = ['pending', 'draft', 'Návrh', 'assigned', 'Nový', 'in_progress', 'Probíhá'];
-      bool hasActive = tasksList.any((t) {
-        final apt = t['apartment_id']?.toString().trim();
-        final svc = t['service_id']?.toString().trim();
-        if (apt != apartmentId || svc != serviceId) return false;
-        final st = (t['status'] as String?)?.trim() ?? '';
-        return activeStatuses.contains(st);
-      });
-      if (hasActive) continue;
-      hasActive = toInsert.any((m) =>
-          m['apartment_id']?.toString() == apartmentId &&
-          m['service_id']?.toString() == serviceId);
-      if (hasActive) continue;
-
-      // --- Výpočet data: najít poslední hotový úkol pro apartment+service ---
-      // PROČ: Interval se počítá od skutečného dokončení, ne od plánu – jinak by se po zpoždění hromadily fiktivní termíny.
-      final completed = tasksList
-          .where((t) =>
-              t['apartment_id']?.toString() == apartmentId &&
-              t['service_id']?.toString() == serviceId &&
-              _isCompletedStatus((t['status'] as String?)?.trim() ?? ''))
-          .toList();
-      DateTime? baseDate;
-      if (completed.isNotEmpty) {
-        final withDate = completed
-            .map((t) => parseTaskDateTime(t['due_date']) ?? parseTaskDateTime(t['scheduled_start']))
-            .whereType<DateTime>()
-            .toList();
-        if (withDate.isNotEmpty) {
-          baseDate = withDate.reduce((a, b) => a.isAfter(b) ? a : b);
-        }
-      }
-      baseDate ??= now;
-
-      // Převod schedule_interval na Duration a výpočet dalšího data (viz [_addScheduleInterval] – textové hodnoty z DB).
-      final nextDate = _addScheduleInterval(baseDate, scheduleInterval);
-      if (nextDate.isBefore(today)) continue; // negenerovat do minulosti
-
-      // PROČ fixní 10:00: scheduled úkoly nemají kotvu na příjezd hosta; jednotný „den práce“ zjednodušuje plánovač i UI.
-      final taskDate = DateTime(nextDate.year, nextDate.month, nextDate.day, 10, 0, 0);
-      final apartment = apartmentById[apartmentId];
-      final serviceDurationMinutes = service.durationMinutes ?? 60;
-      final totalMinutes = _taskDurationMinutes(
-        serviceType: service.serviceType,
-        apartmentStandardCleaning: apartment?.standardCleaningDuration ?? 120,
-        serviceDurationMinutes: serviceDurationMinutes,
-      );
-      // Bez řetězení: každý úkol startuje přesně v taskDate. Engine posune flexibilní při kolizi.
-      final taskStart = taskDate;
-      final taskEnd = taskStart.add(Duration(minutes: totalMinutes));
-
       final serviceName = service.name.trim().isEmpty ? service.id : service.name;
-      final title = '$serviceName: ${'admin.task_title_scheduled_maintenance'.tr()}';
 
-      List<TeamMember> candidates;
-      if (service.requiredRole == null || service.requiredRole!.trim().isEmpty || service.requiredRole!.toLowerCase() == 'any') {
-        candidates = team.where((m) => assignableId(m).isNotEmpty).toList();
-      } else {
-        candidates = team.where((m) => _hasRole(m, service.requiredRole!)).toList();
-      }
-      var available = candidates
-          .where((m) =>
-              !_isAbsentOnDate(m, taskDate, absences) &&
-              _isWithinContract(m, taskDate))
-          .toList();
+      // PROČ: Jeden defektní řádek (null datum, špatná metadata mapa) nesmí shodit celý batch max 50 úkolů.
+      try {
+        // --- OCHRANNÝ ŠTÍT: aktivní úkol pro byt+službu (včetně právě generovaných v toInsert) ---
+        const activeStatuses = [
+          'pending',
+          'draft',
+          'Návrh',
+          'assigned',
+          'Nový',
+          'in_progress',
+          'Probíhá',
+        ];
+        var hasActive = tasksList.any((t) {
+          if (!_scheduledTaskMatchesPair(t, apartmentId, serviceId)) return false;
+          final st = (t['status'] as String?)?.trim() ?? '';
+          return activeStatuses.contains(st);
+        });
+        if (hasActive) continue;
+        hasActive = toInsert.any(
+          (m) => _scheduledTaskMatchesPair(m, apartmentId, serviceId),
+        );
+        if (hasActive) continue;
 
-      // Zónové preference: P0=null zóna→bez změny, P1=Blacklist -1, P2=Řazení 1–99.
-      available = _filterAndSortByZonePreferences(available, apartment?.zoneId);
+        // --- Kotva dalšího výskytu: dokončené úkoly stejné dvojice byt+služba ---
+        final completedForPair = tasksList
+            .where(
+              (t) =>
+                  _scheduledTaskMatchesPair(t, apartmentId, serviceId) &&
+                  _isCompletedStatus((t['status'] as String?)?.trim() ?? ''),
+            )
+            .toList();
+        Map<String, dynamic>? lastCompletedTask;
+        if (completedForPair.isNotEmpty) {
+          lastCompletedTask = completedForPair.reduce((a, b) {
+            final anchorA = _scheduledAnchorFromTaskMap(a);
+            final anchorB = _scheduledAnchorFromTaskMap(b);
+            if (anchorA == null) return b;
+            if (anchorB == null) return a;
+            return anchorA.isAfter(anchorB) ? a : b;
+          });
+        }
 
-      // Deadline: scheduled úkoly – konec taskDate + 3 dny (bezpečnostní limit).
-      final deadline = taskDate.add(const Duration(days: 3));
-      final applyNightRest = _shouldApplyNightRest(service.requiredRole, service.serviceType);
+        DateTime? baseDate;
+        try {
+          baseDate = _latestScheduledAnchorFromCompletedTasks(completedForPair);
+          // PROČ: Žádný parsovatelný completed_at/due_date u dokončených → začneme od „teď“, ne null.
+          baseDate ??= now;
+        } catch (e, st) {
+          _logScheduledServiceRowFailure(
+            phase: 'výpočet baseDate',
+            error: e,
+            stackTrace: st,
+            tenantId: tenantId,
+            apartmentId: apartmentId,
+            serviceId: serviceId,
+            serviceName: serviceName,
+            scheduleInterval: scheduleInterval,
+            lastCompletedTask: lastCompletedTask,
+          );
+          baseDate = now;
+        }
 
-      final result = pickAssigneeWithCollisionAvoidance(
-        candidates: available,
-        taskStart: taskStart,
-        taskEnd: taskEnd,
-        deadline: deadline,
-        applyNightRest: applyNightRest,
-        existingTasksRaw: tasksList,
-        toInsert: toInsert,
-        zoneId: apartment?.zoneId,
-      );
-      // Anti-amnézie: ihned přidat do toInsert, aby další iterace engine viděla přiřazení.
-      final description = getEstimateMinutesText?.call(totalMinutes) ?? 'admin.task_estimate_minutes'.tr(namedArgs: {'minutes': totalMinutes.toString()});
-      final scheduledMetadata = <String, dynamic>{};
-      // Kaskáda: apartment_services.requires_photo -> tenant_services.requires_photo (pro scheduled není reservation).
-      final rawApartmentReq = row['requires_photo'];
-      bool? apartmentReqPhoto;
-      if (rawApartmentReq != null) {
-        if (rawApartmentReq is bool) {
-          apartmentReqPhoto = rawApartmentReq;
-        } else if (rawApartmentReq is int) {
-          apartmentReqPhoto = rawApartmentReq == 1;
-        } else if (rawApartmentReq is String) {
-          final l = rawApartmentReq.toLowerCase();
-          if (l == 'true' || l == '1') {
-            apartmentReqPhoto = true;
-          } else if (l == 'false' || l == '0') {
-            apartmentReqPhoto = false;
+        DateTime nextDate;
+        try {
+          nextDate = _addScheduleInterval(baseDate, scheduleInterval);
+        } catch (e, st) {
+          _logScheduledServiceRowFailure(
+            phase: 'schedule_interval',
+            error: e,
+            stackTrace: st,
+            tenantId: tenantId,
+            apartmentId: apartmentId,
+            serviceId: serviceId,
+            serviceName: serviceName,
+            scheduleInterval: scheduleInterval,
+            lastCompletedTask: lastCompletedTask,
+            baseDate: baseDate,
+          );
+          continue;
+        }
+        if (nextDate.isBefore(today)) continue;
+
+        final taskDate =
+            DateTime(nextDate.year, nextDate.month, nextDate.day, 10, 0, 0);
+        final apartment = apartmentById[apartmentId];
+        final serviceDurationMinutes = service.durationMinutes ?? 60;
+        final totalMinutes = _taskDurationMinutes(
+          serviceType: service.serviceType,
+          apartmentStandardCleaning: apartment?.standardCleaningDuration ?? 120,
+          serviceDurationMinutes: serviceDurationMinutes,
+        );
+        final taskStart = taskDate;
+        final taskEnd = taskStart.add(Duration(minutes: totalMinutes));
+
+        final maintenanceSuffix = getScheduledMaintenanceSuffix?.call() ??
+            'admin.task_title_scheduled_maintenance'.tr();
+        final title = '$serviceName: $maintenanceSuffix';
+
+        List<TeamMember> candidates;
+        if (service.requiredRole == null ||
+            service.requiredRole!.trim().isEmpty ||
+            service.requiredRole!.toLowerCase() == 'any') {
+          candidates = team.where((m) => assignableId(m).isNotEmpty).toList();
+        } else {
+          candidates = team.where((m) => _hasRole(m, service.requiredRole!)).toList();
+        }
+        var available = candidates
+            .where(
+              (m) =>
+                  !_isAbsentOnDate(m, taskDate, absences) &&
+                  _isWithinContract(m, taskDate),
+            )
+            .toList();
+        available = _filterAndSortByZonePreferences(available, apartment?.zoneId);
+
+        final deadline = taskDate.add(const Duration(days: 3));
+        final applyNightRest =
+            _shouldApplyNightRest(service.requiredRole, service.serviceType);
+
+        final result = pickAssigneeWithCollisionAvoidance(
+          candidates: available,
+          taskStart: taskStart,
+          taskEnd: taskEnd,
+          deadline: deadline,
+          applyNightRest: applyNightRest,
+          existingTasksRaw: tasksList,
+          toInsert: toInsert,
+          zoneId: apartment?.zoneId,
+        );
+        final description = getEstimateMinutesText?.call(totalMinutes) ??
+            'admin.task_estimate_minutes'.tr(
+              namedArgs: {'minutes': totalMinutes.toString()},
+            );
+        final scheduledMetadata = <String, dynamic>{};
+        final rawApartmentReq = row['requires_photo'];
+        bool? apartmentReqPhoto;
+        if (rawApartmentReq != null) {
+          if (rawApartmentReq is bool) {
+            apartmentReqPhoto = rawApartmentReq;
+          } else if (rawApartmentReq is int) {
+            apartmentReqPhoto = rawApartmentReq == 1;
+          } else if (rawApartmentReq is String) {
+            final l = rawApartmentReq.toLowerCase();
+            if (l == 'true' || l == '1') {
+              apartmentReqPhoto = true;
+            } else if (l == 'false' || l == '0') {
+              apartmentReqPhoto = false;
+            }
           }
         }
-      }
-      final bool scheduledRequiresPhoto = apartmentReqPhoto ?? service.requiresPhoto;
-      scheduledMetadata['requires_photo'] = scheduledRequiresPhoto;
-      // KROK 2 OPRAVA: Vypálit cenu a plátce z apartment_services (příp. tenant_services) do metadata.
-      // Kaskáda: custom_price přepisuje default_price; payer_type z bytu, fallback 'owner'.
-      final customPriceRaw = row['custom_price'];
-      final catalogPrice = service.defaultPrice;
-      double? resolvedPrice;
-      if (customPriceRaw != null) {
-        if (customPriceRaw is num) {
-          resolvedPrice = customPriceRaw.toDouble();
-        } else {
-          resolvedPrice = double.tryParse(customPriceRaw.toString());
+        final bool scheduledRequiresPhoto =
+            apartmentReqPhoto ?? service.requiresPhoto;
+        scheduledMetadata['requires_photo'] = scheduledRequiresPhoto;
+        final customPriceRaw = row['custom_price'];
+        final catalogPrice = service.defaultPrice;
+        double? resolvedPrice;
+        if (customPriceRaw != null) {
+          if (customPriceRaw is num) {
+            resolvedPrice = customPriceRaw.toDouble();
+          } else {
+            resolvedPrice = double.tryParse(customPriceRaw.toString());
+          }
         }
-      }
-      resolvedPrice ??= catalogPrice?.toDouble();
-      final aptPayer = (row['payer_type'] as String?)?.trim();
-      final scheduledPayerType =
-          (aptPayer == 'owner' || aptPayer == 'guest') ? aptPayer! : 'owner';
-      scheduledMetadata['payer_type'] = scheduledPayerType;
-      final apsMetadata = row['metadata'] is Map<String, dynamic>
-          ? Map<String, dynamic>.from(row['metadata'] as Map<String, dynamic>)
-          : <String, dynamic>{};
-      final rawTransit = apsMetadata['transit_price'];
-      final transitPrice = rawTransit == null
-          ? null
-          : (rawTransit is num ? rawTransit.toDouble() : double.tryParse(rawTransit.toString()));
-      if (transitPrice != null && transitPrice > 0) {
-        scheduledMetadata['transit_amount_to_collect'] = transitPrice;
-        scheduledMetadata['long_term_rent_due'] = true;
-        scheduledMetadata['rent_cash_flow'] = 'agency_float';
-        if (service.serviceType.trim().toLowerCase() == 'rent_collection') {
-          // PROČ: SQL trigger tasks_apply_rent_collection_to_pnl čte měsíc právě z metadata.rent_cycle_key
-          // (formát "<apartment_id>:YYYY-MM-DD"). Bez tohoto klíče se po dokončení úkolu nezapíše příjem do P&L.
-          final monthStartUtc = DateTime.utc(result.start.year, result.start.month, 1);
-          final y = monthStartUtc.year.toString().padLeft(4, '0');
-          final m = monthStartUtc.month.toString().padLeft(2, '0');
-          final d = monthStartUtc.day.toString().padLeft(2, '0');
-          scheduledMetadata['rent_cycle_key'] = '$apartmentId:$y-$m-$d';
-          scheduledMetadata['billing_month'] = '$y-$m-$d';
+        resolvedPrice ??= catalogPrice?.toDouble();
+        final aptPayer = (row['payer_type'] as String?)?.trim();
+        final scheduledPayerType =
+            (aptPayer == 'owner' || aptPayer == 'guest') ? aptPayer! : 'owner';
+        scheduledMetadata['payer_type'] = scheduledPayerType;
+        // PROČ: PostgREST metadata bývá Map<dynamic,dynamic> — ne spoléhat jen na `is Map<String,dynamic>`.
+        final rawMeta = row['metadata'];
+        final apsMetadata = rawMeta is Map
+            ? Map<String, dynamic>.from(rawMeta)
+            : <String, dynamic>{};
+        final rawTransit = apsMetadata['transit_price'];
+        final transitPrice = rawTransit == null
+            ? null
+            : (rawTransit is num
+                ? rawTransit.toDouble()
+                : double.tryParse(rawTransit.toString()));
+        if (transitPrice != null && transitPrice > 0) {
+          scheduledMetadata['transit_amount_to_collect'] = transitPrice;
+          scheduledMetadata['long_term_rent_due'] = true;
+          scheduledMetadata['rent_cash_flow'] = 'agency_float';
+          if (service.serviceType.trim().toLowerCase() == 'rent_collection') {
+            final monthStartUtc =
+                DateTime.utc(result.start.year, result.start.month, 1);
+            final y = monthStartUtc.year.toString().padLeft(4, '0');
+            final m = monthStartUtc.month.toString().padLeft(2, '0');
+            final d = monthStartUtc.day.toString().padLeft(2, '0');
+            scheduledMetadata['rent_cycle_key'] = '$apartmentId:$y-$m-$d';
+            scheduledMetadata['billing_month'] = '$y-$m-$d';
+          }
         }
-      }
-      if (resolvedPrice != null && resolvedPrice > 0) {
-        if (scheduledPayerType == 'guest') {
-          scheduledMetadata['amount_to_collect'] = resolvedPrice;
-        } else {
-          scheduledMetadata['service_price'] = resolvedPrice;
+        if (resolvedPrice != null && resolvedPrice > 0) {
+          if (scheduledPayerType == 'guest') {
+            scheduledMetadata['amount_to_collect'] = resolvedPrice;
+          } else {
+            scheduledMetadata['service_price'] = resolvedPrice;
+          }
         }
-      }
-      toInsert.add({
-        'tenant_id': tenantId,
-        'apartment_id': apartmentId,
-        'service_id': serviceId,
-        'assigned_to': result.assignTo,
-        'reference_number': generateTaskRef(),
-        'title': title,
-        'description': description,
-        'status': 'pending',
-        'task_type': service.serviceType,
-        'scheduled_start': result.start.toIso8601String(),
-        'due_date': result.end.toIso8601String(),
-        // Vždy posíláme metadata (min. prázdný objekt), protože DB sloupec metadata má NOT NULL constraint.
-        'metadata': scheduledMetadata,
-      });
-      final rawSchTpl = row['checklist_template_id'];
-      checklistTemplateIdsForScheduledBatch.add(
-        rawSchTpl == null ? null : (rawSchTpl.toString().trim().isEmpty ? null : rawSchTpl.toString().trim()),
-      );
-      // Ochrana proti přetížení API (Batching). Vygenerujeme max 50 pravidelných úkolů na jedno spuštění.
-      if (toInsert.length >= 50) {
-        break;
+        final scheduledTitleI18n = snapshotTaskTitleI18nFromTenantService(service);
+        // Ochrana před chybou 23502: `title_i18n` je NOT NULL — bez snapshotu z katalogu posíláme {}, ne vynechání klíče/null.
+        final titleI18nPayload =
+            ensureTaskTitleI18nForInsert(scheduledTitleI18n);
+        toInsert.add({
+          'tenant_id': tenantId,
+          'apartment_id': apartmentId,
+          'service_id': serviceId,
+          'assigned_to': result.assignTo,
+          'reference_number': generateTaskRef(),
+          'title': title,
+          'description': description,
+          'status': 'pending',
+          'task_type': service.serviceType,
+          'scheduled_start': result.start.toIso8601String(),
+          'due_date': result.end.toIso8601String(),
+          'metadata': scheduledMetadata,
+          'title_i18n': titleI18nPayload,
+        });
+        final rawSchTpl = row['checklist_template_id'];
+        checklistTemplateIdsForScheduledBatch.add(
+          rawSchTpl == null
+              ? null
+              : (rawSchTpl.toString().trim().isEmpty
+                  ? null
+                  : rawSchTpl.toString().trim()),
+        );
+        if (toInsert.length >= 50) {
+          break;
+        }
+      } catch (e, st) {
+        _logScheduledServiceRowFailure(
+          phase: 'celý řádek scheduled služby',
+          error: e,
+          stackTrace: st,
+          tenantId: tenantId,
+          apartmentId: apartmentId,
+          serviceId: serviceId,
+          serviceName: serviceName,
+          scheduleInterval: scheduleInterval,
+        );
+        continue;
       }
     }
 
@@ -1360,7 +1705,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
         }
       }
       return toInsert.length;
-    } catch (e) {
+    } catch (e, st) {
       // PROČ: Síťová chyba – zachránit do fronty. NetworkSyncWatcher odešle po obnovení sítě.
       if (isNetworkError(e)) {
         final mutationQueue = ref.read(mutationQueueServiceProvider);
@@ -1405,25 +1750,47 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
             'reservation_id': p['reservation_id'],
             'service_id': p['service_id'],
             'metadata': p['metadata'] ?? {},
+            if (p['title_i18n'] != null) 'title_i18n': p['title_i18n'],
           };
           newRows.add(TaskRow.fromJson(map));
         }
         state = AsyncValue.data([...current, ...newRows]);
         return toInsert.length;
       }
+      _logTaskGeneratorFailure(
+        'INSERT scheduled úkolů (createTasksBatch)',
+        e,
+        st,
+        tenantId: tenantId,
+        extra: {
+          'batchSize': toInsert.length,
+          'hasTitleI18n': toInsert.any((p) => p.containsKey('title_i18n')),
+        },
+      );
       rethrow;
     }
   }
 
   /// Aktualizuje stav úkolu v Supabase (pro Kanban drag & drop).
   /// [newStatus] musí být systémová hodnota: pending, assigned, in_progress, completed, problem.
+  /// Automaticky doplní [started_at] / [completed_at] dle [applyAdminTaskStatusTimestampsToUpdate].
   /// Po úspěchu volající invaliduje provider úkolů pro překreslení UI.
   Future<void> updateTaskStatus(String taskId, String newStatus) async {
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     if (tenantId == null || tenantId.isEmpty) return;
+
+    final existing = _findTaskRowInCaches(taskId);
+    final updateFields = <String, dynamic>{'status': newStatus};
+    applyAdminTaskStatusTimestampsToUpdate(
+      updateFields,
+      previousStatus: existing?.status,
+      currentStartedAt: existing?.startedAt,
+      currentCompletedAt: existing?.completedAt,
+    );
+
     try {
       await SupabaseService.safeFrom('tasks', tenantId)
-          .update({'status': newStatus})
+          .update(updateFields)
           .eq('id', taskId);
     } catch (e) {
       // PROČ: Offline – uložit do fronty. NetworkSyncWatcher odešle při návratu sítě.
@@ -1432,7 +1799,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
           await ref.read(mutationQueueServiceProvider).enqueueMutation(
                 table: 'tasks',
                 action: 'UPDATE',
-                payload: {'status': newStatus, 'tenant_id': tenantId},
+                payload: {...updateFields, 'tenant_id': tenantId},
                 recordId: taskId,
               );
         } on OfflineWebException catch (_) {
@@ -1442,22 +1809,60 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
         }
         // PROČ: Optimistic UI. I když jsme offline a data šla do fronty, musíme je uživateli hned
         // zobrazit na obrazovce (aktualizovat lokální stav), aby si nemyslel, že se změna ztratila.
-        final current = state.valueOrNull;
-        if (current != null) {
-          final idx = current.indexWhere((t) => t.id == taskId);
-          if (idx >= 0) {
-            final updated = current[idx].copyWith(status: newStatus);
-            state = AsyncValue.data([
-              ...current.sublist(0, idx),
-              updated,
-              ...current.sublist(idx + 1),
-            ]);
-          }
-        }
+        _applyOptimisticTaskStatusTimestamps(taskId, updateFields);
       } else {
         rethrow;
       }
     }
+  }
+
+  /// Najde úkol v notifier state nebo ve stream cache (Realtime).
+  TaskRow? _findTaskRowInCaches(String taskId) {
+    final fromState = state.valueOrNull;
+    if (fromState != null) {
+      final hit = fromState.where((t) => t.id == taskId).firstOrNull;
+      if (hit != null) return hit;
+    }
+    final fromStream =
+        ref.read(adminTasksStreamProvider).valueOrNull;
+    if (fromStream != null) {
+      return fromStream.where((t) => t.id == taskId).firstOrNull;
+    }
+    return null;
+  }
+
+  /// Optimistic patch statusu + Time Tracking razítek do lokálního [state].
+  void _applyOptimisticTaskStatusTimestamps(
+    String taskId,
+    Map<String, dynamic> updateFields,
+  ) {
+    final current = state.valueOrNull;
+    if (current == null) return;
+    final idx = current.indexWhere((t) => t.id == taskId);
+    if (idx < 0) return;
+    final old = current[idx];
+    final newStatus =
+        (updateFields['status'] as String?)?.trim() ?? old.status;
+    Object? startedArg = _kTaskRowDateCopyUnset;
+    Object? completedArg = _kTaskRowDateCopyUnset;
+    if (updateFields.containsKey('started_at')) {
+      final v = updateFields['started_at'];
+      startedArg = v == null ? null : TaskRow._parseOptionalDateTime(v);
+    }
+    if (updateFields.containsKey('completed_at')) {
+      final v = updateFields['completed_at'];
+      completedArg = v == null ? null : TaskRow._parseOptionalDateTime(v);
+    }
+    final updated = old.copyWith(
+      status: newStatus,
+      startedAt: startedArg,
+      completedAt: completedArg,
+    );
+    state = AsyncValue.data([
+      ...current.sublist(0, idx),
+      updated,
+      ...current.sublist(idx + 1),
+    ]);
   }
 
   /// Hromadná změna stavu úkolů (Kanban výběr). Volá [updateTaskStatus] pro každé id — zachová offline frontu a optimistic UI.
@@ -1489,6 +1894,29 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
     }
   }
 
+  /// Doplní [payload] o `title_i18n` z [tenantServicesProvider], pokud existuje `service_id` a klient
+  /// ještě nepředal vlastní `title_i18n` (např. budoucí dialog překladů).
+  ///
+  /// Viz [snapshotTaskTitleI18nFromTenantService] — ochrana historických výstupů před změnami ceníku.
+  void _applySnapshotTitleI18nFromServiceCatalog(Map<String, dynamic> payload) {
+    if (payload.containsKey('title_i18n')) {
+      // Ochrana před chybou 23502: ruční INSERT mohl nést explicitní null místo vynechaného klíče.
+      payload['title_i18n'] = ensureTaskTitleI18nForInsert(payload['title_i18n']);
+      return;
+    }
+    final sid = payload['service_id']?.toString().trim();
+    if (sid == null || sid.isEmpty) return;
+    final catalog = ref.read(tenantServicesProvider).valueOrNull;
+    if (catalog == null) return;
+    for (final s in catalog) {
+      if (s.id == sid) {
+        final snap = snapshotTaskTitleI18nFromTenantService(s);
+        payload['title_i18n'] = ensureTaskTitleI18nForInsert(snap);
+        return;
+      }
+    }
+  }
+
   /// Vloží nový úkol do Supabase. Veškerá logika (insert → catch → enqueue → optimistic state) v jednom místě.
   /// UI jen volá tuto metodu a čeká na výsledek. [payload] musí obsahovat tenant_id, apartment_id, title,
   /// description, status, task_type, due_date, scheduled_start; volitelně assigned_to, metadata.
@@ -1508,6 +1936,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
     }
     final tenantId = ref.read(authNotifierProvider).tenantIdForData ?? p['tenant_id'] as String?;
     if (tenantId == null || tenantId.isEmpty) throw StateError('Missing tenant_id for insert');
+    _applySnapshotTitleI18nFromServiceCatalog(p);
     try {
       final taskId = await SupabaseTaskInsertRepository.createTask(p);
       // PROČ: Explicitní výběr v dialogu má přednost; jinak bereme šablonu z apartment_services (byt + služba).
@@ -1569,6 +1998,7 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
           'apartment_name': apartmentNameById[aptId],
           'assigned_to_name': assignedTo != null ? nameByProfileId[assignedTo] : null,
           'metadata': sanitizedP['metadata'] ?? {},
+          if (sanitizedP['title_i18n'] != null) 'title_i18n': sanitizedP['title_i18n'],
         };
         final newRow = TaskRow.fromJson(map);
         final current = state.valueOrNull ?? [];
@@ -1582,16 +2012,25 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
 
   /// Aktualizuje existující úkol v Supabase. Veškerá logika (update → catch → enqueue → optimistic state) v jednom místě.
   /// [taskId] – ID úkolu, [updateFields] – mapuje sloupce na nové hodnoty (apartment_id, assigned_to, title, atd.).
+  /// Při změně [status] doplní Time Tracking razítka ([applyAdminTaskStatusTimestampsToUpdate]).
   /// Uloží se tenant_id do payloadu pro frontu. Vrací při úspěchu (online i offline), při chybě vyhodí.
   Future<void> updateTaskInAdmin(String taskId, Map<String, dynamic> updateFields) async {
     final tenantId = ref.read(authNotifierProvider).tenantIdForData;
     if (tenantId == null || tenantId.isEmpty) {
       throw StateError('Missing tenant_id');
     }
-    final payload = Map<String, dynamic>.from(updateFields)..['tenant_id'] = tenantId;
+    final fields = Map<String, dynamic>.from(updateFields);
+    final existing = _findTaskRowInCaches(taskId);
+    applyAdminTaskStatusTimestampsToUpdate(
+      fields,
+      previousStatus: existing?.status,
+      currentStartedAt: existing?.startedAt,
+      currentCompletedAt: existing?.completedAt,
+    );
+    final payload = Map<String, dynamic>.from(fields)..['tenant_id'] = tenantId;
     try {
       await SupabaseService.safeFrom('tasks', tenantId)
-          .update(updateFields)
+          .update(fields)
           .eq('id', taskId);
       // PROČ: Po uložení přeřazení invalidujeme načtení jednoho úkolu, aby Finance/Reporty
       // po zavření dialogu viděly aktuální data.
@@ -1630,6 +2069,9 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
             final parsedSched = TaskRow._parseOptionalDateTime(payload['scheduled_start']) ??
                 TaskRow._parseOptionalDateTime(payload['due_date']);
             final newMetadata = payload['metadata'];
+            final newTitleI18n = payload.containsKey('title_i18n')
+                ? TaskRow._parseMetadata(payload['title_i18n'])
+                : old.titleI18n;
             // PROČ: Při přeřazení úkolu (změna client_id / apartment_id) musí optimistic update
             // zahrnout i clientId, aby se změna hned projevila v seznamu a v Reportech/Financích.
             final newClientId = payload.containsKey('client_id')
@@ -1641,6 +2083,16 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
               final g = GeoJsonPoint.parseFromPostgrest(payload['geo_location']);
               newLat = g?.latitude;
               newLng = g?.longitude;
+            }
+            Object? startedArg = _kTaskRowDateCopyUnset;
+            Object? completedArg = _kTaskRowDateCopyUnset;
+            if (payload.containsKey('started_at')) {
+              final v = payload['started_at'];
+              startedArg = v == null ? null : TaskRow._parseOptionalDateTime(v);
+            }
+            if (payload.containsKey('completed_at')) {
+              final v = payload['completed_at'];
+              completedArg = v == null ? null : TaskRow._parseOptionalDateTime(v);
             }
             final updated = old.copyWith(
               apartmentId: newAptId,
@@ -1656,8 +2108,11 @@ class AdminTasksNotifier extends AsyncNotifier<List<TaskRow>> {
               assignedToName: newAssignedTo != null ? nameByProfileId[newAssignedTo] : null,
               serviceId: payload.containsKey('service_id') ? payload['service_id'] as String? : old.serviceId,
               metadata: newMetadata != null ? TaskRow._parseMetadata(newMetadata) : old.metadata,
+              titleI18n: newTitleI18n,
               latitude: newLat,
               longitude: newLng,
+              startedAt: startedArg,
+              completedAt: completedArg,
             );
             state = AsyncValue.data([
               ...current.sublist(0, idx),
@@ -1846,14 +2301,8 @@ final adminTasksStreamProvider =
 
   final selectedMonth = ref.watch(selectedTaskMonthProvider);
 
-  final apartments = await ref.watch(apartmentsFullListProvider.future);
-  final team = await ref.watch(teamFullListProvider.future);
-  final apartmentById = {for (final a in apartments) a.id: a.name};
-  final nameByProfileId = <String, String>{};
-  for (final m in team) {
-    final id = m.profileId ?? m.id;
-    if (id.isNotEmpty) nameByProfileId[id] = m.name;
-  }
+  final apartmentById = await ref.watch(apartmentsNameByIdLiteProvider.future);
+  final nameByProfileId = await ref.watch(teamNameByProfileIdLiteProvider.future);
 
   await for (final rawList in AdminTasksRepository.instance.watchTasksRawForMonth(tenantId, selectedMonth)) {
     try {
@@ -2038,29 +2487,22 @@ final kanbanHasVisibleTasksProvider = Provider<bool>((ref) {
   return kanbanFilterTasksBySearchQuery(tasks, q).isNotEmpty;
 });
 
-/// Stream úkolů pro výpočet vytížení na kartách Personál – **nezávislý** na [selectedTaskMonthProvider].
+/// Kanonický Realtime stream ops okna (−7 dní → konec příštího měsíce) – P1 výkon.
 ///
-/// PROČ: Záložka Úkoly mění měsíc; metriky „tento / příští týden“ musí vždy čerpat z úzkého okna kolem dneška
-/// (viz [AdminTasksRepository.watchTasksRawForTeamWorkloadWindow]), ne z celého měsíce v paměti.
-final teamWeeklyWorkloadTasksProvider =
-    StreamProvider<List<TaskRow>>((ref) async* {
+/// PROČ: Nástěnka a vytížení personálu sdílejí **jeden** kanál; derived providery filtrují
+/// v paměti (dříve 2× plný dump až 15k řádků). Enrich jmen přes lite mapy (ne full list).
+final adminTasksOpsWindowProvider = StreamProvider<List<TaskRow>>((ref) async* {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) {
     yield [];
     return;
   }
 
-  final apartments = await ref.watch(apartmentsFullListProvider.future);
-  final team = await ref.watch(teamFullListProvider.future);
-  final apartmentById = {for (final a in apartments) a.id: a.name};
-  final nameByProfileId = <String, String>{};
-  for (final m in team) {
-    final id = m.profileId ?? m.id;
-    if (id.isNotEmpty) nameByProfileId[id] = m.name;
-  }
+  final apartmentById = await ref.watch(apartmentsNameByIdLiteProvider.future);
+  final nameByProfileId = await ref.watch(teamNameByProfileIdLiteProvider.future);
 
   await for (final rawList
-      in AdminTasksRepository.instance.watchTasksRawForTeamWorkloadWindow(tenantId)) {
+      in AdminTasksRepository.instance.watchTasksRawForOpsWindow(tenantId)) {
     try {
       final rows = rawList
           .map((raw) => TaskRow.fromSupabaseRow(
@@ -2085,6 +2527,24 @@ final teamWeeklyWorkloadTasksProvider =
   }
 });
 
+/// Stream úkolů pro výpočet vytížení na kartách Personál – derived z [adminTasksOpsWindowProvider].
+///
+/// PROČ: Záložka Úkoly mění měsíc; metriky „tento / příští týden“ musí vždy čerpat z úzkého okna kolem dneška
+/// (−7 / +14 dní), ne z celého měsíce v paměti. Žádný druhý Realtime kanál.
+final teamWeeklyWorkloadTasksProvider =
+    Provider<AsyncValue<List<TaskRow>>>((ref) {
+  final async = ref.watch(adminTasksOpsWindowProvider);
+  return async.whenData((tasks) {
+    final (startUtc, endUtc) =
+        AdminTasksRepository.teamWorkloadWindowBoundsUtc();
+    return tasks.where((t) {
+      final dt = t.scheduledStart ?? t.dueDate;
+      final utc = dt.toUtc();
+      return !utc.isBefore(startUtc) && !utc.isAfter(endUtc);
+    }).toList();
+  });
+});
+
 /// Všechny úkoly navázané na jednu rezervaci – BEZ měsíčního/časového filtru.
 ///
 /// PROČ: V detailu rezervace (Související úkoly) musí být vidět check-in i check-out úkoly;
@@ -2094,14 +2554,8 @@ final tasksForReservationProvider =
     FutureProvider.family<List<TaskRow>, String>((ref, reservationId) async {
   final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty || reservationId.isEmpty) return [];
-  final apartments = await ref.watch(apartmentsFullListProvider.future);
-  final team = await ref.watch(teamFullListProvider.future);
-  final apartmentById = {for (final a in apartments) a.id: a.name};
-  final nameByProfileId = <String, String>{};
-  for (final m in team) {
-    final id = m.profileId ?? m.id;
-    if (id.isNotEmpty) nameByProfileId[id] = m.name;
-  }
+  final apartmentById = await ref.watch(apartmentsNameByIdLiteProvider.future);
+  final nameByProfileId = await ref.watch(teamNameByProfileIdLiteProvider.future);
   final rawList = await AdminTasksRepository.fetchTasksForReservation(tenantId, reservationId);
   return rawList
       .map((raw) => TaskRow.fromSupabaseRow(
@@ -2112,61 +2566,26 @@ final tasksForReservationProvider =
       .toList();
 });
 
-/// Stream úkolů pro Nástěnku – B2B měsíční výhled (1. den aktuálního měsíce → poslední den příštího měsíce).
+/// Stream úkolů pro Nástěnku – derived z [adminTasksOpsWindowProvider] (aktuální + příští měsíc).
 ///
-/// PROČ: Očekávaný příjem zobrazuje hotové k fakturaci + výhled tohoto a příštího měsíce. Dnešní plán a další
-/// sekce používají stejný výřez. Ostatní moduly (záložka Úkoly, settlements) dál používají [adminTasksStreamProvider].
+/// PROČ: Očekávaný příjem a dnešní plán filtrují kanonické ops okno; bez druhého Realtime.
 final adminDashboardTasksProvider =
-    StreamProvider<List<TaskRow>>((ref) async* {
-  final tenantId = ref.watch(authNotifierProvider).tenantIdForData;
-  if (tenantId == null || tenantId.isEmpty) {
-    yield [];
-    return;
-  }
-
-  // B2B fakturace: aktuální měsíc + příští měsíc (1. den běžného měsíce 00:00 → poslední den příštího měsíce 23:59).
-  final now = DateTime.now();
-  final fromLocal = DateTime(now.year, now.month, 1, 0, 0, 0, 0);
-  final nextMonth = now.month == 12 ? DateTime(now.year + 1, 1, 1) : DateTime(now.year, now.month + 1, 1);
-  final lastDayNext = DateTime(nextMonth.year, nextMonth.month + 1, 0, 23, 59, 59, 999);
-  final toLocal = lastDayNext;
-  final fromUtc = fromLocal.toUtc();
-  final toUtc = toLocal.toUtc();
-
-  final apartments = await ref.watch(apartmentsFullListProvider.future);
-  final team = await ref.watch(teamFullListProvider.future);
-  final apartmentById = {for (final a in apartments) a.id: a.name};
-  final nameByProfileId = <String, String>{};
-  for (final m in team) {
-    final id = m.profileId ?? m.id;
-    if (id.isNotEmpty) nameByProfileId[id] = m.name;
-  }
-
-  await for (final rawList in AdminTasksRepository.instance.watchTasksForDashboard(
-    tenantId,
-    from: fromUtc,
-    to: toUtc,
-  )) {
-    try {
-      final rows = rawList.map((raw) => TaskRow.fromSupabaseRow(
-        Map<String, dynamic>.from(raw),
-        apartmentById: apartmentById,
-        nameByProfileId: nameByProfileId,
-      )).toList();
-      yield rows;
-    } on PostgrestException catch (e) {
-      if (kDebugMode &&
-          (e.code == '42703' ||
-              e.message.contains('column') ||
-              e.message.contains('does not exist'))) {
-        // ignore: avoid_print
-        print('Missing columns in tasks table. Run in Supabase SQL Editor:');
-        // ignore: avoid_print
-        print(_buildAlterTableSql());
-      }
-      rethrow;
-    }
-  }
+    Provider<AsyncValue<List<TaskRow>>>((ref) {
+  final async = ref.watch(adminTasksOpsWindowProvider);
+  return async.whenData((tasks) {
+    final now = DateTime.now();
+    final fromLocal = DateTime(now.year, now.month, 1, 0, 0, 0, 0);
+    final nextMonth =
+        now.month == 12 ? DateTime(now.year + 1, 1, 1) : DateTime(now.year, now.month + 1, 1);
+    final toLocal = DateTime(nextMonth.year, nextMonth.month + 1, 0, 23, 59, 59, 999);
+    final fromUtc = fromLocal.toUtc();
+    final toUtc = toLocal.toUtc();
+    return tasks.where((t) {
+      final dt = t.scheduledStart ?? t.dueDate;
+      final utc = dt.toUtc();
+      return !utc.isBefore(fromUtc) && !utc.isAfter(toUtc);
+    }).toList();
+  });
 });
 
 /// Provider: úkoly související s klientem (parametr clientId).
@@ -2200,26 +2619,20 @@ final clientTasksProvider =
 
   if (apartmentIds.isEmpty && filterClientId == null) return [];
 
-  final apartments = await ref.watch(apartmentsFullListProvider.future);
-  final team = await ref.watch(teamFullListProvider.future);
-  final apartmentById = {for (final a in apartments) a.id: a.name};
-  final nameByProfileId = <String, String>{};
-  for (final m in team) {
-    final id = m.profileId ?? m.id;
-    if (id.isNotEmpty) nameByProfileId[id] = m.name;
-  }
+  final apartmentById = await ref.watch(apartmentsNameByIdLiteProvider.future);
+  final nameByProfileId = await ref.watch(teamNameByProfileIdLiteProvider.future);
 
   dynamic query;
   if (apartmentIds.isNotEmpty) {
     query = SupabaseService.safeFrom('tasks', tenantId)
-        .select()
+        .select(AdminTasksRepository.taskListSelectColumns)
         .isFilter('deleted_at', null)
         .isFilter('invoiced_at', null)
         .inFilter('apartment_id', apartmentIds)
         .order('scheduled_start', ascending: true);
   } else {
     query = SupabaseService.safeFrom('tasks', tenantId)
-        .select()
+        .select(AdminTasksRepository.taskListSelectColumns)
         .isFilter('deleted_at', null)
         .isFilter('invoiced_at', null)
         .eq('client_id', filterClientId!)
@@ -2248,14 +2661,8 @@ final taskByIdProvider =
   final tenantId = ref.read(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return null;
 
-  final apartments = await ref.watch(apartmentsFullListProvider.future);
-  final team = await ref.watch(teamFullListProvider.future);
-  final apartmentById = {for (final a in apartments) a.id: a.name};
-  final nameByProfileId = <String, String>{};
-  for (final m in team) {
-    final id = m.profileId ?? m.id;
-    if (id.isNotEmpty) nameByProfileId[id] = m.name;
-  }
+  final apartmentById = await ref.watch(apartmentsNameByIdLiteProvider.future);
+  final nameByProfileId = await ref.watch(teamNameByProfileIdLiteProvider.future);
 
   final res = await SupabaseService.safeFrom('tasks', tenantId)
       .select()
@@ -2282,17 +2689,11 @@ final tasksForApartmentProvider =
   final tenantId = ref.read(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];
 
-  final apartments = await ref.watch(apartmentsFullListProvider.future);
-  final team = await ref.watch(teamFullListProvider.future);
-  final apartmentById = {for (final a in apartments) a.id: a.name};
-  final nameByProfileId = <String, String>{};
-  for (final m in team) {
-    final id = m.profileId ?? m.id;
-    if (id.isNotEmpty) nameByProfileId[id] = m.name;
-  }
+  final apartmentById = await ref.watch(apartmentsNameByIdLiteProvider.future);
+  final nameByProfileId = await ref.watch(teamNameByProfileIdLiteProvider.future);
 
   final res = await SupabaseService.safeFrom('tasks', tenantId)
-      .select()
+      .select(AdminTasksRepository.taskListSelectColumns)
       .eq('apartment_id', apartmentId)
       .isFilter('deleted_at', null)
       .isFilter('invoiced_at', null)
@@ -2319,17 +2720,11 @@ final tasksForMemberProvider =
   final tenantId = ref.read(authNotifierProvider).tenantIdForData;
   if (tenantId == null || tenantId.isEmpty) return [];
 
-  final apartments = await ref.watch(apartmentsFullListProvider.future);
-  final team = await ref.watch(teamFullListProvider.future);
-  final apartmentById = {for (final a in apartments) a.id: a.name};
-  final nameByProfileId = <String, String>{};
-  for (final m in team) {
-    final id = m.profileId ?? m.id;
-    if (id.isNotEmpty) nameByProfileId[id] = m.name;
-  }
+  final apartmentById = await ref.watch(apartmentsNameByIdLiteProvider.future);
+  final nameByProfileId = await ref.watch(teamNameByProfileIdLiteProvider.future);
 
   final res = await SupabaseService.safeFrom('tasks', tenantId)
-      .select()
+      .select(AdminTasksRepository.taskListSelectColumns)
       .isFilter('deleted_at', null)
       .or('assigned_to.eq.$profileId,assigned_user_ids.cs.{$profileId}')
       .order('scheduled_start', ascending: true);

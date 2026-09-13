@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' show Locale;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
@@ -7,13 +10,64 @@ import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/providers/reservation_services_repository.dart';
 
 // =============================================================================
+// title_i18n – parsování a výběr textu pro PDF export
+// =============================================================================
+
+/// Parsuje `tasks.title_i18n` z PostgREST odpovědi do mapy pro [BillingTaskItem].
+///
+/// PROČ: JSONB typicky přichází jako `Map`; výjimečně řetězec. Při chybě nebo prázdném objektu
+/// vracíme `null` – offline-first podklady nesmí spadnout na chybějících překladech.
+Map<String, dynamic>? parseBillingTaskTitleI18n(dynamic raw) {
+  if (raw == null) return null;
+  if (raw is Map<String, dynamic>) {
+    return raw.isEmpty ? null : raw;
+  }
+  if (raw is Map) {
+    final m = Map<String, dynamic>.from(raw);
+    return m.isEmpty ? null : m;
+  }
+  if (raw is String && raw.trim().isNotEmpty) {
+    try {
+      final d = jsonDecode(raw);
+      if (d is Map) {
+        final m = Map<String, dynamic>.from(d);
+        return m.isEmpty ? null : m;
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+/// Název úkolu pro PDF ve zvoleném [exportLocale]: překlad z `title_i18n.translations[languageCode]`,
+/// jinak [BillingTaskItem.title] (ten už při agregaci vznikl jako `title` → `custom_title` → `taskId`).
+///
+/// PROČ: Dialog exportu PDF je nezávislý na locale celé aplikace; účetní potřebuje konkrétní jazyk
+/// a uložené překlady z DB. Bez překladu zůstává stejné chování jako dřív (zdrojový název úkolu).
+String billingTaskTitleForPdfExport(BillingTaskItem task, Locale exportLocale) {
+  final lang = exportLocale.languageCode.trim().toLowerCase();
+  if (lang.isEmpty) return task.title;
+
+  final i18n = task.titleI18n;
+  if (i18n != null && i18n.isNotEmpty) {
+    final translations = i18n['translations'];
+    if (translations is Map) {
+      final raw = translations[lang];
+      final s = raw?.toString().trim();
+      if (s != null && s.isNotEmpty) return s;
+    }
+  }
+  return task.title;
+}
+
+// =============================================================================
 // DATOVÉ TŘÍDY (DTOs) PRO UI
 // =============================================================================
 
 /// Položka jednoho úkolu v podkladech pro fakturaci.
 ///
 /// [taskId] = UUID úkolu z tabulky tasks.
-/// [title] = název úkolu (tasks.title nebo custom_title).
+/// [title] = název úkolu pro UI a fallback pro PDF (`tasks.title` nebo `custom_title` nebo ID).
+/// [titleI18n] = volitelná mapa z `tasks.title_i18n` (překlady pro PDF podle jazyka exportu).
 /// [scheduledStart] = naplánovaný čas zahájení – kdy měl úkol začít (UTC→lokální při mapování).
 /// [completedAt] = datum dokončení – kdy byl úkol skutečně vykonán.
 /// [chargedPrice] = vypočítaná cena k fakturaci v EUR (viz pravidla výpočtu níže).
@@ -28,6 +82,7 @@ class BillingTaskItem {
   const BillingTaskItem({
     required this.taskId,
     required this.title,
+    this.titleI18n,
     this.scheduledStart,
     this.completedAt,
     required this.chargedPrice,
@@ -44,10 +99,15 @@ class BillingTaskItem {
     this.assignedTo,
     this.assignedUserIds = const [],
     this.requiresPhoto = false,
+    this.apartmentId,
+    this.apartmentName,
   });
 
   final String taskId;
   final String title;
+
+  /// Obsah sloupce `tasks.title_i18n` – používá [billingTaskTitleForPdfExport] při generování PDF.
+  final Map<String, dynamic>? titleI18n;
 
   /// Naplánovaný čas zahájení – převedeno z UTC na lokální při mapování.
   final DateTime? scheduledStart;
@@ -81,6 +141,12 @@ class BillingTaskItem {
   /// Povinná fotodokumentace z `tasks.metadata.requires_photo`.
   final bool requiresPhoto;
 
+  /// Apartmán úkolu (`tasks.apartment_id`) – null = externí služba, vyplněné = vázáno na apartmán.
+  final String? apartmentId;
+
+  /// Lidský název bytu v okamžiku sestavení podkladů (snapshot pro neměnný PDF export).
+  final String? apartmentName;
+
   /// PROČ: Varování před uzamčením – nebezpečné uzavřít měsíc bez přiřazení nebo bez fotky u povinné služby.
   bool get hasLockBillingRisk {
     final noPrimary = assignedTo == null || assignedTo!.trim().isEmpty;
@@ -89,6 +155,36 @@ class BillingTaskItem {
     final photoMissing = requiresPhoto && mediaUrls.isEmpty;
     return unassigned || photoMissing;
   }
+}
+
+/// Rozdělení úkolů **bez rezervace** na dvě sekce reportu (PDF + admin UI).
+///
+/// PROČ: `apartment_id != null` = služba vázaná na apartmán (včetně kanceláří evidovaných jako byt).
+/// `apartment_id == null` = externí služba (stejný typ jako TaskFormMode.externalService).
+/// Úkoly v blocích pobytů sem nepatří – volající předává jen `tasksWithoutRes`.
+({
+  List<BillingTaskItem> apartmentBoundServices,
+  List<BillingTaskItem> externalServices,
+})
+splitBillingTasksWithoutReservation(List<BillingTaskItem> tasksWithoutRes) {
+  final apartmentBoundServices = <BillingTaskItem>[];
+  final externalServices = <BillingTaskItem>[];
+  for (final task in tasksWithoutRes) {
+    final aptId = task.apartmentId?.trim() ?? '';
+    if (aptId.isNotEmpty) {
+      apartmentBoundServices.add(task);
+    } else {
+      externalServices.add(task);
+    }
+  }
+  apartmentBoundServices.sort(
+    (a, b) => _taskSortDate(a).compareTo(_taskSortDate(b)),
+  );
+  externalServices.sort((a, b) => _taskSortDate(a).compareTo(_taskSortDate(b)));
+  return (
+    apartmentBoundServices: apartmentBoundServices,
+    externalServices: externalServices,
+  );
 }
 
 /// Položka „nedoplatek převedený na majitele“ – zobrazí se v Podkladech a na faktuře.
@@ -158,6 +254,9 @@ class BillingGroup {
     this.billingSnapshotId,
     this.paymentStatus = 'unpaid',
     this.invoicePdfUrl,
+    this.offsetAmount = 0,
+    this.offsetRequestId,
+    this.offsetAppliedAt,
   });
 
   final String groupKey;
@@ -173,6 +272,15 @@ class BillingGroup {
 
   /// Veřejná URL nahrané faktury PDF (`invoice_pdf_url`).
   final String? invoicePdfUrl;
+
+  /// Částka uhrazená zápočtem z hotovostní zálohy majitele (sloupec `offset_amount`).
+  final double offsetAmount;
+
+  /// FK na žádost invoice_credit, ze které byl zápočet čerpán.
+  final String? offsetRequestId;
+
+  /// UTC čas zápisu zápočtu (nullable).
+  final DateTime? offsetAppliedAt;
 
   /// Firemní výdaje (paragony na materiál) – PŘIČÍTÁME, majitel proplácí agentuře.
   final double totalExpenses;
@@ -233,6 +341,9 @@ class BillingGroup {
     String? billingSnapshotId,
     String? paymentStatus,
     String? invoicePdfUrl,
+    double offsetAmount = 0,
+    String? offsetRequestId,
+    DateTime? offsetAppliedAt,
   }) {
     final snapshotName = (snapshotData['client_name'] as String?)?.trim() ?? '';
     final clientName =
@@ -252,6 +363,7 @@ class BillingGroup {
         final itemMap = Map<String, dynamic>.from(item);
         final taskId = (itemMap['task_id'] as String?)?.trim() ?? '';
         final title = (itemMap['title'] as String?)?.trim() ?? '';
+        final titleI18nSnap = parseBillingTaskTitleI18n(itemMap['title_i18n']);
         final chargedPrice = _toDouble(itemMap['charged_price']) ?? 0.0;
         final payerType = (itemMap['payer_type'] as String?)?.trim() ?? 'guest';
         final reservationId = (itemMap['reservation_id'] as String?)?.trim();
@@ -294,11 +406,14 @@ class BillingGroup {
                   .toList()
             : <String>[];
         final requiresPhoto = itemMap['requires_photo'] == true;
+        final apartmentIdSnap = (itemMap['apartment_id'] as String?)?.trim();
+        final apartmentNameSnap = (itemMap['apartment_name'] as String?)?.trim();
 
         tasks.add(
           BillingTaskItem(
             taskId: taskId,
             title: title,
+            titleI18n: titleI18nSnap,
             scheduledStart: scheduledStart,
             completedAt: completedAt,
             chargedPrice: chargedPrice,
@@ -315,6 +430,12 @@ class BillingGroup {
             assignedTo: assignedTo,
             assignedUserIds: assignedUserIds,
             requiresPhoto: requiresPhoto,
+            apartmentId: apartmentIdSnap?.isNotEmpty == true
+                ? apartmentIdSnap
+                : null,
+            apartmentName: apartmentNameSnap?.isNotEmpty == true
+                ? apartmentNameSnap
+                : null,
           ),
         );
       }
@@ -345,6 +466,11 @@ class BillingGroup {
       billingSnapshotId: (snapId != null && snapId.isNotEmpty) ? snapId : null,
       paymentStatus: pay,
       invoicePdfUrl: pdf,
+      offsetAmount: offsetAmount >= 0 ? offsetAmount : 0,
+      offsetRequestId: offsetRequestId?.trim().isNotEmpty == true
+          ? offsetRequestId!.trim()
+          : null,
+      offsetAppliedAt: offsetAppliedAt,
     );
   }
 }
@@ -504,7 +630,7 @@ final billingReportProvider = FutureProvider.autoDispose.family<BillingMonthStat
       'billing_snapshots',
       tenantId,
     ).select(
-      'id, client_id, snapshot_data, payment_status, invoice_pdf_url',
+      'id, client_id, snapshot_data, payment_status, invoice_pdf_url, offset_amount, offset_request_id, offset_applied_at',
     ).eq('billing_period', billingPeriodStr);
 
     final snapshotsList = (snapshotsRes as List).cast<Map<String, dynamic>>();
@@ -540,6 +666,15 @@ final billingReportProvider = FutureProvider.autoDispose.family<BillingMonthStat
         final snapId = (row['id'] as String?)?.trim();
         final payStatus = (row['payment_status'] as String?)?.trim();
         final invPdf = (row['invoice_pdf_url'] as String?)?.trim();
+        final offsetAmt = _toDouble(row['offset_amount']) ?? 0.0;
+        final offsetReqId = (row['offset_request_id'] as String?)?.trim();
+        DateTime? offsetAppliedAt;
+        final offsetAtRaw = row['offset_applied_at'];
+        if (offsetAtRaw is String) {
+          offsetAppliedAt = DateTime.tryParse(offsetAtRaw);
+        } else if (offsetAtRaw is DateTime) {
+          offsetAppliedAt = offsetAtRaw;
+        }
         reconstructedGroups.add(
           BillingGroup.fromSnapshot(
             snapshotData,
@@ -548,6 +683,9 @@ final billingReportProvider = FutureProvider.autoDispose.family<BillingMonthStat
             billingSnapshotId: snapId,
             paymentStatus: payStatus,
             invoicePdfUrl: invPdf,
+            offsetAmount: offsetAmt,
+            offsetRequestId: offsetReqId,
+            offsetAppliedAt: offsetAppliedAt,
           ),
         );
       }
@@ -647,7 +785,7 @@ final billingReportProvider = FutureProvider.autoDispose.family<BillingMonthStat
     // PROČ: Výkon – bez filtru by se stahovala celá historie (OOM při 10 000+ úkolech).
     final tasksRes = await SupabaseService.safeFrom('tasks', tenantId)
         .select(
-          'id, title, custom_title, task_type, apartment_id, reservation_id, service_id, client_id, '
+          'id, title, custom_title, title_i18n, task_type, apartment_id, reservation_id, service_id, client_id, '
           'completed_at, due_date, scheduled_start, metadata, media_urls, '
           'assigned_to, assigned_user_ids, '
           'reservations(guest_name, start_date, end_date)',
@@ -765,24 +903,50 @@ final billingReportProvider = FutureProvider.autoDispose.family<BillingMonthStat
       if (cid != null) apartmentToClientId[e.key] = cid;
     }
 
-    // Krok 3b: Firemní výdaje s apartment_id – PŘIČÍTÁME k faktuře, majitel proplácí agentuře.
-    // Načti transakce COMPANY_EXPENSE v daném měsíci včetně detailů (note, receipt_image_url).
+    // PROČ: Názvy bytů pro PDF/UI – sekce služeb vázaných na apartmán mimo rezervaci.
+    final apartmentIdToName = <String, String>{};
+    if (apartmentIdsFromTasks.isNotEmpty) {
+      final aptNamesRes = await SupabaseService.safeFrom('apartments', tenantId)
+          .select('id, name')
+          .inFilter('id', apartmentIdsFromTasks)
+          .isFilter('deleted_at', null);
+      for (final row in (aptNamesRes as List)) {
+        final m = row as Map<String, dynamic>;
+        final id = (m['id'] as String?)?.trim();
+        final name = (m['name'] as String?)?.trim();
+        if (id != null && id.isNotEmpty && name != null && name.isNotEmpty) {
+          apartmentIdToName[id] = name;
+        }
+      }
+    }
+
+    // Krok 3b: Firemní výdaje (COMPANY_EXPENSE) – přičítáme k faktuře, klient proplácí agentuře.
+    // Načti všechny výdaje v měsíci; přiřazení: apartment_id → majitel bytu, jinak přímé client_id
+    // (hybridní B2B náklady bez bytu, např. materiál pro kanceláře ESP House).
     final expensesByClientId = <String, List<BillingExpenseItem>>{};
     final expensesRes =
         await SupabaseService.safeFrom('employee_cash_transactions', tenantId)
             .select(
-              'id, apartment_id, amount, note, receipt_image_url, created_at',
+              'id, apartment_id, client_id, amount, note, receipt_image_url, created_at',
             )
             .eq('transaction_type', 'COMPANY_EXPENSE')
-            .not('apartment_id', 'is', null)
             .gte('created_at', startOfMonth.toIso8601String())
             .lt('created_at', startOfNextMonth.toIso8601String());
 
     for (final row in (expensesRes as List)) {
       final m = row as Map<String, dynamic>;
       final aptId = (m['apartment_id'] as String?)?.trim();
-      if (aptId == null || aptId.isEmpty) continue;
-      final clientId = apartmentToClientId[aptId];
+      final expenseClientIdDirect = (m['client_id'] as String?)?.trim();
+      // Fallback na client_id pro firemní náklady bez vazby na konkrétní apartmán.
+      final String? clientId;
+      if (aptId != null && aptId.isNotEmpty) {
+        clientId = apartmentToClientId[aptId];
+      } else if (expenseClientIdDirect != null &&
+          expenseClientIdDirect.isNotEmpty) {
+        clientId = expenseClientIdDirect;
+      } else {
+        continue;
+      }
       if (clientId == null || clientId.isEmpty) continue;
       final id = (m['id'] as String?)?.trim() ?? '';
       if (id.isEmpty) continue;
@@ -874,9 +1038,12 @@ final billingReportProvider = FutureProvider.autoDispose.family<BillingMonthStat
       final taskId = (t['id'] as String?)?.trim() ?? '';
       if (taskId.isEmpty) continue;
 
+      // PROČ dva řetězce: [title] zůstává zdrojový fallback pro UI a pro PDF bez překladu;
+      // [titleI18n] předáme do PDF – [billingTaskTitleForPdfExport] vybere `translations[locale]`.
       final title = (t['title'] as String?)?.trim().isNotEmpty == true
           ? (t['title'] as String).trim()
           : (t['custom_title'] as String?)?.trim() ?? taskId;
+      final titleI18n = parseBillingTaskTitleI18n(t['title_i18n']);
       final completedAtRaw = _parseDateTime(t['completed_at']);
       final completedAt = completedAtRaw?.toLocal();
       final scheduledStartRaw = _parseDateTime(t['scheduled_start']);
@@ -902,11 +1069,18 @@ final billingReportProvider = FutureProvider.autoDispose.family<BillingMonthStat
       final (resStart, resEnd) = _parseReservationDates(t['reservations']);
       final mediaUrls = _parseMediaUrls(t['media_urls']);
       final shortfall = shortfallByTaskId[taskId];
+      final taskAptId = (t['apartment_id'] as String?)?.trim();
+      final taskAptIdOpt =
+          taskAptId != null && taskAptId.isNotEmpty ? taskAptId : null;
+      final taskAptName = taskAptIdOpt != null
+          ? apartmentIdToName[taskAptIdOpt]
+          : null;
 
       items.add(
         BillingTaskItem(
           taskId: taskId,
           title: title,
+          titleI18n: titleI18n,
           scheduledStart: scheduledStart,
           completedAt: completedAt,
           chargedPrice: chargedPrice,
@@ -925,6 +1099,10 @@ final billingReportProvider = FutureProvider.autoDispose.family<BillingMonthStat
           assignedTo: assignedTo,
           assignedUserIds: assignedUserIds,
           requiresPhoto: requiresPhoto,
+          apartmentId: taskAptIdOpt,
+          apartmentName: taskAptName?.trim().isNotEmpty == true
+              ? taskAptName!.trim()
+              : null,
         ),
       );
     }

@@ -2,6 +2,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/widgets/falconest_network_image.dart';
 import 'package:falconest/features/owner/providers/owner_task_checklist_photos_provider.dart';
 
 /// DTO pro read-only detail úkolu – nezávislý na [PlanningTask] i [TaskRow].
@@ -300,10 +301,10 @@ class _LabeledPhotoTile extends StatelessWidget {
           borderRadius: BorderRadius.circular(12),
           child: GestureDetector(
             onTap: () => _showFullScreenPhoto(context, entry.url),
-            child: AspectRatio(
+              child: AspectRatio(
               aspectRatio: 16 / 10,
-              child: Image.network(
-                entry.url,
+              child: FalconestNetworkImage(
+                imageUrl: entry.url,
                 fit: BoxFit.cover,
                 errorBuilder: (_, _, _) => Container(
                   color: Colors.grey.shade200,
@@ -340,8 +341,8 @@ class _LabeledPhotoTile extends StatelessWidget {
               minScale: 0.5,
               maxScale: 4,
               child: Center(
-                child: Image.network(
-                  url,
+                child: FalconestNetworkImage(
+                  imageUrl: url,
                   fit: BoxFit.contain,
                   errorBuilder: (_, _, _) => Container(
                     padding: const EdgeInsets.all(24),
@@ -396,5 +397,96 @@ class _DetailRow extends StatelessWidget {
     );
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

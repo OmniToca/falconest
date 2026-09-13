@@ -54,6 +54,9 @@ class TenantServicesRepository {
     payload['required_role'] = model.requiredRole ?? 'any';
     payload['duration_minutes'] = model.durationMinutes;
     payload['requires_photo'] = model.requiresPhoto;
+    if (model.nameI18n != null) {
+      payload['name_i18n'] = model.nameI18n;
+    }
     await SupabaseService.safeFrom('tenant_services', model.tenantId)
         .update(payload)
         .eq('id', model.id);

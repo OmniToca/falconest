@@ -1,34 +1,32 @@
 // Setup type definitions for built-in Supabase Runtime APIs
 import "@supabase/functions-js/edge-runtime.d.ts"
 import Stripe from "npm:stripe"
-
-/**
- * CORS hlavičky pro volání z prohlížeče.
- * Access-Control-Allow-Origin: * umožňuje požadavky z jakékoliv domény.
- * Preflight (OPTIONS) musí vrátit tyto hlavičky, jinak prohlížeč požadavek zablokuje.
- */
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-}
+import {
+  edgeCorsHeaders as corsHeaders,
+  isSuperAdminRole,
+  isTenantAdminOrManager,
+  requireUserProfile,
+} from "../_shared/edge_auth.ts"
 
 /**
  * Edge funkce pro vytvoření Stripe Checkout Session (předplatné).
  *
- * Prohlížeč pošle POST s JSON tělem obsahujícím tenant_id, email, price_id,
- * success_url a cancel_url. Funkce vytvoří Stripe session a vrátí URL pro přesměrování.
+ * P0 bezpečnost: vyžaduje JWT admin/manager vlastního tenanta (nebo super_admin).
+ * tenant_id z body musí sedět s profilem – nelze vytvořit session pro cizí agenturu.
  *
  * DŮLEŽITÉ: tenant_id se ukládá do subscription_data.metadata – Stripe ho
- * předá do webhooku při úspěšné platbě, takže můžeme propojit předplatné s agenturou.
+ * předá do webhooku při úspěšné platbě (webhook musí být ověřený samostatně).
  */
 Deno.serve(async (req) => {
-  // CORS preflight – prohlížeč posílá OPTIONS před vlastním POST
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders })
   }
 
   try {
+    const auth = await requireUserProfile(req)
+    if (!auth.ok) return auth.response
+
+    const { profile } = auth
     const body = await req.json() as {
       tenant_id?: string
       email?: string
@@ -58,6 +56,58 @@ Deno.serve(async (req) => {
       )
     }
 
+    const tid = tenant_id.trim()
+    const priceId = price_id.trim()
+
+    // Whitelist formátu Stripe Price ID (price_…).
+    if (!/^price_[A-Za-z0-9]+$/.test(priceId)) {
+      return new Response(
+        JSON.stringify({ error: "Neplatný price_id" }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
+      )
+    }
+
+    // Autorizace: super_admin libovolný tenant; admin/manager jen svůj tenant_id.
+    if (isSuperAdminRole(profile.role)) {
+      // OK
+    } else if (
+      isTenantAdminOrManager(profile.role) &&
+      profile.tenantId != null &&
+      profile.tenantId === tid
+    ) {
+      // OK
+    } else {
+      return new Response(
+        JSON.stringify({
+          error: "Nemáte oprávnění vytvořit Checkout pro tuto agenturu",
+        }),
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
+      )
+    }
+
+    // Volitelný allowlist z env (čárkou oddělené price_…); prázdné = jen formátová kontrola.
+    const allowlistRaw = Deno.env.get("STRIPE_ALLOWED_PRICE_IDS")?.trim() ?? ""
+    if (allowlistRaw.length > 0) {
+      const allowed = new Set(
+        allowlistRaw.split(",").map((s) => s.trim()).filter(Boolean),
+      )
+      if (!allowed.has(priceId)) {
+        return new Response(
+          JSON.stringify({ error: "price_id není na allowlistu" }),
+          {
+            status: 403,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          },
+        )
+      }
+    }
+
     const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY")
     if (!stripeSecretKey) {
       return new Response(
@@ -69,26 +119,20 @@ Deno.serve(async (req) => {
       )
     }
 
-    // Inicializace Stripe klienta – v Deno používáme npm: prefix
     const stripe = new Stripe(stripeSecretKey)
 
-    /**
-     * Vytvoření Checkout Session v režimu předplatného.
-     * - mode: 'subscription' – Stripe vytvoří recurring payment
-     * - customer_email – Stripe pošle fakturační e-mail na tuto adresu
-     * - line_items – ceníková položka (price_id z Stripe Dashboard)
-     * - subscription_data.metadata – KRITICKÉ: tenant_id se propíše do
-     *   eventu checkout.session.completed a customer.subscription.created,
-     *   takže webhook může přiřadit předplatné ke konkrétní agentuře.
-     */
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
-      customer_email: email,
-      line_items: [{ price: price_id, quantity: 1 }],
-      success_url,
-      cancel_url,
+      customer_email: email.trim(),
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: success_url.trim(),
+      cancel_url: cancel_url.trim(),
       subscription_data: {
-        metadata: { tenant_id },
+        metadata: { tenant_id: tid },
+      },
+      metadata: {
+        tenant_id: tid,
+        requested_by_profile_id: profile.id,
       },
     })
 

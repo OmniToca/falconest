@@ -30,4 +30,12 @@ class WorkerSyncService {
 
   /// Na webu vždy 0 – není lokální databáze.
   static Future<int> getPendingSyncCount(String tenantId, {Object? driftRepos}) async => 0;
+
+  /// Web je vždy online a zapisuje přímo do Supabase – no-op.
+  static Future<void> flushPendingUpdatesBestEffort(
+    String tenantId, {
+    void Function(String)? onSyncError,
+    Object? driftRepos,
+    Duration timeout = const Duration(seconds: 3),
+  }) async {}
 }

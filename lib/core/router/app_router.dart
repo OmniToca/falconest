@@ -324,6 +324,7 @@ Future<String?> _getRedirectTargetForRole(
   // forceMobile = vždy /worker (mobilní UI), forceDesktop = vždy /admin (desktopová administrace).
   // auto = nativní mobil (!kIsWeb) → /worker, web (prohlížeč) → /admin.
   if (role == 'admin' || role == 'manager') {
+    if (authNotifier.state.isOwnerViewImpersonating) return '/owner/dashboard';
     switch (uiMode) {
       case AdminUiMode.forceMobile:
         return '/worker';
@@ -492,9 +493,20 @@ Future<String?> _redirectLogic(
   }
 
   // Pravidlo 2d: Admin/Manager – nesmí na velín; přepínač Web vs. Mobil. Při změně uiMode přesměruj.
+  // Owner view: dispečer smí na /owner/* jen při isOwnerViewImpersonating; jinak pryč z owner větve.
   if (role == 'admin' || role == 'manager') {
     if (location.startsWith('/super-admin')) {
       return _getRedirectTargetForRole(authNotifier, pinUnlocked, uiMode);
+    }
+    if (location.startsWith('/owner')) {
+      if (!authNotifier.state.isOwnerViewImpersonating) {
+        return _getRedirectTargetForRole(authNotifier, pinUnlocked, uiMode);
+      }
+      return null;
+    }
+    if (authNotifier.state.isOwnerViewImpersonating &&
+        (location.startsWith('/admin') || location.startsWith('/worker'))) {
+      return '/owner/dashboard';
     }
     if (uiMode == AdminUiMode.forceMobile && location.startsWith('/admin')) {
       return '/worker';

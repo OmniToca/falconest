@@ -13,6 +13,9 @@ import 'package:falconest/features/owner/owner_reservations_screen.dart';
 import 'package:falconest/features/owner/owner_settings_screen.dart';
 import 'package:falconest/features/owner/owner_tasks_screen.dart';
 import 'package:falconest/features/owner/providers/owner_cash_providers.dart';
+import 'package:falconest/core/auth/owner_view_impersonation_providers.dart';
+import 'package:falconest/core/widgets/lazy_indexed_stack.dart';
+import 'package:falconest/features/owner/widgets/owner_view_impersonation_banner.dart';
 
 /// Práh šířky v pixelech – pod ním Drawer, nad ním permanentní Sidebar.
 const double _breakpointWidth = 800;
@@ -22,7 +25,7 @@ const double _ownerNavItemRadius = 12;
 
 /// Responzivní layout pro klientský portál majitelů bytů (role property_owner).
 ///
-/// REFACTOR: Přechod z ShellRoute na IndexedStack pro stabilnější navigaci v Klientském portálu.
+/// REFACTOR: Přechod z ShellRoute na [LazyIndexedStack] pro stabilnější navigaci v Klientském portálu.
 /// Používá lokální stav (_selectedIndex) místo GoRouter pro přepínání záložek – stejný princip jako Admin.
 ///
 /// [initialTabIndex] – výchozí záložka (např. při deeplinku `/owner/dashboard`).
@@ -69,7 +72,7 @@ class _OwnerLayoutState extends ConsumerState<OwnerLayout> {
       });
     });
 
-    final body = IndexedStack(
+    final body = LazyIndexedStack(
       index: _selectedIndex,
       children: const [
         OwnerDashboardScreen(),
@@ -81,7 +84,11 @@ class _OwnerLayoutState extends ConsumerState<OwnerLayout> {
         OwnerSettingsScreen(),
       ],
     );
-    return LayoutBuilder(
+
+    final isOwnerView = ref.watch(isOwnerViewReadOnlyProvider);
+    final ownerViewInfo = ref.watch(ownerViewImpersonationInfoProvider);
+
+    final layout = LayoutBuilder(
       builder: (context, constraints) {
         final isWide = constraints.maxWidth >= _breakpointWidth;
         return isWide
@@ -96,6 +103,21 @@ class _OwnerLayoutState extends ConsumerState<OwnerLayout> {
                 onIndexChanged: (i) => setState(() => _selectedIndex = i),
               );
       },
+    );
+
+    if (!isOwnerView) {
+      return layout;
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        OwnerViewImpersonationBanner(
+          displayName: ownerViewInfo.displayName ?? '',
+          onStop: () => returnFromOwnerView(context, ref),
+        ),
+        Expanded(child: layout),
+      ],
     );
   }
 }

@@ -2,6 +2,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
 import 'package:falconest/core/utils/app_logger.dart';
@@ -359,10 +360,8 @@ class _OverviewTab extends ConsumerWidget {
               client.profileId!.trim().isNotEmpty) ...[
             const SizedBox(height: AppSpacing.md),
             _PortalStatusSection(profileId: client.profileId!),
-          ],
-          if ((client.clientType?.toLowerCase() ?? '') == 'owner' &&
-              client.profileId != null &&
-              client.profileId!.trim().isNotEmpty) ...[
+            const SizedBox(height: AppSpacing.md),
+            _OwnerPortalViewButton(client: client),
             const SizedBox(height: AppSpacing.md),
             _ApartmentsCountSection(profileId: client.profileId!),
           ],
@@ -915,6 +914,94 @@ class _DetailRow extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+/// Tlačítko pro náhled Klientského portálu majitele (read-only impersonation z CRM).
+///
+/// PROČ: Dispečer vidí stejná data jako majitel bez odhlášení; audit v [owner_portal_view_sessions].
+/// Zobrazí se jen admin/manager, aktivní profil (ne pending) a bez souběžného HQ převtělení.
+class _OwnerPortalViewButton extends ConsumerWidget {
+  const _OwnerPortalViewButton({required this.client});
+
+  final ClientModel client;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final auth = ref.watch(authNotifierProvider);
+    if (!auth.state.isAdminOrManager) {
+      return const SizedBox.shrink();
+    }
+    if (auth.state.isImpersonating) {
+      return const SizedBox.shrink();
+    }
+
+    final profileId = client.profileId?.trim() ?? '';
+    if (profileId.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final statusAsync = ref.watch(clientPortalStatusProvider(profileId));
+    return statusAsync.when(
+      loading: () => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
+      data: (data) {
+        if (data == null) return const SizedBox.shrink();
+        final portalStatus =
+            (data['status']?.toString() ?? 'pending').trim().toLowerCase();
+        if (portalStatus == 'pending') {
+          return const SizedBox.shrink();
+        }
+
+        return Align(
+          alignment: Alignment.centerLeft,
+          child: FilledButton.tonalIcon(
+            icon: const Icon(Icons.visibility_outlined),
+            label: Text('admin.owner_view_portal_button'.tr()),
+            onPressed: () => _openOwnerPortalView(context, ref, profileId),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openOwnerPortalView(
+    BuildContext context,
+    WidgetRef ref,
+    String profileId,
+  ) async {
+    if (ref.read(authNotifierProvider).state.isImpersonating) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('admin.owner_view_error_hq_impersonating'.tr()),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    final started = await ref.read(authNotifierProvider).startOwnerView(
+          clientId: client.id,
+          ownerProfileId: profileId,
+          displayName: client.name,
+        );
+
+    if (!context.mounted) return;
+
+    if (!started) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('admin.owner_view_error_start'.tr()),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    Navigator.of(context).pop();
+    context.go('/owner/dashboard');
   }
 }
 

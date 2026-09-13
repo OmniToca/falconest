@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/providers/connectivity_provider.dart';
 import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/core/offline/mutation_queue_service.dart';
 import 'package:falconest/core/offline/network_error_helper.dart';
@@ -329,30 +330,68 @@ class _TaskCompleteWithPhotoSectionState
     final confirm = await _showConfirmFinishDialog(context);
     if (!confirm || !context.mounted) return false;
 
-    await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
-          widget.taskId,
-          'completed',
-          completedAt: DateTime.now().toUtc(),
-          mediaUrls: localPhotoPaths != null
-              ? null
-              : (mediaUrls == null || mediaUrls.isEmpty ? null : mediaUrls),
-          localPhotoPaths: localPhotoPaths,
-          existingMediaUrls: localPhotoPaths != null ? widget.detail.mediaUrls : null,
-        );
-    if (!context.mounted) return false;
-    _throwIfWorkerStatusUpdateFailed();
+    final isOnline =
+        !kIsWeb && ref.read(isOfflineProvider).valueOrNull == false;
+    final showSyncOverlay = isOnline && localPhotoPaths == null;
 
-    if (localPhotoPaths != null && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('worker.task_complete_queued_offline'.tr()),
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: Colors.orange.shade700,
+    if (showSyncOverlay && context.mounted) {
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        useRootNavigator: true,
+        builder: (_) => PopScope(
+          canPop: false,
+          child: Center(
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(),
+                    const SizedBox(height: 16),
+                    Text('worker.syncing_completion'.tr()),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
       );
+      await Future<void>.delayed(Duration.zero);
     }
-    if (context.mounted) context.pop();
-    return true;
+
+    try {
+      await ref.read(workerTaskStatusNotifierProvider.notifier).updateStatus(
+            widget.taskId,
+            'completed',
+            completedAt: DateTime.now().toUtc(),
+            mediaUrls: localPhotoPaths != null
+                ? null
+                : (mediaUrls == null || mediaUrls.isEmpty ? null : mediaUrls),
+            localPhotoPaths: localPhotoPaths,
+            existingMediaUrls:
+                localPhotoPaths != null ? widget.detail.mediaUrls : null,
+          );
+      if (!context.mounted) return false;
+      _throwIfWorkerStatusUpdateFailed();
+
+      if (localPhotoPaths != null && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('worker.task_complete_queued_offline'.tr()),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: Colors.orange.shade700,
+          ),
+        );
+      }
+      if (context.mounted) context.pop();
+      return true;
+    } finally {
+      if (showSyncOverlay && context.mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+    }
   }
 
   /// Nahraje nové fotky na Storage, případně aktivuje offline kopii a dokončení ve frontě.

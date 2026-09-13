@@ -92,4 +92,28 @@ class ApartmentRepository {
     }
     return newId;
   }
+
+  /// Jen `id` + `name` pro enrich úkolů / mapy (P1 – bez těžkých sloupců).
+  static Future<List<(String, String)>> getApartmentIdNamePairs(
+    String tenantId, {
+    required int limit,
+  }) async {
+    if (tenantId.isEmpty) return [];
+
+    final response = await SupabaseService.safeFrom('apartments', tenantId)
+        .select('id, name')
+        .isFilter('deleted_at', null)
+        .order('name')
+        .range(0, limit - 1);
+
+    final out = <(String, String)>[];
+    for (final e in (response as List)) {
+      if (e is! Map) continue;
+      final id = e['id']?.toString().trim() ?? '';
+      if (id.isEmpty) continue;
+      final name = (e['name'] as String?)?.trim() ?? '';
+      out.add((id, name));
+    }
+    return out;
+  }
 }

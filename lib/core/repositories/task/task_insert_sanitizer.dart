@@ -25,6 +25,16 @@ int? _readEstimatedFromMetadata(Map<String, dynamic> meta) {
   return p != null && p > 0 ? p : null;
 }
 
+/// Vrátí hodnotu pro sloupec `tasks.title_i18n` při INSERT — nikdy `null` (Postgres NOT NULL, kód 23502).
+///
+/// PROČ: Generátory používají `?snapshot` v mapě — při chybějícím překladu klíč vypadne nebo
+/// Supabase klient pošle explicitní null. Prázdný JSON `{}` je v aplikaci ekvivalent „žádné překlady“.
+Map<String, dynamic> ensureTaskTitleI18nForInsert(dynamic raw) {
+  if (raw == null) return <String, dynamic>{};
+  if (raw is Map) return Map<String, dynamic>.from(raw);
+  return <String, dynamic>{};
+}
+
 /// Sjednocuje INSERT payload pro `tasks`: `scheduled_start`, `due_date`, `metadata.estimated_minutes`.
 ///
 /// PROČ: Single source of truth – kalendář a reporty čtou interval a metadata; bez tohoto vznikají
@@ -80,5 +90,7 @@ Map<String, dynamic> sanitizeTaskInsertPayload(Map<String, dynamic> raw) {
   out['scheduled_start'] = sched?.toIso8601String();
   out['due_date'] = due?.toIso8601String();
   out['metadata'] = meta;
+  // Ochrana před chybou 23502: `title_i18n` nesmí být v DB null — vždy posíláme validní JSON objekt (min. {}).
+  out['title_i18n'] = ensureTaskTitleI18nForInsert(out['title_i18n']);
   return out;
 }

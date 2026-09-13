@@ -107,6 +107,8 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
   String _selectedLanguageCode = 'en';
   /// Doporučující agentura – pouze pro typ external. ID klienta (agency).
   String? _selectedAgencyId;
+  /// Hybridní B2B partner – zobrazí se v roletce externích úkolů (faktura přes stejné clients.id).
+  bool _canBillExternalTasks = false;
 
   @override
   void initState() {
@@ -133,6 +135,7 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
     _selectedAgencyId = widget.client?.clientType?.toLowerCase() == 'external'
         ? widget.client?.agencyId
         : null;
+    _canBillExternalTasks = widget.client?.canBillExternalTasks ?? false;
   }
 
   @override
@@ -269,6 +272,13 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
                     onChanged: (v) => setState(() => _selectedAgencyId = v),
                   ),
                 ],
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('clients.can_bill_external_tasks'.tr()),
+                  value: _canBillExternalTasks,
+                  onChanged: (v) => setState(() => _canBillExternalTasks = v),
+                ),
               ],
             ),
           ),
@@ -331,6 +341,7 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
           clientType: _selectedClientType,
           languageCode: _selectedLanguageCode,
           agencyId: agencyIdOpt,
+          canBillExternalTasks: _canBillExternalTasks,
           latitude: geoPair?.latitude,
           longitude: geoPair?.longitude,
         );
@@ -345,6 +356,7 @@ class _ClientFormDialogState extends ConsumerState<ClientFormDialog> {
           clientType: _selectedClientType,
           languageCode: _selectedLanguageCode,
           agencyId: agencyIdOpt,
+          canBillExternalTasks: _canBillExternalTasks,
           latitude: geoPair?.latitude,
           longitude: geoPair?.longitude,
         );

@@ -174,14 +174,8 @@ final pendingSettlementsProvider =
   final rawList = await SettlementRepository.instance.getAllPendingSettlementTasks(tenantId);
   if (rawList.isEmpty) return [];
 
-  final apartments = await ref.watch(apartmentsFullListProvider.future);
-  final team = await ref.watch(teamFullListProvider.future);
-  final apartmentById = {for (final a in apartments) a.id: a.name};
-  final nameByProfileId = <String, String>{};
-  for (final m in team) {
-    final id = m.profileId ?? m.id;
-    if (id.isNotEmpty) nameByProfileId[id] = m.name;
-  }
+  final apartmentById = await ref.watch(apartmentsNameByIdLiteProvider.future);
+  final nameByProfileId = await ref.watch(teamNameByProfileIdLiteProvider.future);
 
   return rawList
       .map((raw) => TaskRow.fromSupabaseRow(

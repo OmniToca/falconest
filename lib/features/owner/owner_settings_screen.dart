@@ -2,6 +2,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:falconest/core/auth/owner_view_impersonation_providers.dart';
 import 'package:falconest/core/models/notification_preferences_model.dart';
 import 'package:falconest/core/theme/theme_ext.dart';
 import 'package:falconest/features/owner/widgets/owner_portal_ui.dart';
@@ -41,6 +42,7 @@ class _OwnerSettingsScreenState extends ConsumerState<OwnerSettingsScreen> {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
     final prefsAsync = ref.watch(notificationPreferencesProvider);
+    final readOnly = ref.watch(isOwnerViewReadOnlyProvider);
 
     return Scaffold(
       backgroundColor: context.colors.surfaceContainerLowest,
@@ -101,10 +103,39 @@ class _OwnerSettingsScreenState extends ConsumerState<OwnerSettingsScreen> {
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 24),
+                      if (readOnly) ...[
+                        Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: cs.tertiaryContainer.withValues(alpha: 0.45),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: cs.outlineVariant.withValues(alpha: 0.45),
+                            ),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(Icons.visibility_outlined, color: cs.primary, size: 22),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  'admin.owner_view_read_only_hint'.tr(),
+                                  style: tt.bodyMedium?.copyWith(
+                                    color: cs.onSurface,
+                                    height: 1.35,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
                       _FieldAlertsCard(
                         model: model,
-                        busy: _saveInProgress,
-                        onChanged: (next) => _persist(context, next),
+                        busy: _saveInProgress || readOnly,
+                        onChanged: readOnly ? (_) {} : (next) => _persist(context, next),
                       ),
                     ],
                   ),

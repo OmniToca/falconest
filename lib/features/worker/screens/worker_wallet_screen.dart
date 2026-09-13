@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:falconest/core/models/cash_transaction_ui_model.dart';
 import 'package:falconest/core/repositories/cash/cash_wallet_repository.dart';
 import 'package:falconest/core/services/currency_service.dart';
+import 'package:falconest/core/widgets/falconest_network_image.dart';
 import 'package:falconest/features/admin/widgets/wallet_detail_modal.dart';
 import 'package:falconest/features/admin/providers/finance_cash_provider.dart';
 import 'package:falconest/features/worker/widgets/add_company_expense_dialog.dart';
@@ -321,8 +322,8 @@ class _TransactionTile extends StatelessWidget {
         onTap: onReceiptTap,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(6),
-          child: Image.network(
-            receiptUrl,
+          child: FalconestNetworkImage(
+            imageUrl: receiptUrl,
             width: 40,
             height: 40,
             fit: BoxFit.cover,
