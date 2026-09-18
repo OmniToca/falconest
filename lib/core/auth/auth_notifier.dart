@@ -750,6 +750,21 @@ class AuthNotifier extends ChangeNotifier {
         tenantTimezone: tenantTimezoneStr,
       );
 
+      // PROČ: Owner view žije jen v paměti – po F5 orphan session v DB by přes
+      // RESTRICTIVE RLS blokovala admin mutace (tasks INSERT/UPDATE) až 8 h.
+      if ((role == 'admin' || role == 'manager') &&
+          _ownerViewSessionsRepository != null) {
+        try {
+          await _ownerViewSessionsRepository.closeMyOpenSessions();
+        } catch (e, st) {
+          AppLogger.error(
+            'AuthNotifier: cleanup orphan owner portal view sessions selhal',
+            e,
+            st,
+          );
+        }
+      }
+
       // Obnovení převtělení po obnovení stránky: pokud HQ (Super Admin nebo Account Manager) měl
       // aktivní zásah (Magic Login), obnovíme _selectedTenantId a _activeInterventionId a stav isImpersonating.
       if ((role == 'super_admin' || role == 'account_manager') &&

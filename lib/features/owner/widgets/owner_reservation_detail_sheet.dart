@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/owner/providers/owner_reservation_related_tasks_provider.dart';
 import 'package:falconest/features/owner/providers/owner_reservations_provider.dart';
+import 'package:falconest/features/legal_spain/widgets/reservation_legal_section.dart';
 import 'package:falconest/features/owner/widgets/owner_task_detail_dialog.dart';
 
 /// Bottom sheet s detailem rezervace a seznamem souvisejících úkolů ([tasks.reservation_id]).
@@ -105,6 +106,13 @@ class OwnerReservationDetailSheet extends ConsumerWidget {
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ],
+              const SizedBox(height: 16),
+              ReservationLegalSection(
+                reservationId: reservation.id,
+                apartmentId: reservation.apartmentId,
+                guestPhone: reservation.guestPhone,
+                guestEmail: reservation.guestEmail,
+              ),
               const SizedBox(height: 24),
               Text(
                 'owner.reservation_related_tasks_title'.tr(),

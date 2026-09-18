@@ -13,6 +13,7 @@ import 'package:falconest/features/admin/models/reservation_service_model.dart'
         ReservationServiceEditState;
 import 'package:falconest/features/admin/providers/apartment_services_repository.dart';
 import 'package:falconest/features/admin/providers/reservation_services_repository.dart';
+import 'package:falconest/features/legal_spain/widgets/reservation_legal_section.dart';
 import 'package:falconest/features/owner/providers/owner_apartments_provider.dart';
 import 'package:falconest/features/owner/providers/owner_dashboard_metrics_provider.dart';
 import 'package:falconest/features/settings/providers/tenant_services_provider.dart';
@@ -727,6 +728,7 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
   /// UI: Doplnění polí pro jméno a telefon hosta.
   final _guestNameController = TextEditingController();
   final _guestPhoneController = TextEditingController();
+  final _guestEmailController = TextEditingController();
   bool _isSaving = false;
   bool _servicesLoadedForEdit = false;
 
@@ -747,6 +749,7 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
       _dateTo = existing.endDate;
       _guestNameController.text = existing.guestName ?? '';
       _guestPhoneController.text = existing.guestPhone ?? '';
+      _guestEmailController.text = existing.guestEmail ?? '';
       _guestAdultsController.text = existing.guestAdults.toString();
       _guestChildrenController.text = existing.guestChildren.toString();
       _specialRequestsController.text = existing.specialRequests ?? '';
@@ -773,6 +776,7 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
     _guestChildrenController.dispose();
     _guestNameController.dispose();
     _guestPhoneController.dispose();
+    _guestEmailController.dispose();
     super.dispose();
   }
 
@@ -877,6 +881,8 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
       final guestNameOrNull = guestName.isEmpty ? null : guestName;
       final guestPhone = _guestPhoneController.text.trim();
       final guestPhoneOrNull = guestPhone.isEmpty ? null : guestPhone;
+      final guestEmail = _guestEmailController.text.trim();
+      final guestEmailOrNull = guestEmail.isEmpty ? null : guestEmail;
       final guestAdults = int.tryParse(_guestAdultsController.text.trim()) ?? 0;
       final guestChildren =
           int.tryParse(_guestChildrenController.text.trim()) ?? 0;
@@ -927,6 +933,7 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
           'end_date': _formatDate(_dateTo!),
           'guest_name': guestNameOrNull,
           'guest_phone': guestPhoneOrNull,
+          'guest_email': guestEmailOrNull,
           'special_requests': specialRequestsOrNull,
           'guest_adults': guestAdults,
           'guest_children': guestChildren,
@@ -950,6 +957,7 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
                 'end_date': _formatDate(_dateTo!),
                 'guest_name': guestNameOrNull,
                 'guest_phone': guestPhoneOrNull,
+                'guest_email': guestEmailOrNull,
                 'special_requests': specialRequestsOrNull,
                 'guest_adults': guestAdults,
                 'guest_children': guestChildren,
@@ -1483,6 +1491,23 @@ class _NewReservationFormState extends ConsumerState<_NewReservationForm> {
                 ),
                 keyboardType: TextInputType.phone,
               ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _guestEmailController,
+                decoration: InputDecoration(
+                  prefixIcon: const Icon(Icons.email_outlined),
+                  labelText: 'admin.reservations_field_guest_email'.tr(),
+                  border: const OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.emailAddress,
+              ),
+              if (widget.existingReservation != null && _selectedApartmentId != null)
+                ReservationLegalSection(
+                  reservationId: widget.existingReservation!.id,
+                  apartmentId: _selectedApartmentId!,
+                  guestPhone: _guestPhoneController.text,
+                  guestEmail: _guestEmailController.text,
+                ),
               const SizedBox(height: 20),
               // UI: Vizuální vykreslení rozšířených polí pro majitele (časy, hosté, služby) dle vzoru z administrace.
               const Divider(),

@@ -37,6 +37,7 @@ class ReservationRow {
     this.referenceNumber,
     this.guestName,
     this.guestPhone,
+    this.guestEmail,
     this.guestLanguage,
     this.reservationSource,
     this.checkIn,
@@ -65,6 +66,8 @@ class ReservationRow {
   final String? guestName;
   /// Telefon hosta (pro transfery a předání)
   final String? guestPhone;
+  /// E-mail hosta – veřejný check-in odkaz a SES correo.
+  final String? guestEmail;
   /// Jazyk komunikace s hostem (cs/en/es...).
   ///
   /// Nullable v DB kvůli historickým záznamům; UI a filtrování musí fallbackovat na `'en'`.
@@ -160,6 +163,9 @@ class ReservationRow {
       referenceNumber: refNum != null && refNum.isNotEmpty ? refNum : null,
       guestName: guestName?.isNotEmpty == true ? guestName : null,
       guestPhone: guestPhone?.isNotEmpty == true ? guestPhone : null,
+      guestEmail: (raw['guest_email'] as String?)?.trim().isNotEmpty == true
+          ? (raw['guest_email'] as String?)?.trim()
+          : null,
       guestLanguage: guestLanguageVal,
       reservationSource: reservationSource,
       checkIn: checkIn?.isNotEmpty == true ? checkIn : null,
@@ -222,6 +228,7 @@ class ReservationRow {
       'reference_number': referenceNumber?.trim().isEmpty == true ? null : referenceNumber,
       'guest_name': guestName?.trim().isEmpty == true ? null : guestName?.trim(),
       'guest_phone': guestPhone?.trim().isEmpty == true ? null : guestPhone?.trim(),
+      'guest_email': guestEmail?.trim().isEmpty == true ? null : guestEmail?.trim(),
       'guest_language': guestLanguage?.trim().isNotEmpty == true ? guestLanguage?.trim().toLowerCase() : null,
       'reservation_source': reservationSource ?? 'Other',
       'needs_transfer': needsTransfer ?? false,
@@ -263,6 +270,7 @@ class ReservationRow {
     String? referenceNumber,
     String? guestName,
     String? guestPhone,
+    String? guestEmail,
     String? guestLanguage,
     String? reservationSource,
     String? checkIn,
@@ -288,6 +296,7 @@ class ReservationRow {
       referenceNumber: referenceNumber ?? this.referenceNumber,
       guestName: guestName ?? this.guestName,
       guestPhone: guestPhone ?? this.guestPhone,
+      guestEmail: guestEmail ?? this.guestEmail,
       guestLanguage: guestLanguage ?? this.guestLanguage,
       reservationSource: reservationSource ?? this.reservationSource,
       checkIn: checkIn ?? this.checkIn,

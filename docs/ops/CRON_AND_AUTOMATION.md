@@ -19,6 +19,7 @@ Tabulka **`public.cron_edge_config`** (key/value):
 | `template_reminders_url` | … |
 | `daily_task_summary_url` | … |
 | `rent_monitor_url` | … |
+| `ses_hospedajes_url` | Edge `ses-hospedajes` (SOAP SES) |
 
 RLS na `cron_edge_config` je zapnuté — běžný tenant uživatel hodnoty nečte. Úpravy jen přes SQL Editor / service role.
 

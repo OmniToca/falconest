@@ -1,10 +1,11 @@
 import 'package:easy_localization/easy_localization.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:falconest/core/services/supabase_service.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'app.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart'; // Tento soubor se nám právě vytvořil
@@ -33,6 +34,20 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  await AppLogger.initCrashlytics();
+
+  // PROČ: Nezachycené Flutter / async chyby jinak zmizí – v release (mobil) jdou do Crashlytics.
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    AppLogger.recordFlutterFatal(
+      details.exception,
+      details.stack ?? StackTrace.current,
+    );
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    AppLogger.error('Nezachycená platform chyba', error, stack);
+    return true;
+  };
 
   Object? initError;
   try {
@@ -49,12 +64,7 @@ void main() async {
     await EasyLocalization.ensureInitialized();
   } catch (e, st) {
     initError = e;
-    if (kDebugMode) {
-      // ignore: avoid_print
-      print('FalcoNest init ERROR: $e');
-      // ignore: avoid_print
-      print(st);
-    }
+    AppLogger.error('FalcoNest init ERROR', e, st);
   }
 
   if (initError != null) {

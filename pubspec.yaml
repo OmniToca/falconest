@@ -80,6 +80,7 @@ dependencies:
   latlong2: ^0.9.1
   http: ^1.6.0
   cached_network_image: ^4.0.0
+  firebase_crashlytics: ^4.3.10
 dev_dependencies:
   flutter_test:
     sdk: flutter

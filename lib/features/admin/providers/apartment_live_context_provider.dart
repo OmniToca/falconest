@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:falconest/core/auth/auth_provider.dart';
+import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_provider.dart';
 import 'package:falconest/features/admin/providers/admin_reservations_repository.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
@@ -29,17 +30,11 @@ final currentMonthReservationsProvider =
 
   await for (final rawList in AdminReservationsRepository.instance
       .watchReservationsOverlappingCurrentMonth(apartmentIds, tenantId)) {
-    final rows = rawList.map((raw) {
-      final enriched = Map<String, dynamic>.from(raw);
-      if (enriched['apartments'] == null &&
-          nameMap[raw['apartment_id']?.toString()] != null) {
-        enriched['apartments'] = {
-          'name': nameMap[raw['apartment_id']?.toString()],
-        };
-      }
-      return ReservationRow.fromJson(enriched);
-    }).toList();
-    yield rows;
+    yield _parseReservationRows(
+      rawList,
+      nameMap,
+      debugLabel: 'currentMonthReservationsProvider',
+    );
   }
 });
 
@@ -64,17 +59,11 @@ final apartmentStatusContextReservationsProvider =
 
   await for (final rawList in AdminReservationsRepository.instance
       .watchReservationsForApartmentStatusContext(apartmentIds, tenantId)) {
-    final rows = rawList.map((raw) {
-      final enriched = Map<String, dynamic>.from(raw);
-      if (enriched['apartments'] == null &&
-          nameMap[raw['apartment_id']?.toString()] != null) {
-        enriched['apartments'] = {
-          'name': nameMap[raw['apartment_id']?.toString()],
-        };
-      }
-      return ReservationRow.fromJson(enriched);
-    }).toList();
-    yield rows;
+    yield _parseReservationRows(
+      rawList,
+      nameMap,
+      debugLabel: 'apartmentStatusContextReservationsProvider',
+    );
   }
 });
 
@@ -95,15 +84,44 @@ final todayApartmentTasksProvider = StreamProvider<List<TaskRow>>((ref) async* {
 
   await for (final rawList
       in AdminTasksRepository.instance.watchTasksRawForApartmentStatus(tenantId)) {
-    final rows = rawList
-        .map(
-          (raw) => TaskRow.fromSupabaseRow(
+    final rows = <TaskRow>[];
+    for (final raw in rawList) {
+      try {
+        rows.add(
+          TaskRow.fromSupabaseRow(
             Map<String, dynamic>.from(raw),
             apartmentById: apartmentById,
             nameByProfileId: nameByProfileId,
           ),
-        )
-        .toList();
+        );
+      } catch (e, st) {
+        AppLogger.error('todayApartmentTasksProvider: řádek úkolu přeskočen', e, st);
+      }
+    }
     yield rows;
   }
 });
+
+/// Parsování rezervací po jednom řádku – jeden poškozený JSON nesmí shodit celou Nástěnku.
+List<ReservationRow> _parseReservationRows(
+  List<Map<String, dynamic>> rawList,
+  Map<String, String> nameMap, {
+  required String debugLabel,
+}) {
+  final rows = <ReservationRow>[];
+  for (final raw in rawList) {
+    try {
+      final enriched = Map<String, dynamic>.from(raw);
+      if (enriched['apartments'] == null &&
+          nameMap[raw['apartment_id']?.toString()] != null) {
+        enriched['apartments'] = {
+          'name': nameMap[raw['apartment_id']?.toString()],
+        };
+      }
+      rows.add(ReservationRow.fromJson(enriched));
+    } catch (e, st) {
+      AppLogger.error('$debugLabel: řádek rezervace přeskočen', e, st);
+    }
+  }
+  return rows;
+}

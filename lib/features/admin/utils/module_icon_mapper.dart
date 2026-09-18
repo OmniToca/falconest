@@ -1,3 +1,4 @@
+import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 
 /// Mapování klíčů modulů na ikony a lokalizační klíče pro menu.
@@ -32,6 +33,7 @@ class ModuleIconMapper {
     'automatic_tasks': Icons.auto_awesome,
     'settlements': Icons.payments_rounded,
     'custom_twilio_whatsapp': Icons.chat_rounded,
+    'legal_spain': Icons.gavel_rounded,
   };
 
   /// i18n klíč pro název položky menu ([admin.menu_*] nebo [modules.<key>.title]).
@@ -54,6 +56,7 @@ class ModuleIconMapper {
     'automatic_tasks': 'admin.menu_automatic_tasks',
     'settlements': 'modules.settlements.title',
     'custom_twilio_whatsapp': 'modules.custom_twilio_whatsapp.title',
+    'legal_spain': 'modules.legal_spain.title',
   };
 
   /// Index záložky v AdminLayout IndexedStack. Null = modul bez obrazovky (placeholder).
@@ -76,6 +79,7 @@ class ModuleIconMapper {
     'automatic_tasks': null,
     'settlements': null,
     'custom_twilio_whatsapp': null,
+    'legal_spain': 12,
   };
 
   static IconData getIcon(String moduleKey) =>
@@ -83,6 +87,19 @@ class ModuleIconMapper {
 
   static String getLabelKey(String moduleKey) =>
       labelKeys[moduleKey] ?? 'admin.menu_module';
+
+  /// Název v menu: i18n z [labelKeys], jinak [dbName] z katalogu `modules.name`.
+  ///
+  /// PROČ: Nový řádek v DB (např. legal_spain) se na starším webu jinak vykreslí jako
+  /// generické „Modul“ a toast „Modul Modul není aktivní“.
+  static String displayLabel(String moduleKey, String? dbName) {
+    if (labelKeys.containsKey(moduleKey)) {
+      return labelKeys[moduleKey]!.tr();
+    }
+    final fromDb = dbName?.trim() ?? '';
+    if (fromDb.isNotEmpty) return fromDb;
+    return 'admin.menu_module'.tr();
+  }
 
   static int? getTabIndex(String moduleKey) => tabIndices[moduleKey];
 }

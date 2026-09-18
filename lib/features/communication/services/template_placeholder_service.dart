@@ -141,6 +141,7 @@ class TemplatePlaceholderService {
     'arrival_time',
     'departure_date',
     'departure_time',
+    'checkin_link',
   ];
 
   /// Nahradí v textu všechny výskyty {klíč} hodnotami z mapy.
@@ -216,6 +217,7 @@ class TemplatePlaceholderService {
       'arrival_time': '',
       'departure_date': '',
       'departure_time': '',
+      'checkin_link': '',
     };
 
     return {
@@ -231,6 +233,7 @@ class TemplatePlaceholderService {
       'owner_notes': ownerNotes,
       ...taskDt,
       ...emptyArrivalDeparture,
+      'checkin_link': '',
     };
   }
 
@@ -305,6 +308,7 @@ class TemplatePlaceholderService {
       'owner_notes': ownerNotes,
       ...emptyTask,
       ...arrivalDeparture,
+      'checkin_link': '',
     };
   }
 
@@ -383,6 +387,7 @@ class TemplatePlaceholderService {
       'owner_notes': ownerNotes,
       ...taskDt,
       ...arrivalDeparture,
+      'checkin_link': '',
     };
   }
 

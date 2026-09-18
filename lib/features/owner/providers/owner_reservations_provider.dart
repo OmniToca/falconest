@@ -25,6 +25,7 @@ class OwnerReservation {
     this.status = 'new',
     this.guestName,
     this.guestPhone,
+    this.guestEmail,
     this.apartmentName,
     this.guestAdults = 0,
     this.guestChildren = 0,
@@ -43,6 +44,7 @@ class OwnerReservation {
   final String status;
   final String? guestName;
   final String? guestPhone;
+  final String? guestEmail;
   final String? apartmentName;
   final int guestAdults;
   final int guestChildren;
@@ -87,7 +89,7 @@ final ownerReservationsProvider = FutureProvider<List<OwnerReservation>>((
   final response = await SupabaseService.safeFrom('reservations', tenantId)
       .select(
         'id, apartment_id, start_date, end_date, special_requests, status, '
-        'guest_name, guest_phone, guest_adults, guest_children, arrival_time, departure_time, '
+        'guest_name, guest_phone, guest_email, guest_adults, guest_children, arrival_time, departure_time, '
         'metadata, apartments(name)',
       )
       .inFilter('apartment_id', ownedApartmentIds)
@@ -146,7 +148,7 @@ final ownerReservationsForPlanningCalendarProvider = FutureProvider.autoDispose
         final response = await SupabaseService.safeFrom('reservations', tenantId)
             .select(
               'id, apartment_id, start_date, end_date, special_requests, status, '
-              'guest_name, guest_phone, guest_adults, guest_children, arrival_time, departure_time, '
+              'guest_name, guest_phone, guest_email, guest_adults, guest_children, arrival_time, departure_time, '
               'metadata, apartments(name)',
             )
             .inFilter('apartment_id', apartmentIdsForQuery)
@@ -183,6 +185,7 @@ List<OwnerReservation> _mergeApartmentNames(
         status: r.status,
         guestName: r.guestName,
         guestPhone: r.guestPhone,
+        guestEmail: r.guestEmail,
         apartmentName: nameById[r.apartmentId],
         guestAdults: r.guestAdults,
         guestChildren: r.guestChildren,
@@ -216,6 +219,7 @@ OwnerReservation _parseReservation(dynamic raw) {
       : 'new';
   final guestName = (map['guest_name'] as String?)?.trim();
   final guestPhone = (map['guest_phone'] as String?)?.trim();
+  final guestEmail = (map['guest_email'] as String?)?.trim();
   final guestAdults = _parseInt(map['guest_adults'], 0);
   final guestChildren = _parseInt(map['guest_children'], 0);
   final arrivalTime = _parseOptionalDateTime(map['arrival_time']);
@@ -245,6 +249,7 @@ OwnerReservation _parseReservation(dynamic raw) {
     status: status,
     guestName: guestName?.isNotEmpty == true ? guestName : null,
     guestPhone: guestPhone?.isNotEmpty == true ? guestPhone : null,
+    guestEmail: guestEmail?.isNotEmpty == true ? guestEmail : null,
     apartmentName: apartmentName?.isNotEmpty == true ? apartmentName : null,
     guestAdults: guestAdults,
     guestChildren: guestChildren,

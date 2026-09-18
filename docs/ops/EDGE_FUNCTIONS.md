@@ -61,6 +61,7 @@ Všechny následující mají v `config.toml` **`verify_jwt = false`** a uvnitř
 | `automation-enqueue` | `invoke_automation_enqueue()` | Plánování fronty |
 | `automation-dispatch` | `invoke_automation_dispatch()` | Odeslání fronty (Twilio/FCM/…) |
 | `rent-monitor` | `invoke_rent_monitor()` | Long-term nájem due |
+| `ses-hospedajes` | `invoke_ses_hospedajes()` | SOAP SES Hospedajes + poll lote + SLA alert |
 
 **Token v DB:** `cron_edge_config.automation_edge_auth_token` musí == `SUPABASE_SERVICE_ROLE_KEY`.
 

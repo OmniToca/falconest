@@ -176,6 +176,10 @@
 - [ ] **Finance:** lepší vysvětlení agregací u settlements / billing (tooltips, rozpad položek).
 - [ ] **Kalendář:** sjednocení barev a legend s Kanbanem a task categories (vizuální konzistence).
 - [ ] **Super admin observabilita:** lehké indikátory zdraví (např. selhání automation queue) nad existujícími daty.
+- [ ] **Verifacti / Veri\*Factu (AEAT):** napojení API Verifacti do FalcoNest (compliance španělské elektronické fakturace).
+  - Reference: [GET `/verifactu/declaracion`](https://www.verifacti.com/precios#/paths/~1verifactu~1declaracion/get) – declaración responsable; následně odesílání registrů faktur, QR, webhooks.
+  - Detailní technický postup: `docs/audits/ENGINEERING_STABILIZATION_ROADMAP.md` → **P3.5**.
+  - Zapsáno: **2026-09-13** (backlog, ještě neimplementováno).
 
 ---
 

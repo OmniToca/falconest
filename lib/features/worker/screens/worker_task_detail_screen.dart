@@ -15,6 +15,7 @@ import 'package:falconest/features/worker/widgets/worker_task_detail_offline_con
 import 'package:falconest/features/worker/widgets/worker_task_detail_sticky_header.dart';
 import 'package:falconest/features/worker/widgets/worker_task_quick_note_dialog.dart';
 import 'package:falconest/features/worker/widgets/worker_task_signature_section.dart';
+import 'package:falconest/features/legal_spain/widgets/worker_legal_checkin_section.dart';
 
 /// Master detail úkolu – jeden Scaffold, AppBar, sticky stav/čas, scroll s checklistem nahoře a patičkou akcí.
 ///
@@ -90,6 +91,7 @@ class WorkerTaskDetailScreen extends ConsumerWidget {
                           WorkerTaskDetailOfflineContextCards(detail: detail),
                           const SizedBox(height: 8),
                           WorkerTaskSignatureSection(taskId: taskId, detail: detail),
+                          WorkerLegalCheckinSection(taskId: taskId),
                           ...spec.buildScrollChildren(context, ref),
                         ]),
                       ),

@@ -22,6 +22,9 @@ import 'package:falconest/features/admin/screens/admin_map_dispatch_screen.dart'
 import 'package:falconest/features/admin/screens/admin_clients_screen.dart';
 import 'package:falconest/features/admin/screens/reports_screen.dart';
 import 'package:falconest/features/admin/admin_automations_screen.dart';
+import 'package:falconest/features/admin/premium_upsell_dialog.dart';
+import 'package:falconest/features/legal_spain/legal_spain_constants.dart';
+import 'package:falconest/features/legal_spain/screens/admin_legal_spain_screen.dart';
 import 'package:falconest/features/admin/providers/admin_tasks_provider.dart';
 import 'package:falconest/features/communication/screens/communication_templates_screen.dart';
 import 'package:falconest/features/calendar/screens/planning_calendar_screen.dart';
@@ -102,6 +105,8 @@ const int adminTabIndexReports = 8;
 const int adminTabIndexClients = 9;
 const int adminTabIndexCommunication = 10;
 const int adminTabIndexAutomations = 11;
+/// Check-in + SES – vždy na konci stacku, ať se neremappují indexy 0–11.
+const int adminTabIndexLegalSpain = 12;
 
 /// Intent pro globální zkratku Omniboxu (CMD/CTRL + K).
 class _OpenAdminOmniboxIntent extends Intent {
@@ -160,6 +165,7 @@ class _AdminLayoutState extends State<AdminLayout> {
     const AdminClientsScreen(),
     const CommunicationTemplatesScreen(),
     const AdminAutomationsScreen(),
+    const AdminLegalSpainScreen(),
   ];
 
   void _switchToTab(int index) {
@@ -1126,7 +1132,7 @@ class _AdminSidebar extends ConsumerWidget {
                     final isActive = isSuperAdmin || tenantHasModule;
                     final isGhost = isSuperAdmin && !tenantHasModule;
                     final tabIndex = ModuleIconMapper.getTabIndex(module.key);
-                    final label = ModuleIconMapper.getLabelKey(module.key).tr();
+                    final label = ModuleIconMapper.displayLabel(module.key, module.name);
                     return _ModuleNavItem(
                       module: module,
                       label: label,
@@ -1141,7 +1147,7 @@ class _AdminSidebar extends ConsumerWidget {
                           Navigator.of(context).pop();
                         }
                         if (tabIndex != null) {
-                          onIndexChanged(tabIndex.clamp(0, adminTabIndexAutomations));
+                          onIndexChanged(tabIndex.clamp(0, adminTabIndexLegalSpain));
                         } else {
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
@@ -1152,7 +1158,16 @@ class _AdminSidebar extends ConsumerWidget {
                         }
                       },
                       onTapLocked: () {
-                            ScaffoldMessenger.of(context).showSnackBar(
+                        if (module.key == kLegalSpainModuleKey) {
+                          PremiumUpsellDialog.show(
+                            context,
+                            moduleKey: kLegalSpainModuleKey,
+                            titleKey: 'modules.legal_spain.title',
+                            descriptionKey: 'legal_spain.upsell_desc',
+                          );
+                          return;
+                        }
+                        ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
                             content: Text('admin.module_locked_toast'.tr(namedArgs: {'name': label})),
                             backgroundColor: context.customColors.warning,

@@ -1563,7 +1563,8 @@ class _ModulesPlanTabState extends ConsumerState<_ModulesPlanTab> {
     }
   }
 
-  String _label(ModuleModel module) => ModuleIconMapper.getLabelKey(module.key).tr();
+  String _label(ModuleModel module) =>
+      ModuleIconMapper.displayLabel(module.key, module.name);
 
   String _formatTrialDate(DateTime d) =>
       '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}.${d.year}';

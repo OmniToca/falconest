@@ -11,6 +11,9 @@ import 'package:falconest/features/owner/owner_planning_calendar_screen.dart';
 import 'package:falconest/features/owner/owner_portal_tabs.dart';
 import 'package:falconest/features/owner/owner_reservations_screen.dart';
 import 'package:falconest/features/owner/owner_settings_screen.dart';
+import 'package:falconest/features/admin/providers/module_provider.dart';
+import 'package:falconest/features/legal_spain/legal_spain_constants.dart';
+import 'package:falconest/features/legal_spain/screens/owner_legal_spain_screen.dart';
 import 'package:falconest/features/owner/owner_tasks_screen.dart';
 import 'package:falconest/features/owner/providers/owner_cash_providers.dart';
 import 'package:falconest/core/auth/owner_view_impersonation_providers.dart';
@@ -57,7 +60,7 @@ class _OwnerLayoutState extends ConsumerState<OwnerLayout> {
     super.initState();
     _selectedIndex = widget.initialTabIndex.clamp(
       OwnerPortalTabIndex.dashboard,
-      OwnerPortalTabIndex.settings,
+      OwnerPortalTabIndex.legalSpain,
     );
   }
 
@@ -65,7 +68,7 @@ class _OwnerLayoutState extends ConsumerState<OwnerLayout> {
   Widget build(BuildContext context) {
     ref.listen<int?>(ownerPortalTabIndexRequestProvider, (previous, next) {
       if (next == null) return;
-      final i = next.clamp(OwnerPortalTabIndex.dashboard, OwnerPortalTabIndex.settings);
+      final i = next.clamp(OwnerPortalTabIndex.dashboard, OwnerPortalTabIndex.legalSpain);
       setState(() => _selectedIndex = i);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         ref.read(ownerPortalTabIndexRequestProvider.notifier).state = null;
@@ -82,6 +85,7 @@ class _OwnerLayoutState extends ConsumerState<OwnerLayout> {
         OwnerPlanningCalendarScreen(),
         OwnerBillingScreen(),
         OwnerSettingsScreen(),
+        OwnerLegalSpainScreen(),
       ],
     );
 
@@ -219,7 +223,7 @@ class _NarrowLayout extends StatelessWidget {
 /// Obsahuje uvítání, navigační položky a odhlášení. Pozadí z [ColorScheme.surfaceContainerLow],
 /// aby panel jemně kontrastoval s hlavní [surface] a ladil s Material 3 portálem.
 /// Volá [onIndexChanged] místo context.go – přepíná záložky lokálním setState.
-class _OwnerSidebar extends StatelessWidget {
+class _OwnerSidebar extends ConsumerWidget {
   const _OwnerSidebar({
     required this.isDrawer,
     required this.selectedIndex,
@@ -231,8 +235,9 @@ class _OwnerSidebar extends StatelessWidget {
   final void Function(int index) onIndexChanged;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final cs = Theme.of(context).colorScheme;
+    final legalActive = isModuleActive(ref, kLegalSpainModuleKey);
     return ColoredBox(
       color: cs.surfaceContainerLow,
       child: SafeArea(
@@ -284,6 +289,15 @@ class _OwnerSidebar extends StatelessWidget {
                 isDrawer: isDrawer,
                 onTap: () => onIndexChanged(OwnerPortalTabIndex.reservations),
               ),
+              if (legalActive)
+                _OwnerNavItem(
+                  index: OwnerPortalTabIndex.legalSpain,
+                  selectedIndex: selectedIndex,
+                  icon: Icons.gavel_outlined,
+                  label: 'modules.legal_spain.title'.tr(),
+                  isDrawer: isDrawer,
+                  onTap: () => onIndexChanged(OwnerPortalTabIndex.legalSpain),
+                ),
               _OwnerNavItem(
                 index: OwnerPortalTabIndex.tasks,
                 selectedIndex: selectedIndex,

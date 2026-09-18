@@ -55,3 +55,6 @@ app.*.map.json
 # Android signing – nikdy necommituj hesla ani keystore
 key.properties
 **/*.jks
+
+# Local Netlify folder
+.netlify

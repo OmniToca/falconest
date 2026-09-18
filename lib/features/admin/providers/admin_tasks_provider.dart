@@ -566,7 +566,7 @@ class TaskRow {
     DateTime? reservationEndDate;
     int? reservationGuestCount;
     if (res != null && res is Map) {
-      final r = res as Map<String, dynamic>;
+      final r = Map<String, dynamic>.from(res);
       final guest = (r['guest_name'] as String?)?.trim();
       reservationGuestName = guest != null && guest.isNotEmpty ? guest : null;
       reservationStartDate = TaskRow._parseOptionalDateTime(r['start_date']);
@@ -2622,25 +2622,26 @@ final clientTasksProvider =
   final apartmentById = await ref.watch(apartmentsNameByIdLiteProvider.future);
   final nameByProfileId = await ref.watch(teamNameByProfileIdLiteProvider.future);
 
-  dynamic query;
+  final List<Map<String, dynamic>> rawList;
   if (apartmentIds.isNotEmpty) {
-    query = SupabaseService.safeFrom('tasks', tenantId)
-        .select(AdminTasksRepository.taskListSelectColumns)
-        .isFilter('deleted_at', null)
-        .isFilter('invoiced_at', null)
-        .inFilter('apartment_id', apartmentIds)
-        .order('scheduled_start', ascending: true);
+    rawList = await AdminTasksRepository.fetchTaskMapsWithFallback(
+      (cols) => SupabaseService.safeFrom('tasks', tenantId)
+          .select(cols)
+          .isFilter('deleted_at', null)
+          .isFilter('invoiced_at', null)
+          .inFilter('apartment_id', apartmentIds)
+          .order('scheduled_start', ascending: true),
+    );
   } else {
-    query = SupabaseService.safeFrom('tasks', tenantId)
-        .select(AdminTasksRepository.taskListSelectColumns)
-        .isFilter('deleted_at', null)
-        .isFilter('invoiced_at', null)
-        .eq('client_id', filterClientId!)
-        .order('scheduled_start', ascending: true);
+    rawList = await AdminTasksRepository.fetchTaskMapsWithFallback(
+      (cols) => SupabaseService.safeFrom('tasks', tenantId)
+          .select(cols)
+          .isFilter('deleted_at', null)
+          .isFilter('invoiced_at', null)
+          .eq('client_id', filterClientId!)
+          .order('scheduled_start', ascending: true),
+    );
   }
-
-  final res = await query;
-  final rawList = (res as List).cast<Map<String, dynamic>>();
 
   return rawList
       .map((raw) => TaskRow.fromSupabaseRow(
@@ -2692,14 +2693,14 @@ final tasksForApartmentProvider =
   final apartmentById = await ref.watch(apartmentsNameByIdLiteProvider.future);
   final nameByProfileId = await ref.watch(teamNameByProfileIdLiteProvider.future);
 
-  final res = await SupabaseService.safeFrom('tasks', tenantId)
-      .select(AdminTasksRepository.taskListSelectColumns)
-      .eq('apartment_id', apartmentId)
-      .isFilter('deleted_at', null)
-      .isFilter('invoiced_at', null)
-      .order('scheduled_start', ascending: true);
-
-  final rawList = (res as List).cast<Map<String, dynamic>>();
+  final rawList = await AdminTasksRepository.fetchTaskMapsWithFallback(
+    (cols) => SupabaseService.safeFrom('tasks', tenantId)
+        .select(cols)
+        .eq('apartment_id', apartmentId)
+        .isFilter('deleted_at', null)
+        .isFilter('invoiced_at', null)
+        .order('scheduled_start', ascending: true),
+  );
   return rawList
       .map((raw) => TaskRow.fromSupabaseRow(
             raw,
@@ -2723,13 +2724,13 @@ final tasksForMemberProvider =
   final apartmentById = await ref.watch(apartmentsNameByIdLiteProvider.future);
   final nameByProfileId = await ref.watch(teamNameByProfileIdLiteProvider.future);
 
-  final res = await SupabaseService.safeFrom('tasks', tenantId)
-      .select(AdminTasksRepository.taskListSelectColumns)
-      .isFilter('deleted_at', null)
-      .or('assigned_to.eq.$profileId,assigned_user_ids.cs.{$profileId}')
-      .order('scheduled_start', ascending: true);
-
-  final rawList = (res as List).cast<Map<String, dynamic>>();
+  final rawList = await AdminTasksRepository.fetchTaskMapsWithFallback(
+    (cols) => SupabaseService.safeFrom('tasks', tenantId)
+        .select(cols)
+        .isFilter('deleted_at', null)
+        .or('assigned_to.eq.$profileId,assigned_user_ids.cs.{$profileId}')
+        .order('scheduled_start', ascending: true),
+  );
   return rawList
       .map((raw) => TaskRow.fromSupabaseRow(
             raw,

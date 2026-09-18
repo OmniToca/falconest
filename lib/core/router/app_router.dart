@@ -12,6 +12,7 @@ import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/features/admin/admin_layout.dart';
 import 'package:falconest/features/auth/auth_loading_screen.dart';
 import 'package:falconest/features/auth/invite_screen.dart';
+import 'package:falconest/features/legal_spain/screens/public_checkin_screen.dart';
 import 'package:falconest/features/auth/login_screen.dart';
 import 'package:falconest/features/auth/pin/pin_setup_screen.dart';
 import 'package:falconest/features/auth/pin/pin_verify_screen.dart';
@@ -27,10 +28,9 @@ import 'package:falconest/features/admin/models/module_model.dart';
 import 'package:falconest/features/settings/module_editor_screen.dart';
 import 'package:falconest/features/admin/admin_zones_screen.dart';
 import 'package:falconest/features/settings/settings_screen.dart';
-import 'package:falconest/features/super_admin/audit_log_screen.dart';
-import 'package:falconest/features/super_admin/onboarding_wizard_screen.dart';
-import 'package:falconest/features/super_admin/super_admin_dashboard.dart';
-import 'package:falconest/features/super_admin/tenant_detail_screen.dart';
+import 'package:falconest/core/router/deferred_page.dart';
+import 'package:falconest/features/super_admin/super_admin_deferred.dart'
+    deferred as hq;
 import 'package:falconest/features/worker/screens/worker_absences_screen.dart';
 import 'package:falconest/features/worker/screens/worker_dashboard_screen.dart';
 import 'package:falconest/features/worker/screens/worker_mutation_queue_screen.dart';
@@ -86,6 +86,15 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         path: '/invite',
         name: 'invite',
         builder: (context, state) => const InviteScreen(),
+      ),
+      // Veřejný check-in hosta (RD 933/2021) – bez přihlášení, token v path.
+      GoRoute(
+        path: '/checkin/:token',
+        name: 'publicCheckin',
+        builder: (context, state) {
+          final token = state.pathParameters['token'] ?? '';
+          return PublicCheckinScreen(token: token);
+        },
       ),
       GoRoute(
         path: '/pin-setup',
@@ -146,14 +155,21 @@ final goRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/super-admin',
         name: 'superAdmin',
-        builder: (context, state) => const SuperAdminDashboard(),
+        // PROČ deferred: HQ chunk se nestahuje agentuře / workeru při prvním loadu webu.
+        builder: (context, state) => DeferredPage(
+          libraryLoader: hq.loadLibrary,
+          builder: (_) => hq.SuperAdminDashboard(),
+        ),
         routes: [
           GoRoute(
             path: 'tenant/:id',
             name: 'tenantDetail',
             builder: (context, state) {
               final id = state.pathParameters['id'] ?? '';
-              return TenantDetailScreen(tenantId: id);
+              return DeferredPage(
+                libraryLoader: hq.loadLibrary,
+                builder: (_) => hq.TenantDetailScreen(tenantId: id),
+              );
             },
             routes: [
               GoRoute(
@@ -161,7 +177,11 @@ final goRouterProvider = Provider<GoRouter>((ref) {
                 name: 'onboardingWizard',
                 builder: (context, state) {
                   final id = state.pathParameters['id'] ?? '';
-                  return SuperAdminOnboardingWizardScreen(tenantId: id);
+                  return DeferredPage(
+                    libraryLoader: hq.loadLibrary,
+                    builder: (_) =>
+                        hq.SuperAdminOnboardingWizardScreen(tenantId: id),
+                  );
                 },
               ),
             ],
@@ -169,7 +189,10 @@ final goRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: 'audit-log',
             name: 'auditLog',
-            builder: (context, state) => const AuditLogScreen(),
+            builder: (context, state) => DeferredPage(
+              libraryLoader: hq.loadLibrary,
+              builder: (_) => hq.AuditLogScreen(),
+            ),
           ),
         ],
       ),
@@ -374,6 +397,10 @@ Future<String?> _redirectLogic(
     }
   }
 
+  if (state.uri.path.startsWith('/checkin/')) {
+    return null;
+  }
+
   // Pravidlo 0a: Password Recovery (Deep link) – VŽDY přesměrovat na /update-password
   if (authNotifier.pendingPasswordRecovery) {
     if (location != '/update-password') {
@@ -402,6 +429,7 @@ Future<String?> _redirectLogic(
     // Výjimka: Umožňujeme nepřihlášeným uživatelům přístup na zvací obrazovku /invite,
     // aby si mohli nastavit heslo. Query parametry (token) zůstávají v state.uri a jsou dostupné obrazovce.
     if (path == '/invite' || path.startsWith('/invite/')) return null;
+    if (path.startsWith('/checkin/')) return null;
 
     const allowedUnauthenticated = [
       '/',

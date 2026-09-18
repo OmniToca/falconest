@@ -34,9 +34,17 @@ class OwnerPortalViewSessionRow {
 /// Repozitář pro tabulku [owner_portal_view_sessions].
 ///
 /// PROČ: AuthNotifier při startOwnerView vytvoří záznam a při stopOwnerView ho uzavře.
-/// MVP neobnovuje aktivní session po F5 – stav žije jen v paměti klienta.
+/// Po F5 client state zmizí – [closeMyOpenSessions] ukončí orphan řádky, aby
+/// RESTRICTIVE RLS (`has_active_owner_portal_view_session`) nezablokovalo admin mutace.
 class OwnerPortalViewSessionsRepository {
   OwnerPortalViewSessionsRepository();
+
+  /// Ukončí všechny otevřené session volajícího admina (RPC close_my_open_…).
+  ///
+  /// PROČ: Orphan po F5 / pádu tabu by jinak 8 h blokoval INSERT/UPDATE tasks přes RLS.
+  Future<void> closeMyOpenSessions() async {
+    await SupabaseService.client.rpc('close_my_open_owner_portal_view_sessions');
+  }
 
   /// Vytvoří novou audit session (začátek náhledu Owner portálu).
   ///
@@ -54,6 +62,13 @@ class OwnerPortalViewSessionsRepository {
       throw ArgumentError(
         'adminProfileId, viewedOwnerProfileId, clientId a tenantId musí být neprázdné',
       );
+    }
+
+    // Před novým náhledem uzavřít orphan session stejného dispečera.
+    try {
+      await closeMyOpenSessions();
+    } catch (_) {
+      // Nekritické – INSERT nové session může i tak projít; assert/RLS má TTL 8 h.
     }
 
     final res = await SupabaseService.client

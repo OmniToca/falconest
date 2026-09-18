@@ -10,6 +10,8 @@ Hlavní tabulka sloupců níže byla **srovnána 2026-04-09** se živým exporte
 
 **Poslední synchronizace (2026-04-09) oproti předchozí verzi MD:**
 
+- **Doplněno (2026-09-18, legal_spain):** migrace **`20260918120000_legal_spain_checkin_ses.sql`** – katalog **`modules.key = legal_spain`** (bez seedu všem tenantům), **`reservations.guest_email`**, tabulky **`apartment_legal_settings`**, **`ses_ws_credentials`**, **`guest_checkins`**, **`reservation_guests`**, **`ses_communications`**, RPC veřejného check-inu, cron **`ses-hospedajes`**.
+- **Doplněno (2026-09-13, owner portal read-only):** migrace **`20260913140000_owner_portal_view_readonly_guard.sql`** – funkce **`my_profile_id`**, **`has_active_owner_portal_view_session`** (TTL 8 h), **`close_my_open_owner_portal_view_sessions`**, **`assert_not_owner_portal_viewing`**; **RESTRICTIVE** RLS na **`tasks`**, **`owner_cash_disposition_requests`**, **`billing_snapshot_offset_proposals`** + trigger na proposals (RPC SECURITY DEFINER). Cleanup orphan session při loginu admin/manager a před `startSession`.
 - **Doplněno (2026-09-13, P2):** migrace **`20260913132000_p2_automation_dispatch_idle_skip.sql`** – `invoke_automation_dispatch()` nevolá Edge, pokud ve frontě není splatná `pending` položka.
 - **Doplněno (2026-09-13, P1 bezpečnost):** migrace **`20260913130000_p1_rls_role_split_cash_tasks_invitations.sql`** – `deduct_wallet_credits` jen super_admin / admin|manager vlastního tenanta; invitations INSERT/UPDATE admin|manager, DELETE i vlastníci ghost `profile_id` (accept invite); `employee_cash_wallets` INSERT/UPDATE admin|manager nebo vlastní `profile_id`; `employee_cash_transactions` UPDATE jen admin|manager; `tasks` UPDATE admin|manager nebo `is_worker_assigned_to_task`.
 - **Doplněno (2026-09-13, P1 výkon):** migrace **`20260913131000_p1_tasks_composite_indexes.sql`** – indexy **`idx_tasks_tenant_scheduled_start`**, **`idx_tasks_tenant_completed_at`**.
@@ -464,6 +466,7 @@ Hlavní tabulka sloupců níže byla **srovnána 2026-04-09** se živým exporte
 | reservations | end_date | date | NO |
 | reservations | special_requests | text | YES |
 | reservations | guest_name | text | YES |
+| reservations | guest_email | text | YES |
 | reservations | check_in | text | YES |
 | reservations | check_out | text | YES |
 | reservations | needs_transfer | boolean | YES |
@@ -1108,8 +1111,21 @@ Systém **tenant_wallets** + **wallet_transactions** slouží pro předplacené 
 
 ---
 
+### Legal Spain – check-in a SES Hospedajes (2026-09-18)
+
+**Fáze 0 (produkt / právo):** Subjekt povinnosti je **arrendador** (majitel bytu, nebo agentura jako intermediario) registrovaný na sede Interior se zapnutými „comunicaciones vía servicio web“. FalcoNest jen ukládá kódy a WS login u bytu. **PV (hosté)** se posílá vždy; **RH (smlouva)** jen u přímých rezervací (`reservation_source` mimo Booking/Airbnb – OTA posílají RH samy). GDPR: doklady a podpisy **3 roky** (`legal_spain_gdpr_cleanup` weekly cron). SOAP běží jen při aktivním `tenant_modules` (`is_legal_spain_module_active`). Modelo 210 / SanFolio mimo rozsah.
+
+**Tabulky:** `apartment_legal_settings` (kódy establecimiento/arrendador, house_rules, public_web_origin), `ses_ws_credentials` (WS heslo – SELECT hesla jen service_role), `guest_checkins` (token, status draft/queued/accepted/reported/rejected/timeout), `reservation_guests` (osoby + podpis 14+), `ses_communications` (lote, PV/RH, audit XML).
+
+**RPC (anon token):** `get_legal_checkin_bootstrap`, `upsert_legal_checkin_guest`, `submit_legal_checkin_signature`. Autentizované: `ensure_legal_checkin_session`, `enqueue_ses_pv_for_reservation`.
+
+**Edge:** `ses-hospedajes` (cron */15) – SOAP alta → poll lote → in-app notifikace při reject/timeout/SLA 22:00 Madrid.
+
+---
+
 ### Registr modulů (modules.key) – reference
 
+- **legal_spain** – Placený check-in + SES Hospedajes (RD 933/2021). `pricing_type = per_apartment`, `show_in_menu = true`, `order_index` 32, **bez** auto-aktivace v `tenant_modules`. Admin tabIndex 12. Migrace `20260918120000_legal_spain_checkin_ses.sql`.
 - **map** – Mapový dispečink (OpenStreetMap): záložka v admin [IndexedStack], `order_index` cca 45 (za plánovacím kalendářem). Migrace `20260403030000_add_map_module.sql` registruje modul a aktivuje ho pro všechny existující tenanty v `tenant_modules`.
 - **finance** – Hlavní modul Finance a Hotovost (zdarma). Obsahuje Zaměstnaneckou pokladnu. show_in_menu = true.
 - **finance_export** – Placený sub-modul Podklady pro fakturaci. parent_module_key = 'finance', show_in_menu = false, price_eur = 29.

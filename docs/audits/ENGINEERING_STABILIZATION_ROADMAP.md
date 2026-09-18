@@ -274,6 +274,30 @@ U každé položky: **Proč** → **Konkrétní postup** → **Hotovo když**.
 
 ---
 
+### P3.5 Integrace Verifacti (Veri\*Factu / AEAT) – naplánováno
+
+**Proč:** Španělská povinnost Veri\*Factu – FalcoNest má vystavovat / podklady k fakturaci v souladu s AEAT. Místo přímé integrace na AEAT použijeme API **Verifacti** (cloud middleware: JSON → QR + XML registr → odeslání AEAT).
+
+**API (výchozí reference):**
+- Dokumentace / ceny + OpenAPI: [verifacti.com/precios](https://www.verifacti.com/precios#/paths/~1verifactu~1declaracion/get)
+- Endpoint **`GET /verifactu/declaracion`** – získání **declaración responsable** (odpovědnostní prohlášení producenta SIF / komponenty) – nutný podklad pro compliance a zobrazení v produktu.
+- Širší scope později: odesílání faktur (registro), stav registru, webhooks AEAT, správa NIF emisora (tenant / agentura).
+
+**Byznysový kontext:** Cena Verifacti je primárně dle počtu aktivních **NIF** v produkci (typicky 1 NIF = 1 agentura / emitent, pokud fakturujeme „za sebe“; u multi-tenant SaaS = NIF každé agentury, která přes FalcoNest vydává daňové faktury).
+
+**Postup (až po stabilizaci P0–P2):**
+1. Účet Verifacti (test NIF zdarma) + Edge Function proxy (API key jen server-side, nikdy ve Flutter).
+2. Napojit `GET /verifactu/declaracion` – uložit / zobrazit declaración (admin nastavení / legal stránka).
+3. Mapovat FalcoNest billing / invoices → payload Verifactu; QR na PDF podkladech.
+4. Webhook / poll stavu AEAT; audit trail v tenant scope (`tenant_id`).
+5. RLS + secrets: klíče per tenant NIF v Supabase Vault / Edge secrets.
+
+**Hotovo když:** Tenant s produkčním NIF odešle testovací fakturu přes Verifacti a declaración je dohledatelná v aplikaci.
+
+**Stav:** 📋 backlog (2026-09-13) – ještě neimplementováno.
+
+---
+
 ## Doporučené pořadí sprintů (návrh)
 
 ```text
@@ -311,12 +335,13 @@ Sprint 4 (P3):  Theme/spacing polish worker+admin hotspots
 - [ ] P3.2 i18n CI
 - [ ] P3.3 Docs index + PR template
 - [ ] P3.4 Integration test kritické cesty
+- [ ] P3.5 Verifacti / Veri\*Factu API (`GET /verifactu/declaracion` + fakturační tok)
 
 ---
 
 ## Explicitně mimo scope této fáze
 
-- Nové moduly, nové role, nové billing produkty  
+- Nové moduly, nové role, nové billing produkty (výjimka backlogu: **P3.5 Verifacti** – plánováno po stabilizaci)  
 - Refaktor / změny v **`task_assignment_engine.dart`** (LOCKED)  
 - Přepis admina na plný Drift offline (obří projekt – jen pokud P2.5 ukáže kritickou potřebu)  
 - Nativní background upload framework (Workmanager) – až když P0/P1 flush nestačí v produkčních metrikách  

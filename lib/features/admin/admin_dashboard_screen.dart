@@ -147,6 +147,19 @@ class AdminDashboardScreen extends ConsumerWidget {
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
+                const SizedBox(height: AppSpacing.md),
+                FilledButton(
+                  onPressed: () {
+                    // PROČ: StreamProvider po chybě sám neobživne – dispečer musí umět znovu
+                    // stáhnout nástěnku bez F5 (typicky po reloadu PostgREST schématu).
+                    ref.invalidate(adminTasksOpsWindowProvider);
+                    ref.invalidate(apartmentStatusContextReservationsProvider);
+                    ref.invalidate(todayApartmentTasksProvider);
+                    ref.invalidate(apartmentsFullListProvider);
+                    ref.invalidate(teamFullListProvider);
+                  },
+                  child: Text('common.retry'.tr()),
+                ),
               ],
             ),
           ),

@@ -11,7 +11,9 @@
 
 ## Jednorázové napojení (pokud ještě není)
 
-1. Netlify → **Add new site** → Import from Git → GitHub → **`sokolpetr87-art/falconest`**, branch **`main`**.  
+Produkční web: **https://admin.falconestapp.com** (Netlify site `lambent-kelpie-42b7df`), GitHub **`OmniToca/falconest`**, branch **`main`**.
+
+1. Netlify → **Add new site** → Import from Git → GitHub → **`OmniToca/falconest`**, branch **`main`**.  
 2. Build settings se načtou z `netlify.toml` (neměň Publish directory ručně na `web/` – to je zdroj, ne výstup).  
 3. **Site configuration → Environment variables** (pro Production i Deploy previews):
 
@@ -37,6 +39,7 @@ První build trvá déle (klon Flutter SDK). Další mohou využít cache adres�
 | `Unable to load asset: assets/config.env` | Skript nevytvořil soubor / starý build command | Ověř `netlify.toml` command = `bash scripts/netlify_build.sh` |
 | Publish složka prázdná / 404 | Publish = `web` místo `build/web` | Oprav v toml / UI |
 | Timeout | Cold Flutter clone | Zvyš build timeout v Netlify / nech doběhnout 2. deploy s cache |
+| `Secrets scanning found secrets` + `AIza` | Firebase klientský klíč v `firebase_options.dart` / `google-services.json` | Očekávané. `SECRETS_SCAN_OMIT_PATHS` je v `netlify.toml`. |
 
 ## Ověření lokálně (stejný skript)
 

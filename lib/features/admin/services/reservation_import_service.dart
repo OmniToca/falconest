@@ -455,7 +455,7 @@ class ReservationImportService {
         if (idxGuestEmail >= 0) {
           final email = _cell(row, idxGuestEmail).trim();
           if (email.isNotEmpty) {
-            // Reservations tabulka nemá guest_email – zatím neukládáme, pouze čteme pro budoucí rozšíření
+            insertPayload['guest_email'] = email;
           }
         }
 

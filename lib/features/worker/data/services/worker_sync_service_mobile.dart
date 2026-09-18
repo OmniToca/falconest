@@ -10,6 +10,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 
 import 'package:falconest/core/database/drift/database_provider.dart' show DriftSyncRepos;
+import 'package:falconest/core/offline/smart_merge_rules.dart';
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/core/utils/app_logger.dart';
 
@@ -620,8 +621,10 @@ class WorkerSyncService {
         // ---------- KROK 2: Detekce konfliktu a sestavení sloučeného payloadu ----------
         final serverUpdatedAt = serverRow != null ? _parseServerUpdatedAt(serverRow) : null;
         final lastSynced = task.lastSyncedAt;
-        final hasConflict = serverUpdatedAt != null &&
-            (lastSynced == null || serverUpdatedAt.isAfter(lastSynced));
+        final hasConflict = hasTimestampMergeConflict(
+          serverUpdatedAt: serverUpdatedAt,
+          lastSyncedAt: lastSynced,
+        );
 
         final Map<String, dynamic> updates;
         String mergedStatus = task.status;
@@ -632,32 +635,43 @@ class WorkerSyncService {
         DateTime? serverScheduledStart;
 
         if (hasConflict && serverRow != null) {
-          // Smart Merge: aplikace byznysových pravidel.
-          mergedStatus = task.status; // PRAVIDLO 1: status má vždy lokální (worker).
-          mergedDescription = _mergeNotes(
-            serverNotes: serverRow['description']?.toString().trim(),
-            localNotes: task.description.trim(),
-          );
+          // Smart Merge: sdílená byznysová pravidla (viz smart_merge_rules.dart).
           final serverMeta = _parseMetadataFromDynamic(serverRow['metadata']);
           final localMeta = _parseMetadataForSync(task.metadataJson ?? '{}');
-          final mergedMeta = _mergeMetadataMap(serverMeta ?? {}, localMeta);
-          mergedMetadataJson = mergedMeta.isEmpty ? null : jsonEncode(mergedMeta);
-
-          serverTitle = serverRow['title']?.toString().trim();
-          serverTaskType = serverRow['task_type']?.toString().trim();
           final ss = serverRow['scheduled_start'];
-          if (ss != null) serverScheduledStart = DateTime.tryParse(ss.toString())?.toUtc();
+          final merge = applyTaskSmartMerge(
+            localStatus: task.status,
+            localDescription: task.description,
+            localMetadata: localMeta,
+            serverDescription: serverRow['description']?.toString(),
+            serverMetadata: serverMeta,
+            serverTitle: serverRow['title']?.toString(),
+            serverTaskType: serverRow['task_type']?.toString(),
+            serverScheduledStart:
+                ss != null ? DateTime.tryParse(ss.toString())?.toUtc() : null,
+          );
+          mergedStatus = merge.status;
+          mergedDescription = merge.description;
+          mergedMetadataJson =
+              merge.metadata.isEmpty ? null : jsonEncode(merge.metadata);
+          serverTitle = merge.title;
+          serverTaskType = merge.taskType;
+          serverScheduledStart = merge.scheduledStart;
 
           updates = <String, dynamic>{
             'status': mergedStatus,
             'description': mergedDescription,
           };
-          if (serverTitle != null && serverTitle.isNotEmpty) updates['title'] = serverTitle;
-          if (serverTaskType != null && serverTaskType.isNotEmpty) updates['task_type'] = serverTaskType;
+          if (serverTitle != null && serverTitle.isNotEmpty) {
+            updates['title'] = serverTitle;
+          }
+          if (serverTaskType != null && serverTaskType.isNotEmpty) {
+            updates['task_type'] = serverTaskType;
+          }
           if (serverScheduledStart != null) {
             updates['scheduled_start'] = serverScheduledStart.toIso8601String();
           }
-          if (mergedMeta.isNotEmpty) updates['metadata'] = mergedMeta;
+          if (merge.metadata.isNotEmpty) updates['metadata'] = merge.metadata;
         } else {
           // Žádný konflikt: odesíláme jen lokální změny (status, časy, metadata).
           updates = <String, dynamic>{'status': task.status};
@@ -734,15 +748,6 @@ class WorkerSyncService {
     return parsed?.toUtc();
   }
 
-  /// Sloučí poznámky při konfliktu: "[Admin]: text ze serveru \n [Worker]: lokální text".
-  static String _mergeNotes({String? serverNotes, String? localNotes}) {
-    final server = (serverNotes ?? '').trim();
-    final local = (localNotes ?? '').trim();
-    if (server.isEmpty) return local;
-    if (local.isEmpty) return server;
-    return '[Admin]: $server\n[Worker]: $local';
-  }
-
   static Map<String, dynamic>? _parseMetadataFromDynamic(dynamic raw) {
     if (raw == null) return null;
     if (raw is Map) return Map<String, dynamic>.from(raw);
@@ -753,17 +758,6 @@ class WorkerSyncService {
       AppLogger.error('WorkerSyncService: jsonDecode metadat v _parseMetadataFromDynamic selhal', e, st);
     }
     return null;
-  }
-
-  /// Sloučí metadata: klíče ze serveru + klíče z lokálu (lokální přepíše při duplicitě).
-  static Map<String, dynamic> _mergeMetadataMap(Map<String, dynamic> server, Map<String, dynamic>? local) {
-    final out = Map<String, dynamic>.from(server);
-    if (local != null && local.isNotEmpty) {
-      for (final e in local.entries) {
-        out[e.key] = e.value;
-      }
-    }
-    return out;
   }
 
 
@@ -808,8 +802,10 @@ class WorkerSyncService {
 
         final serverUpdatedAt = _parseServerUpdatedAt(serverRow);
         final lastSynced = res.lastSyncedAt;
-        final hasConflict = serverUpdatedAt != null &&
-            (lastSynced == null || serverUpdatedAt.isAfter(lastSynced));
+        final hasConflict = hasTimestampMergeConflict(
+          serverUpdatedAt: serverUpdatedAt,
+          lastSyncedAt: lastSynced,
+        );
 
         if (hasConflict) {
           // Timestamp merging pro rezervace: serverová verze je novější než stav, se kterým worker pracoval offline.

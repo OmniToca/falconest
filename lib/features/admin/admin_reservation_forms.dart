@@ -30,6 +30,7 @@ import 'package:falconest/features/communication/models/message_template_selecto
 import 'package:falconest/features/communication/providers/message_templates_admin_provider.dart';
 import 'package:falconest/features/communication/services/template_placeholder_service.dart';
 import 'package:falconest/features/communication/services/whatsapp_sender_service.dart';
+import 'package:falconest/features/legal_spain/widgets/reservation_legal_section.dart';
 
 /// Zda je typ služby transfer – pro zobrazení pole Číslo letu v rezervaci.
 bool _isTransferServiceType(String? type) {
@@ -76,6 +77,7 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog>
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _guestNameController;
   late final TextEditingController _guestPhoneController;
+  late final TextEditingController _guestEmailController;
   late final TextEditingController _guestAdultsController;
   late final TextEditingController _guestChildrenController;
   late final TextEditingController _arrivalTimeController;
@@ -114,6 +116,7 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog>
     _tabController = TabController(length: 2, vsync: this);
     _guestNameController = TextEditingController();
     _guestPhoneController = TextEditingController();
+    _guestEmailController = TextEditingController();
     _guestAdultsController = TextEditingController(text: '0');
     _guestChildrenController = TextEditingController(text: '0');
     _arrivalTimeController = TextEditingController();
@@ -147,6 +150,7 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog>
     _tabController.dispose();
     _guestNameController.dispose();
     _guestPhoneController.dispose();
+    _guestEmailController.dispose();
     _guestAdultsController.dispose();
     _guestChildrenController.dispose();
     _arrivalTimeController.dispose();
@@ -443,6 +447,9 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog>
         'guest_phone': _guestPhoneController.text.trim().isEmpty
             ? null
             : _guestPhoneController.text.trim(),
+        'guest_email': _guestEmailController.text.trim().isEmpty
+            ? null
+            : _guestEmailController.text.trim(),
         'reservation_source': _reservationSource,
         'guest_adults': guestAdults,
         'guest_children': guestChildren,
@@ -708,6 +715,9 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog>
             'guest_phone': _guestPhoneController.text.trim().isEmpty
                 ? null
                 : _guestPhoneController.text.trim(),
+            'guest_email': _guestEmailController.text.trim().isEmpty
+                ? null
+                : _guestEmailController.text.trim(),
             'reservation_source': _reservationSource,
             'start_date': startDate,
             'end_date': endDate,
@@ -975,6 +985,25 @@ class _AddReservationDialogState extends ConsumerState<AddReservationDialog>
           ),
           keyboardType: TextInputType.phone,
         ),
+        const SizedBox(height: AppSpacing.sm + AppSpacing.xs),
+        TextFormField(
+          controller: _guestEmailController,
+          decoration: InputDecoration(
+            prefixIcon: const Icon(Icons.email_outlined),
+            labelText: 'admin.reservations_field_guest_email'.tr(),
+            border: const OutlineInputBorder(),
+          ),
+          keyboardType: TextInputType.emailAddress,
+        ),
+        if (_savedReservationId != null && _selectedApartmentId != null) ...[
+          ReservationLegalSection(
+            reservationId: _savedReservationId!,
+            apartmentId: _selectedApartmentId!,
+            guestPhone: _guestPhoneController.text,
+            guestEmail: _guestEmailController.text,
+            showSesRetry: true,
+          ),
+        ],
         const SizedBox(height: AppSpacing.sm + AppSpacing.xs),
         DropdownButtonFormField<String>(
           initialValue: reservationSourceValues.contains(_reservationSource)
@@ -1893,6 +1922,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _guestNameController;
   late final TextEditingController _guestPhoneController;
+  late final TextEditingController _guestEmailController;
   late final TextEditingController _guestAdultsController;
   late final TextEditingController _guestChildrenController;
   late final TextEditingController _arrivalTimeController;
@@ -1929,6 +1959,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
     final r = widget.reservation;
     _guestNameController = TextEditingController(text: r.guestName ?? '');
     _guestPhoneController = TextEditingController(text: r.guestPhone ?? '');
+    _guestEmailController = TextEditingController(text: r.guestEmail ?? '');
     _guestAdultsController = TextEditingController(text: '${r.guestAdults}');
     _guestChildrenController = TextEditingController(
       text: '${r.guestChildren}',
@@ -1977,6 +2008,7 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
   void dispose() {
     _guestNameController.dispose();
     _guestPhoneController.dispose();
+    _guestEmailController.dispose();
     _guestAdultsController.dispose();
     _guestChildrenController.dispose();
     _arrivalTimeController.dispose();
@@ -2377,6 +2409,9 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
             'guest_phone': _guestPhoneController.text.trim().isEmpty
                 ? null
                 : _guestPhoneController.text.trim(),
+            'guest_email': _guestEmailController.text.trim().isEmpty
+                ? null
+                : _guestEmailController.text.trim(),
             'guest_language': _guestLanguage,
             'reservation_source': _reservationSource,
             'start_date': startDate,
@@ -2626,6 +2661,25 @@ class _EditReservationDialogState extends ConsumerState<EditReservationDialog> {
             border: const OutlineInputBorder(),
           ),
           keyboardType: TextInputType.phone,
+        ),
+        const SizedBox(height: AppSpacing.sm + AppSpacing.xs),
+        TextFormField(
+          controller: _guestEmailController,
+          readOnly: isReadOnly,
+          decoration: InputDecoration(
+            prefixIcon: const Icon(Icons.email_outlined),
+            labelText: 'admin.reservations_field_guest_email'.tr(),
+            border: const OutlineInputBorder(),
+          ),
+          keyboardType: TextInputType.emailAddress,
+        ),
+        ReservationLegalSection(
+          reservationId: widget.reservation.id,
+          apartmentId: _selectedApartmentId,
+          guestPhone: _guestPhoneController.text,
+          guestEmail: _guestEmailController.text,
+          readOnly: isReadOnly,
+          showSesRetry: true,
         ),
         const SizedBox(height: AppSpacing.sm + AppSpacing.xs),
         DropdownButtonFormField<String>(

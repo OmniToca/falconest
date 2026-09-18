@@ -590,8 +590,8 @@ class _ClientBillingTabState extends ConsumerState<ClientBillingTab>
           SnackBar(
             content: Text(
               newValue
-                  ? 'super_admin.module_enabled'.tr(namedArgs: {'name': ModuleIconMapper.getLabelKey(module.key).tr()})
-                  : 'super_admin.module_disabled'.tr(namedArgs: {'name': ModuleIconMapper.getLabelKey(module.key).tr()}),
+                  ? 'super_admin.module_enabled'.tr(namedArgs: {'name': ModuleIconMapper.displayLabel(module.key, module.name)})
+                  : 'super_admin.module_disabled'.tr(namedArgs: {'name': ModuleIconMapper.displayLabel(module.key, module.name)}),
             ),
             backgroundColor: Colors.green,
             behavior: SnackBarBehavior.floating,
@@ -708,7 +708,7 @@ class _ClientBillingTabState extends ConsumerState<ClientBillingTab>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('super_admin.module_enabled'.tr(namedArgs: {'name': ModuleIconMapper.getLabelKey(subModule.key).tr()})),
+            content: Text('super_admin.module_enabled'.tr(namedArgs: {'name': ModuleIconMapper.displayLabel(subModule.key, subModule.name)})),
             backgroundColor: Colors.green,
             behavior: SnackBarBehavior.floating,
           ),
@@ -766,7 +766,7 @@ class _ClientBillingTabState extends ConsumerState<ClientBillingTab>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('super_admin.module_disabled'.tr(namedArgs: {'name': ModuleIconMapper.getLabelKey(mainModule.key).tr()})),
+            content: Text('super_admin.module_disabled'.tr(namedArgs: {'name': ModuleIconMapper.displayLabel(mainModule.key, mainModule.name)})),
             backgroundColor: Colors.green,
             behavior: SnackBarBehavior.floating,
           ),
@@ -912,7 +912,7 @@ class _BillingModuleCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            ModuleIconMapper.getLabelKey(module.key).tr(),
+            ModuleIconMapper.displayLabel(module.key, module.name),
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w600,

@@ -132,7 +132,7 @@ class _ModuleSubscriptionDialogState extends ConsumerState<ModuleSubscriptionDia
 
   @override
   Widget build(BuildContext context) {
-    final moduleName = ModuleIconMapper.getLabelKey(widget.module.key).tr();
+    final moduleName = ModuleIconMapper.displayLabel(widget.module.key, widget.module.name);
     return AlertDialog(
       title: Text('super_admin.module_subscription_dialog_title'.tr(namedArgs: {'name': moduleName})),
       content: SingleChildScrollView(

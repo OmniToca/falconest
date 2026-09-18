@@ -71,8 +71,7 @@ class AdminReservationsRepository {
             .inFilter('apartment_id', apartmentIds)
             .order('start_date', ascending: false)
             .limit(500);
-        final list = (res as List).cast<Map<String, dynamic>>();
-        return filterAndSort(list);
+        return filterAndSort(_asMapList(res));
       },
     );
   }
@@ -147,8 +146,7 @@ class AdminReservationsRepository {
             .lte('start_date', endStr)
             .gte('end_date', startStr)
             .order('start_date', ascending: true);
-        final list = (res as List).cast<Map<String, dynamic>>();
-        return filterAndSort(list);
+        return filterAndSort(_asMapList(res));
       },
     );
   }
@@ -215,10 +213,20 @@ class AdminReservationsRepository {
             .lte('start_date', endStr)
             .gte('end_date', startStr)
             .order('start_date', ascending: true);
-        final list = (res as List).cast<Map<String, dynamic>>();
-        return filterAndSort(list);
+        return filterAndSort(_asMapList(res));
       },
     );
+  }
+
+  /// PostgREST umí vrátit seznam s vnořenými mapami – tvrdé `.cast` na `Map<String, dynamic>`
+  /// po přidání sloupce/FK shodí celou Nástěnku. Tady přeskočíme neobjektové řádky.
+  static List<Map<String, dynamic>> _asMapList(dynamic res) {
+    final out = <Map<String, dynamic>>[];
+    if (res is! List) return out;
+    for (final raw in res) {
+      if (raw is Map) out.add(Map<String, dynamic>.from(raw));
+    }
+    return out;
   }
 
   /// Emituje nejdřív úvodní data z [initialFetch], pak pokračuje streamem.

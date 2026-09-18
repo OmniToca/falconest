@@ -28,6 +28,7 @@ const _placeholderLabels = {
   'arrival_time': 'communication.placeholder_arrival_time',
   'departure_date': 'communication.placeholder_departure_date',
   'departure_time': 'communication.placeholder_departure_time',
+  'checkin_link': 'communication.placeholder_checkin_link',
 };
 
 /// Kódy jazyků z [SupportedLanguages] (bez „výchozí“), stabilní pořadí pro řazení UI.

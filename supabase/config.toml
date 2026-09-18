@@ -57,3 +57,7 @@ verify_jwt = true
 # PROČ: pg_cron volá POST s service role JWT (stejný token jako automation); autorizace uvnitř funkce.
 [functions.rent-monitor]
 verify_jwt = false
+
+# PROČ: pg_cron volá POST se service role JWT; SOAP na SES běží uvnitř funkce.
+[functions.ses-hospedajes]
+verify_jwt = false

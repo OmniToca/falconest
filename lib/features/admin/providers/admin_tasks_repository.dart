@@ -1,3 +1,5 @@
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'package:falconest/core/services/supabase_service.dart';
 import 'package:falconest/core/utils/app_logger.dart';
 import 'package:falconest/core/utils/supabase_stream_helper.dart';
@@ -50,15 +52,54 @@ class AdminTasksRepository {
   /// PROČ: `select()` tahá i `geo_location`, `search_vector`, velké JSON – zbytečný egress.
   /// `metadata` + `media_urls` zůstávají (Kanban cash/tagy, počet fotek). Detail úkolu
   /// dál používá plný `select()` přes [fetchTaskById].
+  ///
+  /// Při chybějícím sloupci na produkci (migrace ještě neběžela) [fetchTaskMapsWithFallback]
+  /// spadne na `select(*)`, aby Nástěnka/Úkoly nespadly na červené chybové obrazovce.
   static const String taskListSelectColumns =
       'id, tenant_id, apartment_id, client_id, reservation_id, service_id, '
       'reference_number, title, description, status, task_type, '
       'due_date, scheduled_start, assigned_to, assigned_user_ids, '
-      'custom_title, custom_location, metadata, media_urls, title_i18n, '
+      'custom_title, custom_location, metadata, media_urls, '
       'deleted_at, invoiced_at, unassigned_info, created_by, created_at, '
-      'started_at, completed_at, '
-      'last_communication_template_id, last_communication_template_context, '
-      'last_communication_at';
+      'started_at, completed_at';
+
+  static bool _isMissingColumnError(Object e) {
+    if (e is PostgrestException) {
+      return e.code == '42703' ||
+          e.message.contains('column') ||
+          e.message.contains('does not exist');
+    }
+    final s = e.toString();
+    return s.contains('42703') ||
+        s.contains('column') ||
+        s.contains('does not exist');
+  }
+
+  static List<Map<String, dynamic>> _asTaskMapList(dynamic res) {
+    final out = <Map<String, dynamic>>[];
+    if (res is! List) return out;
+    for (final raw in res) {
+      if (raw is Map) out.add(Map<String, dynamic>.from(raw));
+    }
+    return out;
+  }
+
+  /// SELECT s úzkou projekcí; při chybějícím sloupci v DB → `select(*)`.
+  static Future<List<Map<String, dynamic>>> fetchTaskMapsWithFallback(
+    Future<dynamic> Function(String columns) runQuery,
+  ) async {
+    try {
+      return _asTaskMapList(await runQuery(taskListSelectColumns));
+    } catch (e, st) {
+      if (!_isMissingColumnError(e)) rethrow;
+      AppLogger.error(
+        'AdminTasksRepository: úzký select selhal (chybějící sloupec) – fallback select(*)',
+        e,
+        st,
+      );
+      return _asTaskMapList(await runQuery('*'));
+    }
+  }
 
   /// Realtime stream úkolů pro daného tenanta.
   ///
@@ -98,13 +139,14 @@ class AdminTasksRepository {
     return _streamWithInitialFetch(
       stream: stream,
       initialFetch: () async {
-        final res = await safeTasks
-            .select(taskListSelectColumns)
+        final list = await fetchTaskMapsWithFallback(
+            (cols) => safeTasks
+                .select(cols)
             .isFilter('deleted_at', null)
             .isFilter('invoiced_at', null)
             .or(orCompleted)
-            .order('scheduled_start', ascending: false);
-        final list = (res as List).cast<Map<String, dynamic>>();
+            .order('scheduled_start', ascending: false),
+            );
         return filterAndSort(list);
       },
     );
@@ -155,13 +197,14 @@ class AdminTasksRepository {
     return _streamWithInitialFetch(
       stream: stream,
       initialFetch: () async {
-        final res = await safeTasks
-            .select(taskListSelectColumns)
+        final list = await fetchTaskMapsWithFallback(
+            (cols) => safeTasks
+                .select(cols)
             .isFilter('deleted_at', null)
             .gte('scheduled_start', startIso)
             .lt('scheduled_start', endIso)
-            .order('scheduled_start', ascending: false);
-        final list = (res as List).cast<Map<String, dynamic>>();
+            .order('scheduled_start', ascending: false),
+            );
         return filterAndSort(list);
       },
     );
@@ -220,14 +263,15 @@ class AdminTasksRepository {
         final (fromUtc, toUtc) = opsWindowBoundsUtc();
         final fromIso = fromUtc.toIso8601String();
         final toIso = toUtc.toIso8601String();
-        final res = await safeTasks
-            .select(taskListSelectColumns)
+        final list = await fetchTaskMapsWithFallback(
+            (cols) => safeTasks
+                .select(cols)
             .isFilter('deleted_at', null)
             .isFilter('invoiced_at', null)
             .gte('scheduled_start', fromIso)
             .lte('scheduled_start', toIso)
-            .order('scheduled_start', ascending: false);
-        final list = (res as List).cast<Map<String, dynamic>>();
+            .order('scheduled_start', ascending: false),
+            );
         return filterAndSort(list);
       },
     );
@@ -281,14 +325,15 @@ class AdminTasksRepository {
     return _streamWithInitialFetch(
       stream: stream,
       initialFetch: () async {
-        final res = await safeTasks
-            .select(taskListSelectColumns)
+        final list = await fetchTaskMapsWithFallback(
+            (cols) => safeTasks
+                .select(cols)
             .isFilter('deleted_at', null)
             .isFilter('invoiced_at', null)
             .gte('scheduled_start', fromIso)
             .lte('scheduled_start', toIso)
-            .order('scheduled_start', ascending: false);
-        final list = (res as List).cast<Map<String, dynamic>>();
+            .order('scheduled_start', ascending: false),
+            );
         return filterAndSort(list);
       },
     );
@@ -350,13 +395,14 @@ class AdminTasksRepository {
     return _streamWithInitialFetch(
       stream: stream,
       initialFetch: () async {
-        final res = await safeTasks
-            .select(taskListSelectColumns)
+        final list = await fetchTaskMapsWithFallback(
+            (cols) => safeTasks
+                .select(cols)
             .isFilter('deleted_at', null)
             .isFilter('invoiced_at', null)
             .or(orCompleted)
-            .order('scheduled_start', ascending: false);
-        final list = (res as List).cast<Map<String, dynamic>>();
+            .order('scheduled_start', ascending: false),
+            );
         return filterAndSort(list);
       },
     );
@@ -425,14 +471,15 @@ class AdminTasksRepository {
         final endIso = endUtc.toIso8601String();
 
         Future<List<Map<String, dynamic>>> loadByColumn(String column) async {
-          final res = await safeTasks
-              .select(taskListSelectColumns)
+          return fetchTaskMapsWithFallback(
+              (cols) => safeTasks
+                  .select(cols)
               .isFilter('deleted_at', null)
               .isFilter('invoiced_at', null)
               .gte(column, startIso)
               .lte(column, endIso)
-              .order('scheduled_start', ascending: false);
-          return (res as List).cast<Map<String, dynamic>>();
+              .order('scheduled_start', ascending: false),
+              );
         }
 
         final byId = <String, Map<String, dynamic>>{};
@@ -453,13 +500,13 @@ class AdminTasksRepository {
   static Future<List<Map<String, dynamic>>> fetchTasksForReservation(String tenantId, String reservationId) async {
     if (tenantId.isEmpty || reservationId.isEmpty) return [];
     try {
-      final res = await SupabaseService.safeFrom('tasks', tenantId)
-          .select(taskListSelectColumns)
+      return fetchTaskMapsWithFallback(
+          (cols) => SupabaseService.safeFrom('tasks', tenantId)
+              .select(cols)
           .eq('reservation_id', reservationId)
           .isFilter('deleted_at', null)
-          .order('scheduled_start', ascending: true);
-      final list = (res as List).cast<Map<String, dynamic>>();
-      return list;
+          .order('scheduled_start', ascending: true),
+          );
     } catch (e, st) {
       AppLogger.error('AdminTasksRepository.fetchTasksForReservation selhal', e, st);
       return [];
