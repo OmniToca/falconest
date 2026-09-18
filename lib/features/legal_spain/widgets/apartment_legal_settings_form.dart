@@ -96,7 +96,7 @@ class _ApartmentLegalSettingsFormState
     final async = ref.watch(apartmentLegalSettingsProvider(widget.apartmentId));
     return async.when(
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (e, _) => Text('$e'),
+      error: (e, _) => Text('common.generic_error_user_friendly'.tr()),
       data: (s) {
         if (s != null && !_loaded) {
           _loaded = true;
@@ -154,11 +154,18 @@ class _ApartmentLegalSettingsFormState
             ),
             if (widget.showWsSecrets) ...[
               const SizedBox(height: AppSpacing.md),
-              Text('legal_spain.ws_creds'.tr(), style: Theme.of(context).textTheme.titleSmall),
+              Text(
+                'legal_spain.ws_creds'.tr(),
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              const SizedBox(height: AppSpacing.sm),
               TextFormField(
                 controller: _user,
                 decoration: InputDecoration(labelText: 'legal_spain.ws_username'.tr()),
               ),
+              const SizedBox(height: AppSpacing.sm),
               TextFormField(
                 controller: _pass,
                 obscureText: true,

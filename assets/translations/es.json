@@ -19,6 +19,7 @@
     }
   },
   "legal_spain": {
+    "subtitle": "Check-in de huéspedes, firma electrónica y envío a SES Hospedajes.",
     "upsell_desc": "Check-in online, firma electrónica del parte y envío automático a SES Hospedajes (RD 933/2021).",
     "unlock": "Desbloquear módulo",
     "guests_section": "Huéspedes y check-in (SES)",
@@ -68,6 +69,12 @@
     "tab_book": "Libro de viajeros",
     "tab_apartments": "Pisos / SES",
     "empty_dashboard": "No hay check-ins abiertos",
+    "empty_book": "El libro de viajeros está vacío",
+    "empty_apartments": "No hay pisos para configurar SES",
+    "stay_detail_title": "Huéspedes de la reserva",
+    "apartment_settings_title": "Códigos SES del piso",
+    "guest_form_title": "Datos del huésped",
+    "public_subtitle": "Complete los datos de todas las personas y firme el parte (14+).",
     "export_pdf": "Exportar PDF",
     "book_title": "Libro de viajeros",
     "col_name": "Nombre",

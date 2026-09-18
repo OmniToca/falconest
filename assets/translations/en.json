@@ -22,6 +22,7 @@
     }
   },
   "legal_spain": {
+    "subtitle": "Guest check-in, e-signature and filing with SES Hospedajes.",
     "upsell_desc": "Online guest check-in, e-signature of the police form and automatic filing with SES Hospedajes (RD 933/2021).",
     "unlock": "Unlock module",
     "guests_section": "Guests and check-in (SES)",
@@ -71,6 +72,12 @@
     "tab_book": "Visitor book",
     "tab_apartments": "Apartments / SES",
     "empty_dashboard": "No open check-ins",
+    "empty_book": "The visitor book is empty",
+    "empty_apartments": "No apartments to configure for SES",
+    "stay_detail_title": "Reservation guests",
+    "apartment_settings_title": "Apartment SES codes",
+    "guest_form_title": "Guest details",
+    "public_subtitle": "Fill in everyone in the party and sign the form (age 14+).",
     "export_pdf": "Export PDF",
     "book_title": "Visitor book",
     "col_name": "Name",

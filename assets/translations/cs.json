@@ -22,6 +22,7 @@
     }
   },
   "legal_spain": {
+    "subtitle": "Check-in hostů, e-podpis části a odeslání na SES Hospedajes.",
     "upsell_desc": "Online check-in hostů, e-podpis části a automatické odeslání na SES Hospedajes (RD 933/2021).",
     "unlock": "Odemknout modul",
     "guests_section": "Hosté a check-in (SES)",
@@ -71,6 +72,12 @@
     "tab_book": "Kniha návštěv",
     "tab_apartments": "Byty / SES",
     "empty_dashboard": "Žádné otevřené check-iny",
+    "empty_book": "Kniha návštěv je prázdná",
+    "empty_apartments": "Žádné byty k nastavení SES",
+    "stay_detail_title": "Hosté rezervace",
+    "apartment_settings_title": "SES kódy bytu",
+    "guest_form_title": "Údaje hosta",
+    "public_subtitle": "Vyplňte údaje všech osob na pobytu a podepište část (14+).",
     "export_pdf": "Export PDF",
     "book_title": "Kniha návštěv",
     "col_name": "Jméno",

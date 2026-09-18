@@ -39,8 +39,11 @@ class WorkerLegalCheckinSection extends ConsumerWidget {
             const SizedBox(height: 8),
             Text(
               'legal_spain.worker_fill_on_site'.tr(),
-              style: Theme.of(context).textTheme.titleSmall,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
             ),
+            const SizedBox(height: 8),
             ReservationLegalSection(
               reservationId: reservationId,
               apartmentId: detail.apartmentId,
